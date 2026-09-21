@@ -752,18 +752,25 @@ local buf_lines = vim.api.nvim_buf_get_lines(ts_buf, 0, -1, false)
 local head_row = nil
 local code_row = nil
 for idx, line in ipairs(buf_lines) do
-  if line:find("### Implementation") then
+  if line:find("^Implementation$") or line == "Implementation" then
     head_row = idx - 1
   elseif line:find("local function compute") then
     code_row = idx - 1
   end
 end
 
-assert(head_row ~= nil, "Heading line '### Implementation' must exist in buffer")
+assert(head_row ~= nil, "Heading line 'Implementation' must exist in buffer")
 assert(code_row ~= nil, "Code block line 'local function compute' must exist in buffer")
 
 local head_caps_before = vim.treesitter.get_captures_at_pos(ts_buf, head_row, 0)
 assert(#head_caps_before > 0, "Markdown heading must have treesitter captures before reload")
+
+local ems_before = vim.api.nvim_buf_get_extmarks(ts_buf, require("agy.markdown").NS_MARKDOWN, 0, -1, { details = true })
+local has_h3_before = false
+for _, em in ipairs(ems_before) do
+  if em[2] == head_row and em[4].line_hl_group == "AgyH3" then has_h3_before = true end
+end
+assert(has_h3_before, "AgyH3 line_hl_group extmark must be applied to heading row before reload")
 
 local code_caps_before = vim.treesitter.get_captures_at_pos(ts_buf, code_row, 2)
 assert(#code_caps_before > 0, "Code block line must have treesitter captures before reload")
@@ -802,6 +809,13 @@ for i = 1, #head_caps_before do
   assert(head_caps_after[i].capture == head_caps_before[i].capture,
     string.format("Heading capture %d mismatch: before=%s after=%s", i, head_caps_before[i].capture, head_caps_after[i].capture))
 end
+
+local ems_after = vim.api.nvim_buf_get_extmarks(ts_buf, require("agy.markdown").NS_MARKDOWN, 0, -1, { details = true })
+local has_h3_after = false
+for _, em in ipairs(ems_after) do
+  if em[2] == head_row and em[4].line_hl_group == "AgyH3" then has_h3_after = true end
+end
+assert(has_h3_after, "AgyH3 line_hl_group extmark must be applied to heading row after :e reload")
 
 local code_caps_after = vim.treesitter.get_captures_at_pos(ts_buf, code_row, 2)
 assert(#code_caps_after > 0, "Code block line must have treesitter captures after :e reload")

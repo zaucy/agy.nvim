@@ -311,6 +311,21 @@ function M._setup_buffer(buf, conversation_id)
     end
   end)
 
+  vim.api.nvim_create_autocmd("BufWinEnter", {
+    buffer = buf,
+    callback = function()
+      local wins = vim.fn.win_findbuf(buf)
+      for _, win in ipairs(wins) do
+        if vim.api.nvim_win_is_valid(win) then
+          vim.wo[win].wrap = cfg.ui.wrap
+          vim.wo[win].linebreak = cfg.ui.linebreak
+          vim.wo[win].conceallevel = (cfg.ui and cfg.ui.conceallevel ~= nil) and cfg.ui.conceallevel or 0
+          vim.wo[win].concealcursor = ""
+        end
+      end
+    end,
+  })
+
   -- Keymaps
   if cfg.keymaps.submit and cfg.keymaps.submit ~= "" then
     vim.keymap.set({ "n", "i" }, cfg.keymaps.submit, "<cmd>write<CR>", {
@@ -329,6 +344,38 @@ function M._setup_buffer(buf, conversation_id)
       desc = "Stop current Antigravity turn",
     })
   end
+
+  -- Inspect markdown link with K (LSP-style floating preview)
+  vim.keymap.set("n", "K", function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local link = require("agy.markdown").get_link_at(buf, cursor[1], cursor[2])
+    if link then
+      require("agy.markdown").show_link_hover(buf, link, cfg)
+    elseif vim.lsp.get_clients and #vim.lsp.get_clients({ bufnr = buf, method = "textDocument/hover" }) > 0 then
+      vim.lsp.buf.hover()
+    else
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("K", true, false, true), "n", false)
+    end
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Inspect markdown link or LSP hover",
+  })
+
+  -- Open link with gd
+  vim.keymap.set("n", "gd", function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local link = require("agy.markdown").get_link_at(buf, cursor[1], cursor[2])
+    if link then
+      require("agy.markdown").open_link(link.url)
+    else
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("gd", true, false, true), "n", false)
+    end
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Open link under cursor or go to definition",
+  })
 
   local toggle_key = cfg.keymaps.toggle_tool or "<CR>"
   vim.keymap.set("n", toggle_key, function()

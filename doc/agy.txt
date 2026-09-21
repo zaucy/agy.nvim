@@ -115,6 +115,15 @@ Inside an `agy://` buffer:
   Context-sensitive toggle: unqueue a queued message back to prompt input,
   toggle question option checkbox, or toggle tool output block.
 
+- `K` (Normal mode):
+  Inspect markdown link under cursor in a floating hover window. If not on a
+  link, falls back to default normal `K`.
+
+- `gd` (Normal mode):
+  Open link under cursor: local `file://` URLs open in a Neovim buffer
+  (navigating to line/column if specified), while web URLs are delegated to
+  the system opener (`vim.ui.open`). If not on a link, falls back to default `gd`.
+
 - `<Tab>` / `<S-Tab>` (Insert mode):
   Autocomplete Antigravity `/` slash commands.
 
@@ -157,6 +166,29 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             cancelled = "⏹️",
             queue = "⏳",
             spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+            table = {
+                top_left = "╭",
+                top_right = "╮",
+                bottom_left = "╰",
+                bottom_right = "╯",
+                horizontal = "─",
+                vertical = "│",
+                top_tee = "┬",
+                bottom_tee = "┴",
+                left_tee = "├",
+                right_tee = "┤",
+                cross = "┼",
+            },
+            code_block = {
+                top_left = "╭",
+                horizontal = "─",
+                bottom_left = "╰",
+            },
+            bullets = { "●", "○", "◆" },
+            checkbox_unchecked = "󰄱 ",
+            checkbox_checked = "󰄵 ",
+            image = " ",
+            link = "🔗",
         },
 
         -- UI settings
@@ -173,6 +205,7 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             tool_max_height = 20,    -- Max height of inline window for tool details
             separator = require("agy.ui.separator").line(), -- Turn separator function e.g. require("agy.ui.separator").box("rounded")
             animate_thinking = true, -- Animate thinking badge with spinner frames
+            render_markdown = require("agy.markdown").render, -- Stream markdown renderer
         },
     })
 <
@@ -184,6 +217,21 @@ The following highlight groups are used for styling and can be customized:
 - `AgyToolInline`: Subtle background for inline tool details and virtual lines.
 - `AgyToolOutput`: Text output inside tool detail views.
 - `AgyThoughtOutput`: Text output inside thought detail views.
+- `AgyH1`..`AgyH6`: Scaled headers with radnvim `:scale=` protocol and bold font.
+- `AgyTableBorder`: Rounded table borders.
+- `AgyTableHeader`: Table header row text.
+- `AgyCodeBorder`: Code block fence borders.
+- `AgyCodeLang`: Code block language identifier.
+- `AgyCodeBlock`: Subtle background for code block body lines.
+- `AgyListBullet`: List bullet icons (`●`, `○`, `◆`).
+- `AgyCheckboxUnchecked`: Unchecked task list items.
+- `AgyCheckboxChecked`: Checked task list items.
+- `AgyImage`: Rendered image indicator and placeholder lines.
+- `AgyLink`: Markdown hyperlinks ([label](url)).
+- `AgyBold`: Bold text (**bold** / __bold__).
+- `AgyItalic`: Italic text (*italic* / _italic_).
+- `AgyInlineCode`: Inline code snippets (`code`).
+- `AgyStrike`: Strikethrough text (~~strike~~).
 
 ==============================================================================
 8. MENTIONS & EXTENSION API                                     *agy-mentions*

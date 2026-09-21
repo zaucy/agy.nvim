@@ -45,6 +45,9 @@ end
 
 ---Setup highlight groups for agy buffers
 function M.setup_highlights()
+	local title_hl = vim.api.nvim_get_hl(0, { name = "Title", link = false })
+	local header_fg = (title_hl and title_hl.fg) or ((vim.o.background == "light") and 0x0055aa or 0x89b4fa)
+
 	local defs = {
 		AgyUserDivider = { link = "Title", default = true, bold = true },
 		AgyAgentDivider = { link = "Special", default = true, bold = true },
@@ -82,6 +85,86 @@ function M.setup_highlights()
 		AgyQueueHeader = { link = "Title", default = true, bold = true },
 		AgyQueueBadge = { link = "DiagnosticInfo", default = true },
 		AgyQueueMessage = { link = "Normal", default = true },
+		AgyH1 = { font = ":scale=2.0:margin_top=0.8:margin_bottom=0.4", bold = true, fg = header_fg, default = true },
+		AgyH2 = { font = ":scale=1.6:margin_top=0.6:margin_bottom=0.3", bold = true, fg = header_fg, default = true },
+		AgyH3 = { font = ":scale=1.35:margin_top=0.5:margin_bottom=0.25", bold = true, fg = header_fg, default = true },
+		AgyH4 = { font = ":scale=1.2:margin_top=0.4:margin_bottom=0.2", bold = true, fg = header_fg, default = true },
+		AgyH5 = { font = ":scale=1.1:margin_top=0.3:margin_bottom=0.15", bold = true, fg = header_fg, default = true },
+		AgyH6 = { font = ":scale=1.0:margin_top=0.2:margin_bottom=0.1", bold = true, fg = header_fg, default = true },
+		AgyTableBorder = { link = "Comment", default = true },
+		AgyTableHeader = { link = "Title", bold = true, default = true },
+		AgyCodeBorder = { link = "Comment", default = true },
+		AgyCodeLang = { link = "Special", bold = true, default = true },
+		AgyListBullet = { link = "Special", default = true },
+		AgyCheckboxUnchecked = { link = "Comment", default = true },
+		AgyCheckboxChecked = { link = "DiagnosticOk", bold = true, default = true },
+		AgyImage = { link = "Special", default = true },
+		AgyLink = { link = "Underlined", underline = true, default = true },
+		AgyBold = { bold = true, default = true },
+		AgyItalic = { italic = true, default = true },
+		AgyInlineCode = { link = "String", default = true },
+		AgyStrike = { strikethrough = true, default = true },
+
+		-- Treesitter syntax highlighting mappings for code blocks
+		["@keyword"] = { link = "Keyword", default = true },
+		["@keyword.function"] = { link = "Keyword", default = true },
+		["@keyword.return"] = { link = "Keyword", default = true },
+		["@keyword.operator"] = { link = "Operator", default = true },
+		["@keyword.import"] = { link = "Include", default = true },
+		["@keyword.conditional"] = { link = "Conditional", default = true },
+		["@keyword.repeat"] = { link = "Repeat", default = true },
+		["@keyword.exception"] = { link = "Exception", default = true },
+		["@keyword.type"] = { link = "Type", default = true },
+		["@keyword.modifier"] = { link = "Type", default = true },
+		["@keyword.coroutine"] = { link = "Keyword", default = true },
+		["@function"] = { link = "Function", default = true },
+		["@function.builtin"] = { link = "Special", default = true },
+		["@function.call"] = { link = "Function", default = true },
+		["@function.macro"] = { link = "Macro", default = true },
+		["@function.method"] = { link = "Function", default = true },
+		["@function.method.call"] = { link = "Function", default = true },
+		["@method"] = { link = "Function", default = true },
+		["@method.call"] = { link = "Function", default = true },
+		["@variable"] = { link = "Identifier", default = true },
+		["@variable.builtin"] = { link = "Special", default = true },
+		["@variable.parameter"] = { link = "Identifier", default = true },
+		["@variable.member"] = { link = "Identifier", default = true },
+		["@property"] = { link = "Identifier", default = true },
+		["@field"] = { link = "Identifier", default = true },
+		["@type"] = { link = "Type", default = true },
+		["@type.builtin"] = { link = "Type", default = true },
+		["@type.definition"] = { link = "Typedef", default = true },
+		["@type.qualifier"] = { link = "Type", default = true },
+		["@string"] = { link = "String", default = true },
+		["@string.regex"] = { link = "Special", default = true },
+		["@string.escape"] = { link = "Special", default = true },
+		["@string.special"] = { link = "Special", default = true },
+		["@string.documentation"] = { link = "Comment", default = true },
+		["@character"] = { link = "Character", default = true },
+		["@character.special"] = { link = "SpecialChar", default = true },
+		["@number"] = { link = "Number", default = true },
+		["@number.float"] = { link = "Float", default = true },
+		["@boolean"] = { link = "Boolean", default = true },
+		["@constant"] = { link = "Constant", default = true },
+		["@constant.builtin"] = { link = "Special", default = true },
+		["@constant.macro"] = { link = "Define", default = true },
+		["@comment"] = { link = "Comment", default = true },
+		["@comment.documentation"] = { link = "Comment", default = true },
+		["@comment.note"] = { link = "SpecialComment", default = true },
+		["@comment.warning"] = { link = "DiagnosticWarn", default = true },
+		["@comment.error"] = { link = "DiagnosticError", default = true },
+		["@operator"] = { link = "Operator", default = true },
+		["@punctuation.bracket"] = { link = "Delimiter", default = true },
+		["@punctuation.delimiter"] = { link = "Delimiter", default = true },
+		["@punctuation.special"] = { link = "Delimiter", default = true },
+		["@tag"] = { link = "Tag", default = true },
+		["@tag.attribute"] = { link = "Identifier", default = true },
+		["@tag.delimiter"] = { link = "Delimiter", default = true },
+		["@constructor"] = { link = "Special", default = true },
+		["@label"] = { link = "Label", default = true },
+		["@module"] = { link = "Structure", default = true },
+		["@namespace"] = { link = "Structure", default = true },
+		["@keyword.storage"] = { link = "StorageClass", default = true },
 	}
 
 	for name, val in pairs(defs) do
@@ -108,7 +191,7 @@ function M.setup_highlights()
 		vim.api.nvim_set_hl(0, "AgyPromptArea", { bg = prompt_bg, default = true })
 	end
 
-	-- Resolve tool inline subtle background color
+	-- Resolve tool inline and code block subtle background color
 	local inline_hl = vim.api.nvim_get_hl(0, { name = "AgyToolInline", link = false })
 	if not inline_hl or not inline_hl.bg then
 		inline_hl = vim.api.nvim_get_hl(0, { name = "ColorColumn", link = false })
@@ -117,14 +200,66 @@ function M.setup_highlights()
 		inline_hl = vim.api.nvim_get_hl(0, { name = "CursorLine", link = false })
 	end
 
+	local norm_hl = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+	local norm_bg = norm_hl and norm_hl.bg
+
 	local inline_bg = inline_hl and inline_hl.bg
-	if not inline_bg then
-		inline_bg = (vim.o.background == "light") and 0xf4f4f4 or 0x1f2335
+
+	-- Ensure inline_bg has visible subtle contrast against Normal background
+	local function is_close_color(c1, c2, threshold)
+		if not c1 or not c2 then
+			return false
+		end
+		local r1 = math.floor(c1 / 65536) % 256
+		local g1 = math.floor(c1 / 256) % 256
+		local b1 = c1 % 256
+		local r2 = math.floor(c2 / 65536) % 256
+		local g2 = math.floor(c2 / 256) % 256
+		local b2 = c2 % 256
+		return math.abs(r1 - r2) <= threshold and math.abs(g1 - g2) <= threshold and math.abs(b1 - b2) <= threshold
+	end
+
+	if not inline_bg or is_close_color(inline_bg, norm_bg, 8) then
+		if vim.o.background == "light" then
+			if norm_bg then
+				local r = math.max(0, math.floor(norm_bg / 65536) % 256 - 16)
+				local g = math.max(0, math.floor(norm_bg / 256) % 256 - 16)
+				local b = math.max(0, (norm_bg % 256) - 16)
+				inline_bg = r * 65536 + g * 256 + b
+			else
+				inline_bg = 0xebebee
+			end
+		else
+			if norm_bg then
+				local r = math.min(255, math.floor(norm_bg / 65536) % 256 + 18)
+				local g = math.min(255, math.floor(norm_bg / 256) % 256 + 20)
+				local b = math.min(255, (norm_bg % 256) + 24)
+				inline_bg = r * 65536 + g * 256 + b
+			else
+				inline_bg = 0x262b3d
+			end
+		end
 	end
 
 	local cur_tool_inline = vim.api.nvim_get_hl(0, { name = "AgyToolInline", link = false })
 	if not cur_tool_inline or not cur_tool_inline.bg then
-		vim.api.nvim_set_hl(0, "AgyToolInline", { bg = inline_bg, default = true })
+		vim.api.nvim_set_hl(0, "AgyToolInline", {
+			bg = inline_bg,
+			ctermbg = (vim.o.background == "light") and 254 or 236,
+			default = true,
+		})
+	end
+
+	local cur_code_block = vim.api.nvim_get_hl(0, { name = "AgyCodeBlock", link = false })
+	if vim.tbl_isempty(cur_code_block) or cur_code_block.default or not cur_code_block.bg then
+		if cur_code_block and cur_code_block.default then
+			vim.api.nvim_set_hl(0, "AgyCodeBlock", {})
+		end
+		vim.api.nvim_set_hl(0, "AgyCodeBlock", {
+			bg = inline_bg,
+			ctermbg = (vim.o.background == "light") and 254 or 236,
+			default = true,
+		})
 	end
 
 	local comment_hl = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
@@ -463,6 +598,8 @@ function M.is_compact_header_line(line, config)
 			and k ~= "user"
 			and k ~= "agent"
 			and k ~= "queue"
+			and k ~= "checkbox_unchecked"
+			and k ~= "checkbox_checked"
 			and type(icon_val) == "string"
 			and icon_val ~= ""
 		then
@@ -580,9 +717,9 @@ function M.get_max_window_width(buf)
 		end
 	end
 	if max_w <= 0 then
-		max_w = vim.o.columns or 80
+		max_w = (vim.o and vim.o.columns and vim.o.columns > 0) and vim.o.columns or 80
 	end
-	return math.max(max_w, 80)
+	return max_w
 end
 
 ---Draw or generate virtual lines for a turn separator (User or Antigravity)
@@ -1156,7 +1293,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 
 			local text = step.content or step.text_delta
 			if text and text ~= "" then
-				M.append_text_delta(buf, text, config)
+				M.append_text_delta(buf, text, config, true)
 			end
 
 			if step.tool_calls and #step.tool_calls > 0 then
@@ -1276,53 +1413,17 @@ end
 ---Stream text delta into buffer
 ---@param buf number
 ---@param delta string
----@param config table
-function M.append_text_delta(buf, delta, config)
-	if not delta or delta == "" then
+---@param config? table
+---@param is_final? boolean
+function M.append_text_delta(buf, delta, config, is_final)
+	if not delta or (delta == "" and not is_final) then
 		return
 	end
 
-	local boundary_row, agent_row = M.get_agent_boundary(buf)
-	local target_line
-	if boundary_row then
-		local sep_row = boundary_row - 1
-		local prev_row = sep_row - 1
-		if not agent_row or prev_row <= agent_row then
-			vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { "" })
-			target_line = sep_row
-		else
-			local prev_line = vim.api.nvim_buf_get_lines(buf, prev_row, prev_row + 1, false)[1] or ""
-			if M.is_compact_header_line(prev_line, config) then
-				vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { "", "" })
-				target_line = sep_row + 1
-			else
-				target_line = prev_row
-			end
-		end
-	else
-		target_line = vim.api.nvim_buf_line_count(buf) - 1
-		local last_line = vim.api.nvim_buf_get_lines(buf, target_line, target_line + 1, false)[1] or ""
-		if M.is_compact_header_line(last_line, config) then
-			local line_count = vim.api.nvim_buf_line_count(buf)
-			vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { "", "" })
-			target_line = vim.api.nvim_buf_line_count(buf) - 1
-		end
-	end
-
-	local current_text = vim.api.nvim_buf_get_lines(buf, target_line, target_line + 1, false)[1] or ""
-	local delta_lines = utils.split_lines(delta)
-
-	if #delta_lines == 1 then
-		vim.api.nvim_buf_set_lines(buf, target_line, target_line + 1, false, { current_text .. delta_lines[1] })
-	else
-		local replacement = { current_text .. delta_lines[1] }
-		for i = 2, #delta_lines do
-			table.insert(replacement, delta_lines[i])
-		end
-		vim.api.nvim_buf_set_lines(buf, target_line, target_line + 1, false, replacement)
-	end
-
-	vim.bo[buf].modified = false
+	local cfg = get_config(config)
+	local render_fn = cfg.ui and cfg.ui.render_markdown
+	assert(type(render_fn) == "function", "agy config: 'ui.render_markdown' function is required in config")
+	render_fn(buf, delta, is_final or false, cfg)
 end
 
 ---Render an agent thought block as a collapsible item (similar to tool calls)
@@ -1332,6 +1433,7 @@ end
 ---@param config? table
 ---@return table tc_rec
 function M.append_thought_block(buf, thought, duration_seconds, config)
+	pcall(require("agy.markdown").finalize, buf, config)
 	local thought_icon = get_icon("thought", config)
 	local line_text = string.format("%s Thought", thought_icon)
 
@@ -1417,6 +1519,7 @@ M.append_thought = M.append_thought_block
 ---@return number extmark_id
 ---@return string param_str
 function M.append_tool_call(buf, tool_name, params, cwd, config)
+	pcall(require("agy.markdown").finalize, buf, config)
 	local is_run_cmd = (tool_name == "run_command")
 	local icon = is_run_cmd and get_icon("run_command", config) or get_tool_icon(tool_name, config)
 
@@ -2562,6 +2665,7 @@ end
 ---@return number next_prompt_extmark_id
 function M.finalize_turn(buf, agent_extmark_id, agent_line, result, config)
 	M.stop_thinking_animation(buf)
+	M.append_text_delta(buf, "", config, true)
 	local stats = {}
 	if result.duration_seconds and result.duration_seconds > 0 then
 		table.insert(stats, utils.format_duration(result.duration_seconds))

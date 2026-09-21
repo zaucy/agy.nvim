@@ -21,6 +21,25 @@ local M = {}
 ---@field tool_max_height? number Maximum height of inline window for tool details (default: 20)
 ---@field separator? fun(ctx: table): table Separator function returning virt_lines (default: require("agy.ui.separator").line())
 ---@field animate_thinking? boolean Animate thinking badge on agent turn (default: true)
+---@field render_markdown? fun(buf: number, delta: string, is_final: boolean, config?: table) Custom streaming markdown renderer (default: require("agy.markdown").render)
+
+---@class AgyConfigIconsTable
+---@field top_left string Top-left corner (default: "╭")
+---@field top_right string Top-right corner (default: "╮")
+---@field bottom_left string Bottom-left corner (default: "╰")
+---@field bottom_right string Bottom-right corner (default: "╯")
+---@field horizontal string Horizontal border (default: "─")
+---@field vertical string Vertical border (default: "│")
+---@field top_tee string Top header tee (default: "┬")
+---@field bottom_tee string Bottom footer tee (default: "┴")
+---@field left_tee string Left divider tee (default: "├")
+---@field right_tee string Right divider tee (default: "┤")
+---@field cross string Center cross tee (default: "┼")
+
+---@class AgyConfigIconsCodeBlock
+---@field top_left string Top left corner for code fence (default: "╭")
+---@field horizontal string Horizontal border for code fence (default: "─")
+---@field bottom_left string Bottom left corner for code fence (default: "╰")
 
 ---@class AgyConfigIcons
 ---@field default? string Default fallback icon (default: "  ")
@@ -38,6 +57,13 @@ local M = {}
 ---@field cancelled? string Icon for turn cancelled notices (default: "⏹️")
 ---@field queue? string Icon for prompt queue (default: "⏳")
 ---@field spinner? string[] Frames for thinking animation (default: { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" })
+---@field table? AgyConfigIconsTable Table border characters
+---@field code_block? AgyConfigIconsCodeBlock Code block border characters
+---@field bullets? string[] List bullet icons (default: { "●", "○", "◆" })
+---@field checkbox_unchecked? string Checkbox unchecked icon (default: "󰄱 ")
+---@field checkbox_checked? string Checkbox checked icon (default: "󰄵 ")
+---@field image? string Icon for rendered image placeholder (default: " ")
+---@field link? string Icon for link hover/inspection (default: "🔗")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -76,6 +102,29 @@ M.defaults = {
 		replace_file_content = " ",
 		write_to_file = " ",
 		spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+		table = {
+			top_left = "╭",
+			top_right = "╮",
+			bottom_left = "╰",
+			bottom_right = "╯",
+			horizontal = "─",
+			vertical = "│",
+			top_tee = "┬",
+			bottom_tee = "┴",
+			left_tee = "├",
+			right_tee = "┤",
+			cross = "┼",
+		},
+		code_block = {
+			top_left = "╭",
+			horizontal = "─",
+			bottom_left = "╰",
+		},
+		bullets = { "●", "○", "◆" },
+		checkbox_unchecked = "󰄱 ",
+		checkbox_checked = "󰄵 ",
+		image = " ",
+		link = "🔗",
 	},
 	keymaps = {
 		submit = "<C-s>",
@@ -96,6 +145,9 @@ M.defaults = {
 		tool_max_height = 20,
 		separator = require("agy.ui.separator").line(),
 		animate_thinking = true,
+		render_markdown = function(buf, delta, is_final, cfg)
+			return require("agy.markdown").render(buf, delta, is_final, cfg)
+		end,
 	},
 }
 
@@ -117,6 +169,12 @@ function M.setup(opts)
 			assert(
 				type(opts.ui.tool_max_height) == "number" and opts.ui.tool_max_height > 0,
 				"agy config: 'ui.tool_max_height' must be a positive number"
+			)
+		end
+		if opts.ui and opts.ui.render_markdown ~= nil then
+			assert(
+				type(opts.ui.render_markdown) == "function",
+				"agy config: 'ui.render_markdown' must be a function"
 			)
 		end
 		M.values = vim.tbl_deep_extend("force", M.defaults, opts)
