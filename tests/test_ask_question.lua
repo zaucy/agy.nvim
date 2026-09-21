@@ -1,0 +1,383 @@
+local protocol = require("agy.protocol")
+local render = require("agy.render")
+local utils = require("agy.utils")
+
+print("=== Running Comprehensive Antigravity ask_question Tests ===")
+
+require("agy").setup()
+
+-- =========================================================================
+-- TEST 1: Parameter parsing (JSON string vs table, single vs multi select)
+-- =========================================================================
+print("\n[Test 1] Testing parse_question_params...")
+
+-- 1a. Table format
+local params_table = {
+  questions = {
+    {
+      question = "Where should self-hosted tools live?",
+      options = {
+        "Reorganize tools/ into tools/bootstrap/",
+        "Create dedicated self_hosted/ directory",
+        "Keep all tools in root tools/ as peers",
+      },
+      is_multi_select = false,
+    }
+  }
+}
+local parsed1 = render.parse_question_params(params_table)
+assert(#parsed1 == 1, "Should parse 1 question")
+assert(parsed1[1].question == "Where should self-hosted tools live?")
+assert(#parsed1[1].options == 3)
+assert(parsed1[1].is_multi_select == false)
+print("✓ Table-based questions parsed successfully")
+
+-- 1b. JSON string format (as received in raw tool call args)
+local json_str = vim.json.encode({
+  {
+    question = "Select testing frameworks to enable:",
+    options = { "Neovim headless lua", "Busted", "Plenary" },
+    is_multi_select = true,
+  }
+})
+local params_str = { questions = json_str }
+local parsed2 = render.parse_question_params(params_str)
+assert(#parsed2 == 1)
+assert(parsed2[1].question == "Select testing frameworks to enable:")
+assert(#parsed2[1].options == 3)
+assert(parsed2[1].is_multi_select == true)
+print("✓ JSON string-encoded questions parsed successfully")
+
+-- =========================================================================
+-- TEST 2: In-Buffer Question Block Rendering
+-- =========================================================================
+print("\n[Test 2] Testing render_question_block in buffer...")
+
+vim.cmd("edit agy://new")
+local buf = vim.api.nvim_get_current_buf()
+local win = vim.api.nvim_get_current_win()
+local state = protocol.buffers[buf]
+
+local q_state = render.render_question_block(buf, parsed1, state.config)
+assert(q_state ~= nil, "q_state must be returned")
+assert(q_state.first_option_line > 1, "first_option_line must be > 1")
+assert(#q_state.questions == 1)
+assert(q_state.questions[1].options_end_line >= q_state.questions[1].options_start_line + 2)
+
+local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+local found_header = false
+local found_opts = 0
+local found_write_in = false
+
+for _, l in ipairs(lines) do
+  if l:find("❓ Question: Where should self%-hosted tools live%?") then
+    found_header = true
+    assert(not l:find(">"), "Question header should not contain '>'")
+    assert(not l:find("%*%*"), "Question header should not contain '**'")
+  elseif l:find("%- %[ %] ") then
+    found_opts = found_opts + 1
+    assert(not l:find(">"), "Option should not contain '>'")
+  elseif l:find("Write%-in / Notes:") then
+    found_write_in = true
+    assert(not l:find(">"), "Write-in header should not contain '>'")
+    assert(not l:find("%*%*"), "Write-in header should not contain '**'")
+  end
+end
+
+assert(found_header, "Question header must be rendered in buffer")
+assert(found_opts == 3, "All 3 options must be rendered with [ ] checkboxes")
+assert(found_write_in, "Write-in / Notes header must be rendered in buffer")
+print("✓ In-buffer question block rendered with question, [ ] options, and write-in section")
+
+-- =========================================================================
+-- TEST 3: Context-Sensitive <CR> Toggling (Single-Select Radio Behavior)
+-- =========================================================================
+print("\n[Test 3] Testing context-sensitive <CR> toggle for single-select question...")
+
+local opt1_line = q_state.questions[1].options_start_line
+local opt2_line = opt1_line + 1
+local opt3_line = opt1_line + 2
+
+-- Toggle option 1
+vim.api.nvim_win_set_cursor(win, { opt1_line, 0 })
+local handled1 = render.toggle_question_option(buf, opt1_line, q_state)
+assert(handled1 == true, "toggle_question_option should return true for option line")
+
+local l1 = vim.api.nvim_buf_get_lines(buf, opt1_line - 1, opt1_line, false)[1]
+assert(l1:find("%- %[x%] Reorganize"), "Option 1 must be checked [x], found: " .. l1)
+print("✓ Option 1 toggled to [x]")
+
+-- Toggle option 2: Radio behavior must uncheck option 1 and check option 2
+vim.api.nvim_win_set_cursor(win, { opt2_line, 0 })
+local handled2 = render.toggle_question_option(buf, opt2_line, q_state)
+assert(handled2 == true)
+
+l1 = vim.api.nvim_buf_get_lines(buf, opt1_line - 1, opt1_line, false)[1]
+local l2 = vim.api.nvim_buf_get_lines(buf, opt2_line - 1, opt2_line, false)[1]
+assert(l1:find("%- %[ %] Reorganize"), "Option 1 must be unchecked [ ] after picking Option 2, found: " .. l1)
+assert(l2:find("%- %[x%] Create dedicated"), "Option 2 must now be checked [x], found: " .. l2)
+print("✓ Radio button behavior verified: picking Option 2 unchecks Option 1")
+
+-- Toggling option 2 again unchecks it
+local handled2_uncheck = render.toggle_question_option(buf, opt2_line, q_state)
+assert(handled2_uncheck == true)
+l2 = vim.api.nvim_buf_get_lines(buf, opt2_line - 1, opt2_line, false)[1]
+assert(l2:find("%- %[ %] Create dedicated"), "Option 2 should be unchecked [ ] after second toggle")
+print("✓ Toggling checked option unchecks it")
+
+-- Non-option line returns false (allowing fallback to tool toggle or normal CR)
+local non_opt_handled = render.toggle_question_option(buf, 1, q_state)
+assert(non_opt_handled == false, "Lines outside option range must return false")
+print("✓ Lines outside option range return false for fallback")
+
+-- =========================================================================
+-- TEST 4: Multi-Select Checkbox Toggling
+-- =========================================================================
+print("\n[Test 4] Testing multi-select checkbox toggling...")
+
+local buf_multi = vim.api.nvim_create_buf(false, true)
+
+local q_multi_state = render.render_question_block(buf_multi, parsed2, state.config)
+local m_opt1 = q_multi_state.questions[1].options_start_line
+local m_opt2 = m_opt1 + 1
+
+render.toggle_question_option(buf_multi, m_opt1, q_multi_state)
+render.toggle_question_option(buf_multi, m_opt2, q_multi_state)
+
+local ml1 = vim.api.nvim_buf_get_lines(buf_multi, m_opt1 - 1, m_opt1, false)[1]
+local ml2 = vim.api.nvim_buf_get_lines(buf_multi, m_opt2 - 1, m_opt2, false)[1]
+assert(ml1:find("%- %[x%] Neovim headless lua"), "Multi-select option 1 must be checked [x]")
+assert(ml2:find("%- %[x%] Busted"), "Multi-select option 2 must be checked [x]")
+print("✓ Multi-select allows checking multiple options simultaneously")
+
+vim.api.nvim_buf_delete(buf_multi, { force = true })
+
+-- =========================================================================
+-- TEST 5: Answer Extraction and Notes Formatting
+-- =========================================================================
+print("\n[Test 5] Testing answer extraction and notes formatting...")
+
+-- 5a. Check empty state (nothing checked, no notes)
+local ans_empty, has_empty = render.extract_question_answer(buf, q_state)
+assert(has_empty == false, "extract_question_answer must return has_answer = false when nothing selected")
+print("✓ Empty question block correctly returns has_answer = false")
+
+-- 5b. Check option 1 and extract
+render.toggle_question_option(buf, opt1_line, q_state)
+local ans_opt1, has_opt1 = render.extract_question_answer(buf, q_state)
+assert(has_opt1 == true, "Must have answer when option 1 is checked")
+assert(ans_opt1:find("A: Reorganize tools/ into tools/bootstrap/"), "Payload must contain option text, found: " .. ans_opt1)
+print("✓ Single selected option extracted cleanly: '" .. ans_opt1 .. "'")
+
+-- 5c. Add write-in notes
+local write_line = q_state.write_in_start_line
+vim.api.nvim_buf_set_lines(buf, write_line - 1, write_line, false, { "Make sure to update docs and CI scripts as well." })
+
+local ans_with_notes, has_with_notes = render.extract_question_answer(buf, q_state)
+assert(has_with_notes == true)
+assert(ans_with_notes:find("A: Reorganize tools/"), "Must contain selected option")
+assert(ans_with_notes:find("Notes: Make sure to update docs and CI scripts as well."), "Must contain write-in notes")
+print("✓ Answer with write-in notes formatted properly:\n" .. ans_with_notes)
+
+-- 5d. Write-in only (no option checked)
+render.toggle_question_option(buf, opt1_line, q_state) -- uncheck option 1
+local ans_notes_only, has_notes_only = render.extract_question_answer(buf, q_state)
+assert(has_notes_only == true, "Write-in alone is a valid answer")
+assert(ans_notes_only == "Make sure to update docs and CI scripts as well.", "Write-in text returned directly when no options checked")
+print("✓ Write-in alone is valid and extracted properly")
+
+-- =========================================================================
+-- TEST 6: Submission via :w with Active Question
+-- =========================================================================
+print("\n[Test 6] Testing :w submission handling with active question...")
+
+state.active_question = q_state
+-- Check option 2
+render.toggle_question_option(buf, opt2_line, q_state)
+
+-- Mock session send_prompt
+local sent_prompt = nil
+state.session = {
+  turn_active = true,
+  send_prompt = function(_, text)
+    sent_prompt = text
+    return true
+  end,
+  destroy = function() end,
+  stop = function() end,
+}
+
+-- Run write
+vim.cmd("write")
+
+assert(sent_prompt ~= nil, "Session send_prompt must be called on write")
+assert(sent_prompt:find("Create dedicated self_hosted/ directory"), "Prompt must contain chosen option, found: " .. tostring(sent_prompt))
+assert(state.active_question == nil, "state.active_question must be cleared after submission")
+assert(vim.bo[buf].modified == false, "Buffer modified must be false after submission")
+print("✓ :w successfully extracts answer, calls send_prompt, and clears active question")
+
+protocol.cleanup_buffer(buf)
+
+-- =========================================================================
+-- TEST 7: Historical Transcript Rendering of ask_question
+-- =========================================================================
+print("\n[Test 7] Testing transcript rendering of historical ask_question...")
+
+vim.cmd("edit agy://new")
+local buf_hist = vim.api.nvim_get_current_buf()
+
+local mock_steps = {
+  {
+    type = "PLANNER_RESPONSE",
+    content = "I need some clarification on how to proceed.",
+    tool_calls = {
+      {
+        name = "ask_question",
+        args = {
+          questions = {
+            {
+              question = "Which database backend should we use?",
+              options = { "SQLite", "PostgreSQL", "In-memory" },
+              is_multi_select = false,
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    type = "GENERIC",
+    content = "A: SQLite\n\nNotes: Lightweight for local dev",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Understood! Proceeding with SQLite implementation.",
+    tool_calls = {},
+  }
+}
+
+render.render_transcript(buf_hist, "mock-conv-123", mock_steps, state.config)
+local hist_lines = vim.api.nvim_buf_get_lines(buf_hist, 0, -1, false)
+
+local found_q_header = false
+local found_sqlite_checked = false
+local found_postgres_unchecked = false
+local found_notes = false
+
+for _, l in ipairs(hist_lines) do
+  if l:find("❓ Question: Which database backend should we use%?") then
+    found_q_header = true
+    assert(not l:find(">"), "Question header should not contain '>'")
+    assert(not l:find("%*%*"), "Question header should not contain '**'")
+  elseif l:find("%- %[x%] SQLite") then
+    found_sqlite_checked = true
+    assert(not l:find(">"), "Option should not contain '>'")
+  elseif l:find("%- %[ %] PostgreSQL") then
+    found_postgres_unchecked = true
+    assert(not l:find(">"), "Option should not contain '>'")
+  elseif l:find("Notes: Lightweight for local dev") then
+    found_notes = true
+    assert(not l:find(">"), "Notes should not contain '>'")
+    assert(not l:find("%*%*"), "Notes should not contain '**'")
+  end
+end
+
+assert(found_q_header, "Transcript must render question header")
+assert(found_sqlite_checked, "Answered option SQLite must be rendered checked [x]")
+assert(found_postgres_unchecked, "Unanswered option PostgreSQL must be rendered unchecked [ ]")
+assert(found_notes, "User notes must be rendered cleanly without > or **")
+print("✓ Historical ask_question rendered cleanly with [x] answered option and notes")
+
+protocol.cleanup_buffer(buf_hist)
+
+-- =========================================================================
+-- TEST 8: Client Protocol Instructions Injection in Session
+-- =========================================================================
+print("\n[Test 8] Testing client protocol instructions injection in session...")
+
+local session_mod = require("agy.session")
+local written_to_proc = nil
+
+local mock_session = setmetatable({
+  is_active = true,
+  is_initialized = true,
+  turn_active = false,
+  client_instructions = true,
+  proc = {
+    write = function(_, str)
+      written_to_proc = str
+    end
+  }
+}, { __index = session_mod })
+
+mock_session:send_prompt("/plan create a rust CLI tool")
+assert(written_to_proc ~= nil, "Session must write payload to proc")
+local decoded_payload = vim.json.decode(written_to_proc)
+assert(decoded_payload.event == "user")
+assert(decoded_payload.message.content:find("/plan create a rust CLI tool", 1, true), "Payload must contain user prompt")
+assert(decoded_payload.message.content:find("<CLIENT_INSTRUCTIONS>", 1, true), "Payload must include CLIENT_INSTRUCTIONS")
+assert(decoded_payload.message.content:find("RequestFeedback: false", 1, true), "Payload must enforce RequestFeedback: false for plans")
+assert(decoded_payload.message.content:find("Do NOT invoke the `ask_question` tool", 1, true), "Payload must prohibit ask_question tool")
+print("✓ Session automatically injects client protocol instructions for planning and questions")
+
+-- Test opt-out with client_instructions = false
+mock_session.client_instructions = false
+mock_session:send_prompt("regular prompt")
+local decoded_optout = vim.json.decode(written_to_proc)
+assert(decoded_optout.message.content == "regular prompt", "When client_instructions is false, prompt should not be modified")
+print("✓ client_instructions = false cleanly disables instruction injection")
+
+-- =========================================================================
+-- TEST 9: utils.clean_user_content Stripping of CLIENT_INSTRUCTIONS
+-- =========================================================================
+print("\n[Test 9] Testing utils.clean_user_content strips CLIENT_INSTRUCTIONS...")
+
+local sample_raw = [[
+<USER_REQUEST>
+/plan implement user authentication
+
+<CLIENT_INSTRUCTIONS>
+1. Interactive Questions: Do NOT invoke the `ask_question` tool.
+2. Planning & Artifacts: Set RequestFeedback: false.
+</CLIENT_INSTRUCTIONS>
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-19T18:00:00.
+</ADDITIONAL_METADATA>
+]]
+
+local cleaned = utils.clean_user_content(sample_raw)
+assert(cleaned == "/plan implement user authentication", "Cleaned user content must only contain prompt without CLIENT_INSTRUCTIONS, got: " .. cleaned)
+print("✓ utils.clean_user_content cleanly strips CLIENT_INSTRUCTIONS from conversation history")
+
+-- =========================================================================
+-- TEST 10: Safe Handling of Zombie ask_question State on DONE / Result
+-- =========================================================================
+print("\n[Test 10] Testing zombie active_question cleanup...")
+
+vim.cmd("edit! agy://new")
+local buf_guard = vim.api.nvim_get_current_buf()
+local pstate = protocol.buffers[buf_guard]
+
+-- Simulate ACTIVE ask_question
+local dummy_q = { { question = "Proceed?", options = { "Yes", "No" }, is_multi_select = false } }
+pstate.active_question = render.render_question_block(buf_guard, dummy_q, pstate.config)
+assert(pstate.active_question ~= nil)
+
+-- Simulate DONE with User Skipped (headless agy behavior)
+pstate.session.on_step_update(pstate.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "DONE",
+  tool_info = {
+    name = "ask_question",
+    output = "A1: User Skipped"
+  }
+})
+
+assert(pstate.active_question == nil, "active_question must be cleared when User Skipped arrives")
+print("✓ active_question safely cleared on auto-skipped DONE event")
+
+protocol.cleanup_buffer(buf_guard)
+
+print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")

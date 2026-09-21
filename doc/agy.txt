@@ -1,0 +1,250 @@
+*agy.txt*      AI-first Antigravity CLI buffer protocol plugin for Neovim
+
+==============================================================================
+CONTENTS                                                         *agy-contents*
+
+    1. Introduction ...................................... |agy-introduction|
+    2. Requirements ...................................... |agy-requirements|
+    3. Installation ...................................... |agy-installation|
+    4. agy:// Protocol ................................... |agy-protocol|
+    5. Commands .......................................... |agy-commands|
+    6. Keymaps ........................................... |agy-keymaps|
+    7. Configuration ..................................... |agy-configuration|
+    8. Mentions & Extension API .......................... |agy-mentions|
+
+==============================================================================
+1. INTRODUCTION                                             *agy-introduction*
+
+agy.nvim is a Neovim 0.13+ plugin that brings Google Antigravity directly into
+native Neovim buffers using the `agy://` protocol.
+
+Instead of secondary floating panels or terminal wrappers, agy.nvim leverages
+the Antigravity CLI (`agy`) bidirectional `stream-json` interface:
+- Buffers are native Markdown (`buftype=acwrite`).
+- Saving the buffer (`:w` or `<C-s>`) submits your prompt to Antigravity.
+- Streaming responses, thinking frames, and tool executions render live.
+- Seamless multi-turn conversation support over a persistent background process.
+
+==============================================================================
+2. REQUIREMENTS                                             *agy-requirements*
+
+- Neovim 0.13.0 or higher.
+- Antigravity CLI (`agy`) installed and authenticated on your PATH.
+
+==============================================================================
+3. INSTALLATION                                             *agy-installation*
+
+Using lazy.nvim: >lua
+    {
+        "zaucy/agy.nvim",
+        opts = {
+            -- your custom configuration here
+        },
+    }
+<
+
+Using vim-plug: >vim
+    Plug 'zaucy/agy.nvim'
+<
+
+==============================================================================
+4. agy:// PROTOCOL                                              *agy-protocol*
+
+You can open Antigravity conversations using the `agy://` URL scheme:
+
+- `agy://new`
+  Opens a fresh conversation. Once Antigravity initializes the session, the
+  buffer is automatically renamed to `agy://<conversation-id>`.
+
+- `agy://<conversation-id>`
+  Opens and resumes an existing conversation. The full history from
+  `transcript.jsonl` is loaded, and subsequent saves (`:w`) continue the
+  dialogue.
+
+==============================================================================
+5. COMMANDS                                                     *agy-commands*
+
+:Agy [conversation-id]                                                  *:Agy*
+    Open an Antigravity conversation buffer. If no ID is provided, starts a
+    new session (`agy://new`).
+
+:AgyNew                                                              *:AgyNew*
+    Start a brand new Antigravity session (`agy://new`).
+
+:AgyResume [conversation-id]                                      *:AgyResume*
+    Resume a past Antigravity conversation. If no ID is provided, opens an
+    interactive picker (`vim.ui.select`) listing recent conversations.
+
+:AgyStop                                                             *:AgyStop*
+    Cancel the currently active in-flight turn in the current buffer.
+
+:AgyDiff                                                             *:AgyDiff*
+    Open a vertical split displaying git diff of recent workspace changes.
+
+:AgyModel [model-name]                                             *:AgyModel*
+    Select or switch active LLM model with fuzzy autocomplete or interactive picker.
+
+:AgyUsage                                                           *:AgyUsage*
+    Open the interactive Models & Quota usage dashboard matching native agy CLI.
+
+:AgyQuota                                                           *:AgyQuota*
+    Alias for |:AgyUsage|.
+
+:AgyContext                                                       *:AgyContext*
+    Open the interactive Context Breakdown panel showing active context,
+    memory, tokens, and workspaces.
+
+:AgyTasks                                                           *:AgyTasks*
+    Open the interactive Background Tasks panel showing running and past
+    background tasks, status, exit codes, and log viewer. Matches native
+    Antigravity CLI `/tasks`.
+
+==============================================================================
+6. KEYMAPS                                                       *agy-keymaps*
+
+Inside an `agy://` buffer:
+
+- `<C-s>` (Normal and Insert modes):
+  Save the buffer and submit the prompt below the User divider. If a turn
+  is in-flight, saves the message to the prompt queue above the input area.
+
+- `<C-c>` (Normal mode):
+  Cancel the current generating turn (`:AgyStop`).
+
+- `<CR>` (Normal mode):
+  Context-sensitive toggle: unqueue a queued message back to prompt input,
+  toggle question option checkbox, or toggle tool output block.
+
+- `<Tab>` / `<S-Tab>` (Insert mode):
+  Autocomplete Antigravity `/` slash commands.
+
+==============================================================================
+7. CONFIGURATION                                           *agy-configuration*
+
+Call `require("agy").setup(opts)` with any of the following options: >lua
+
+    require("agy").setup({
+        -- Path or command name for agy CLI (default: "agy")
+        agy_cmd = "agy",
+
+        -- Path to ~/.gemini/antigravity-cli (default: auto-detected)
+        app_data_dir = nil,
+
+        -- Agent mode: "accept-edits" | "plan" (default: nil)
+        default_mode = nil,
+
+        -- Buffer keymaps
+        keymaps = {
+            submit = "<C-s>",      -- Save & send prompt
+            stop = "<C-c>",        -- Cancel running turn
+            toggle_tool = "<CR>",  -- Toggle tool output expand/collapse
+        },
+
+        -- Icons used in session buffers and panels
+        icons = {
+            default = "  ",
+            tool = "🛠️",
+            run_command = "",       -- fa-circle (Nerd Font), status indicated by color
+            view_file = "  ",         -- Default 2 blank spaces (aligns with 2-char icons)
+            thought = "💭",
+            user = "👤",
+            agent = "🤖",
+            prompt_sign = "❯ ",
+            footer = "⚡",
+            done = "✓",
+            question = "❓",
+            error = "❌",
+            cancelled = "⏹️",
+            queue = "⏳",
+            spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+        },
+
+        -- UI settings
+        ui = {
+            virtual_text = true,     -- Show live badges for status & tools
+            auto_scroll = true,      -- Follow streaming response
+            wrap = true,             -- Line wrapping
+            linebreak = true,        -- Break lines at word boundaries
+            conceallevel = 2,        -- Conceal markdown syntax characters
+            color_history = false,   -- Disable history background tinting
+            protect_history = true,  -- Protect history lines (modifiable=false)
+            prompt_footer = true,    -- Show stream info footer below prompt
+            show_thoughts = true,    -- Show agent thoughts between calls
+            tool_max_height = 20,    -- Max height of inline window for tool details
+            separator = require("agy.ui.separator").line(), -- Turn separator function e.g. require("agy.ui.separator").box("rounded")
+            animate_thinking = true, -- Animate thinking badge with spinner frames
+        },
+    })
+<
+
+Highlight Groups:                                              *agy-highlights*
+The following highlight groups are used for styling and can be customized:
+- `AgyPromptArea`: Background for active prompt input area.
+- `AgyUserSign`: User sign column icon highlight.
+- `AgyToolInline`: Subtle background for inline tool details and virtual lines.
+- `AgyToolOutput`: Text output inside tool detail views.
+- `AgyThoughtOutput`: Text output inside thought detail views.
+
+==============================================================================
+8. MENTIONS & EXTENSION API                                     *agy-mentions*
+
+Inside prompt buffers, you can reference files, open buffers, diagnostics,
+selections, and custom contexts using `@` or `@[...]` mentions:
+
+Built-in Mentions:
+- `@<file-path>` or `@[<file-path>]`:
+  Fuzzy workspace file completion. Inserts exact relative path.
+- `@diagnostics` or `@problems`:
+  Injects active LSP workspace diagnostics, warnings, and error counts.
+- `@diagnostics:<file>`:
+  Injects LSP diagnostics scoped to a specific file or active buffer.
+- `@selection`:
+  Injects the last visual code selection with file and line range context.
+- `@<buffer-name>`:
+  Lists loaded editor buffers with `[+]` indicator for modified unsaved buffers.
+  For modified buffers, live unsaved in-memory lines are automatically sent.
+
+When submitting a prompt (`:w` / `<C-s>`), agy.nvim resolves all `@` mentions
+into Antigravity's native `<ADDITIONAL_METADATA>` block so `agy` receives
+comprehensive structured context without cluttering your prompt buffer.
+
+Registering Custom Mention Providers:
+You can extend agy.nvim with custom mention providers using the public API: >lua
+
+    require("agy").register_mention({
+        name = "git",
+        description = "Git branch and diff context",
+        priority = 85,
+        complete = function(query, ctx)
+            -- return completion items
+            return {
+                {
+                    label = "git-diff",
+                    kind = "Git",
+                    detail = "Current git diff",
+                    insert_text = "@git-diff ",
+                }
+            }
+        end,
+        resolve = function(raw, ctx)
+            -- return resolved metadata item or nil
+            if raw == "git-diff" then
+                local diff = vim.fn.system("git diff")
+                return {
+                    raw = raw,
+                    kind = "GitDiff",
+                    content = diff,
+                }
+            end
+            return nil
+        end,
+    })
+<
+
+API Functions:
+- `require("agy").register_mention(provider)`: Register a provider.
+- `require("agy").unregister_mention(name)`: Remove a provider by name.
+- `require("agy").get_mentions()`: Retrieve array of registered providers.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
