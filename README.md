@@ -2,7 +2,7 @@
 
 Antigravity neovim buffer! Just open a new buffer with `:e agy://new` to get started.
 
-NOTE: experimental WIP
+<img width="836" height="380" alt="agy-neovim-buf-demo" src="https://github.com/user-attachments/assets/7ed79d30-f899-4159-84cd-1dfbab048aee" />
 
 ## Quick test / try
 
