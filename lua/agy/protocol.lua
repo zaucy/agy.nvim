@@ -1158,33 +1158,36 @@ function M.handle_write(buf)
 
     -- 17. /doctor: check system health and CLI installation
     elseif first_token == "/doctor" then
-      local lines = {
-        "# Antigravity Doctor Health Check",
-        "",
-      }
-      local cfg = state.config or config_mod.get()
-      local cmd_name = cfg.agy_cmd or "agy"
-      local agy_exe = vim.fn.exepath(cmd_name)
-      if agy_exe ~= "" then
-        table.insert(lines, "[✓] `" .. cmd_name .. "` CLI found: `" .. agy_exe .. "`")
-        local ok, ver = pcall(function() return vim.system({ cmd_name, "--version" }, { text = true }):wait() end)
-        if ok and ver and ver.code == 0 then
-          table.insert(lines, "[✓] `" .. cmd_name .. "` CLI version: " .. utils.trim(ver.stdout))
-        end
-      else
-        table.insert(lines, "[✗] `" .. cmd_name .. "` executable NOT found on PATH!")
-      end
-      local nvim_ver = vim.version()
-      table.insert(lines, string.format("[✓] Neovim version: %d.%d.%d", nvim_ver.major, nvim_ver.minor, nvim_ver.patch))
-      table.insert(lines, "[✓] Current working directory: `" .. vim.fn.getcwd() .. "`")
-      local app_dir = utils.get_app_data_dir(cfg.app_data_dir)
-      if vim.fn.isdirectory(app_dir) == 1 then
-        table.insert(lines, "[✓] App data directory accessible: `" .. app_dir .. "`")
-      else
-        table.insert(lines, "[!] App data directory does not exist yet: `" .. app_dir .. "`")
-      end
       clear_prompt_and_clean()
-      M.show_info_float("Antigravity Doctor", lines, buf)
+      local async = require("agy.async")
+      async.run(function()
+        local lines = {
+          "# Antigravity Doctor Health Check",
+          "",
+        }
+        local cfg = state.config or config_mod.get()
+        local cmd_name = cfg.agy_cmd or "agy"
+        local agy_exe = vim.fn.exepath(cmd_name)
+        if agy_exe ~= "" then
+          table.insert(lines, "[✓] `" .. cmd_name .. "` CLI found: `" .. agy_exe .. "`")
+          local ok, ver = async.pawait(async.system, { cmd_name, "--version" }, { text = true })
+          if ok and ver and ver.code == 0 then
+            table.insert(lines, "[✓] `" .. cmd_name .. "` CLI version: " .. utils.trim(ver.stdout))
+          end
+        else
+          table.insert(lines, "[✗] `" .. cmd_name .. "` executable NOT found on PATH!")
+        end
+        local nvim_ver = vim.version()
+        table.insert(lines, string.format("[✓] Neovim version: %d.%d.%d", nvim_ver.major, nvim_ver.minor, nvim_ver.patch))
+        table.insert(lines, "[✓] Current working directory: `" .. vim.fn.getcwd() .. "`")
+        local app_dir = utils.get_app_data_dir(cfg.app_data_dir)
+        if vim.fn.isdirectory(app_dir) == 1 then
+          table.insert(lines, "[✓] App data directory accessible: `" .. app_dir .. "`")
+        else
+          table.insert(lines, "[!] App data directory does not exist yet: `" .. app_dir .. "`")
+        end
+        M.show_info_float("Antigravity Doctor", lines, buf)
+      end)
       return
 
     -- 18. /help: show command reference

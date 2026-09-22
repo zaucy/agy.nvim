@@ -43,6 +43,26 @@ function M.get_workspace_conversations(cwd, app_data_dir)
   return matches
 end
 
+---Get all resumable conversations asynchronously with cooperative yielding
+---@param cwd? string Target workspace directory (defaults to vim.fn.getcwd())
+---@param app_data_dir? string
+---@return AgyConversationSummary[]
+function M.get_workspace_conversations_async(cwd, app_data_dir)
+  local async = require("agy.async")
+  local target_cwd = cwd or vim.fn.getcwd()
+  local all = transcript.read_history(app_data_dir)
+  local matches = {}
+  for i, item in ipairs(all) do
+    if i % 20 == 0 then
+      async.checkpoint()
+    end
+    if item.workspace and item.workspace ~= "" and M.path_equals(item.workspace, target_cwd) then
+      table.insert(matches, item)
+    end
+  end
+  return matches
+end
+
 ---Render the root agy:// home buffer
 ---@param buf number
 ---@param config? table

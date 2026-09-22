@@ -991,19 +991,18 @@ function M.start_thinking_animation(buf, agent_line, extmark_id, config)
 
 	local frames = get_spinner_frames(cfg)
 	local frame_idx = 1
-	local timer = (vim.uv and vim.uv.new_timer) and vim.uv.new_timer() or vim.loop.new_timer()
-	M.thinking_timers[buf] = timer
+	local async = require("agy.async")
 
-	timer:start(
-		100,
-		100,
-		vim.schedule_wrap(function()
+	local task
+	task = async.run(function()
+		while true do
+			async.sleep(100)
 			if not vim.api.nvim_buf_is_valid(buf) then
 				M.stop_thinking_animation(buf)
-				return
+				break
 			end
-			if M.thinking_timers[buf] ~= timer then
-				return
+			if M.thinking_timers[buf] ~= task then
+				break
 			end
 
 			local frame = frames[frame_idx]
@@ -1013,20 +1012,20 @@ function M.start_thinking_animation(buf, agent_line, extmark_id, config)
 			pcall(function()
 				M.set_divider(buf, agent_line, "agent", badge, "AgyBadgeActive", false, extmark_id, cfg)
 			end)
-		end)
-	)
+		end
+	end)
+	M.thinking_timers[buf] = task
 end
 
 ---Stop thinking spinner animation on the agent divider
 ---@param buf number
 function M.stop_thinking_animation(buf)
-	local timer = M.thinking_timers[buf]
-	if timer then
+	local task = M.thinking_timers[buf]
+	if task then
 		M.thinking_timers[buf] = nil
 		pcall(function()
-			timer:stop()
-			if not timer:is_closing() then
-				timer:close()
+			if type(task.close) == "function" then
+				task:close()
 			end
 		end)
 	end
@@ -1195,13 +1194,11 @@ function M.start_logo_animation(buf, config)
 		return
 	end
 
-	local timer = (vim.uv and vim.uv.new_timer) and vim.uv.new_timer() or vim.loop.new_timer()
-	M.logo_timer = timer
-
-	timer:start(
-		120,
-		120,
-		vim.schedule_wrap(function()
+	local async = require("agy.async")
+	local task
+	task = async.run(function()
+		while true do
+			async.sleep(120)
 			local has_active = false
 			local is_any_visible = false
 			for b in pairs(M.active_logo_buffers) do
@@ -1217,17 +1214,16 @@ function M.start_logo_animation(buf, config)
 
 			if not has_active then
 				M.stop_logo_animation()
-				return
+				break
 			end
 
-			if not is_any_visible then
-				return
+			if is_any_visible then
+				M.logo_animation_angle = (M.logo_animation_angle + 6) % 360
+				M.apply_logo_animation_frame(M.logo_animation_angle, cfg)
 			end
-
-			M.logo_animation_angle = (M.logo_animation_angle + 6) % 360
-			M.apply_logo_animation_frame(M.logo_animation_angle, cfg)
-		end)
-	)
+		end
+	end)
+	M.logo_timer = task
 end
 
 ---Stop logo animation for a buffer, or all if no buffers remaining
@@ -1247,12 +1243,11 @@ function M.stop_logo_animation(buf)
 	end
 
 	if remaining == 0 and M.logo_timer then
-		local timer = M.logo_timer
+		local task = M.logo_timer
 		M.logo_timer = nil
 		pcall(function()
-			timer:stop()
-			if not timer:is_closing() then
-				timer:close()
+			if type(task.close) == "function" then
+				task:close()
 			end
 		end)
 		M.reset_logo_highlights()
@@ -2204,12 +2199,11 @@ end
 ---@param tc table
 function M.stop_task_log_watcher(tc)
 	if tc and tc.log_timer then
-		local timer = tc.log_timer
+		local task = tc.log_timer
 		tc.log_timer = nil
 		pcall(function()
-			timer:stop()
-			if not timer:is_closing() then
-				timer:close()
+			if type(task.close) == "function" then
+				task:close()
 			end
 		end)
 	end
@@ -2487,16 +2481,14 @@ function M.start_task_log_watcher(state, tc)
 	local proto = package.loaded["agy.protocol"]
 	state = state or (tc.buf and proto and proto.buffers and proto.buffers[tc.buf])
 
-	local timer = (vim.uv and vim.uv.new_timer) and vim.uv.new_timer() or vim.loop.new_timer()
-	tc.log_timer = timer
-
-	timer:start(
-		250,
-		250,
-		vim.schedule_wrap(function()
+	local async = require("agy.async")
+	local task
+	task = async.run(function()
+		while true do
+			async.sleep(250)
 			if not tc.is_open or not tc.win or not vim.api.nvim_win_is_valid(tc.win) then
 				M.stop_task_log_watcher(tc)
-				return
+				break
 			end
 			M.refresh_tool_window(state, tc, false)
 
@@ -2555,9 +2547,11 @@ function M.start_task_log_watcher(state, tc)
 
 			if tc.task_status and tc.task_status ~= "running" then
 				M.stop_task_log_watcher(tc)
+				break
 			end
-		end)
-	)
+		end
+	end)
+	tc.log_timer = task
 end
 
 ---Close inline tool window for a tool call

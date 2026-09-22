@@ -42,7 +42,8 @@ def main [
             "tests/test_background_task_freeze.lua",
             "tests/test_header_logo.lua",
             "tests/test_artifacts.lua",
-            "tests/test_home.lua"
+            "tests/test_home.lua",
+            "tests/test_async.lua"
         ]
 
         for t in $tests {

@@ -89,13 +89,21 @@ function M.diff()
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, buf)
 
-  local obj = vim.system({ "git", "diff" }, { text = true }):wait()
-  local lines = vim.split(obj.stdout or "", "\n")
-  if #lines == 0 or (#lines == 1 and lines[1] == "") then
-    lines = { "No git changes detected in working tree." }
-  end
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modified = false
+  local async = require("agy.async")
+  async.run(function()
+    local ok, obj = async.pawait(async.system, { "git", "diff" }, { text = true })
+    if not vim.api.nvim_buf_is_valid(buf) then
+      return
+    end
+    local lines
+    if ok and obj and obj.stdout and obj.stdout ~= "" then
+      lines = vim.split(obj.stdout, "\n")
+    else
+      lines = { "No git changes detected in working tree." }
+    end
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modified = false
+  end)
 end
 
 ---Show quota and usage limits

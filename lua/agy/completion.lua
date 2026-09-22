@@ -210,7 +210,7 @@ end
 M._cached_models = nil
 M._prefetching = false
 
----Prefetch models dynamically in background
+---Prefetch models dynamically in background using agy.async
 ---@param cmd? string
 function M.prefetch_models(cmd)
   if M._cached_models and #M._cached_models > 0 then
@@ -220,18 +220,37 @@ function M.prefetch_models(cmd)
     return
   end
   M._prefetching = true
-  local agy_cmd = get_agy_cmd(cmd)
-  pcall(function()
-    vim.system({ agy_cmd, "models" }, { text = true }, function(obj)
-      M._prefetching = false
-      if obj and obj.code == 0 and obj.stdout and obj.stdout ~= "" then
-        local models = parse_models(obj.stdout)
-        if #models > 0 then
-          M._cached_models = models
-        end
+  local async = require("agy.async")
+  async.run(function()
+    local agy_cmd = get_agy_cmd(cmd)
+    local ok, obj = async.pawait(async.system, { agy_cmd, "models" }, { text = true })
+    M._prefetching = false
+    if ok and obj and obj.code == 0 and obj.stdout and obj.stdout ~= "" then
+      local models = parse_models(obj.stdout)
+      if #models > 0 then
+        M._cached_models = models
       end
-    end)
-  end)
+    end
+  end):detach()
+end
+
+---Fetch models dynamically from agy CLI asynchronously.
+---@param cmd? string
+---@return table[] models
+function M.fetch_models_async(cmd)
+  local async = require("agy.async")
+  local agy_cmd = get_agy_cmd(cmd)
+  local obj = async.system({ agy_cmd, "models" }, { text = true })
+  if not obj or obj.code ~= 0 then
+    local err_msg = (obj and obj.stderr and obj.stderr ~= "") and obj.stderr or ("exit code " .. tostring(obj and obj.code))
+    error("[agy.nvim] '" .. agy_cmd .. " models' failed (" .. err_msg .. ")")
+  end
+  local models = parse_models(obj.stdout)
+  if #models == 0 then
+    error("[agy.nvim] '" .. agy_cmd .. " models' returned no available models")
+  end
+  M._cached_models = models
+  return models
 end
 
 ---Fetch models dynamically from agy CLI synchronously.

@@ -360,4 +360,23 @@ API Functions:
 - `require("agy").get_mentions()`: Retrieve array of registered providers.
 
 ==============================================================================
+14. ASYNC ARCHITECTURE                                             *agy-async*
+
+agy.nvim utilizes Neovim 0.13+'s built-in `vim.async` structured concurrency
+subsystem (incorporating `nvim-nio`) via `require("agy.async")`.
+
+Core Capabilities:
+- `async.run(fn, ...)`: Spawns a cooperative coroutine task.
+- `async.wrap(argc, fn)`: Wraps callback functions into awaitable calls.
+- `async.await(...)`: Suspends current task without blocking the event loop.
+- `async.pawait(...)`: Protected await analogous to `pcall`.
+- `async.sleep(ms)`: Non-blocking coroutine sleep.
+- `async.checkpoint()`: Cooperative yielding point.
+- `async.system(cmd, opts)`: Awaitable `vim.system` execution without blocking.
+
+All background polling (thinking animations, logo hue transitions, background
+task log watchers, model prefetching, and git diff inspection) run
+asynchronously on `vim.async` tasks without UI hitching or timer leaks.
+
+==============================================================================
 vim:tw=78:ts=8:ft=help:norl:
