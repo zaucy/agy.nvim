@@ -91,7 +91,7 @@ function M.diff()
 
   local async = require("agy.async")
   async.run(function()
-    local ok, obj = async.pawait(async.system, { "git", "diff" }, { text = true })
+    local ok, obj = async.psystem({ "git", "diff" }, { text = true })
     if not vim.api.nvim_buf_is_valid(buf) then
       return
     end

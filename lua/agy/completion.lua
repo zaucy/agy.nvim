@@ -223,7 +223,7 @@ function M.prefetch_models(cmd)
   local async = require("agy.async")
   async.run(function()
     local agy_cmd = get_agy_cmd(cmd)
-    local ok, obj = async.pawait(async.system, { agy_cmd, "models" }, { text = true })
+    local ok, obj = async.psystem({ agy_cmd, "models" }, { text = true })
     M._prefetching = false
     if ok and obj and obj.code == 0 and obj.stdout and obj.stdout ~= "" then
       local models = parse_models(obj.stdout)

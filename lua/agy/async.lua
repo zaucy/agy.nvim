@@ -21,16 +21,26 @@ function M.wrap(argc, func)
 end
 
 ---Await an async task or callback function inside an async task.
+---If passed a regular or async function, executes it in the current coroutine context.
 ---@param ... any
 ---@return any ...
 function M.await(...)
+  local arg1 = select(1, ...)
+  if type(arg1) == "function" then
+    return arg1(select(2, ...))
+  end
   return vim.async.await(...)
 end
 
 ---Protected await. Async equivalent of pcall(), returning ok, result_or_err.
+---Accepts a Task, callback-taking function (argc, func, ...), or an async function (func, ...).
 ---@param ... any
 ---@return boolean ok, any ...
 function M.pawait(...)
+  local arg1 = select(1, ...)
+  if type(arg1) == "function" then
+    return pcall(...)
+  end
   return vim.async.pawait(...)
 end
 
@@ -66,6 +76,16 @@ end
 ---@return vim.SystemCompleted
 function M.system(cmd, opts)
   return vim.async.await(3, vim.system, cmd, opts)
+end
+
+---Execute an external process asynchronously via vim.system in protected mode without blocking.
+---Must be called within an async task context (vim.async.run).
+---Returns ok, obj_or_err.
+---@param cmd string[] Command and arguments
+---@param opts? vim.SystemOpts System options
+---@return boolean ok, vim.SystemCompleted|string
+function M.psystem(cmd, opts)
+  return vim.async.pawait(3, vim.system, cmd, opts)
 end
 
 return M

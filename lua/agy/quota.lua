@@ -23,7 +23,10 @@ function M.fetch_async(agy_cmd)
   agy_cmd = agy_cmd or "agy"
   local cmd = { agy_cmd, "-p=/usage", "--output-format", "json" }
 
-  local obj = async.system(cmd, { stdin = false, text = true })
+  local ok_proc, obj = async.psystem(cmd, { stdin = false, text = true })
+  if not ok_proc or not obj then
+    error("Command execution failed: " .. tostring(obj))
+  end
   if obj.code ~= 0 then
     error("Command failed with exit code " .. tostring(obj.code) .. ": " .. utils.trim(obj.stderr or ""))
   end

@@ -1170,7 +1170,7 @@ function M.handle_write(buf)
         local agy_exe = vim.fn.exepath(cmd_name)
         if agy_exe ~= "" then
           table.insert(lines, "[✓] `" .. cmd_name .. "` CLI found: `" .. agy_exe .. "`")
-          local ok, ver = async.pawait(async.system, { cmd_name, "--version" }, { text = true })
+          local ok, ver = async.psystem({ cmd_name, "--version" }, { text = true })
           if ok and ver and ver.code == 0 then
             table.insert(lines, "[✓] `" .. cmd_name .. "` CLI version: " .. utils.trim(ver.stdout))
           end

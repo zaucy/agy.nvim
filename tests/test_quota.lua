@@ -310,4 +310,57 @@ panel_mod.close()
 pcall(vim.api.nvim_buf_delete, h_buf, { force = true })
 print("✓ Dynamic panel.update height expansion verified")
 
+-- [Test 12] Testing quota.open() asynchronous fetching without async context error
+print("\n[Test 12] Testing quota.open() asynchronous fetching...")
+local orig_sys = vim.system
+quota._cache = nil
+quota._cache_time = 0
+
+local mock_json = vim.json.encode({
+	status = "SUCCESS",
+	command = {
+		name = "usage",
+		data = {
+			description = "Test quota description",
+			groups = {
+				{
+					name = "Test Group",
+					description = "Models within group",
+					buckets = {
+						{
+							name = "Weekly Limit Remaining",
+							remaining_fraction = 0.85,
+							reset_time = "2026-09-23T02:00:00Z",
+						}
+					}
+				}
+			}
+		}
+	}
+})
+
+vim.system = function(cmd, opts, on_exit)
+	if on_exit then
+		on_exit({ code = 0, stdout = mock_json, stderr = "" })
+	end
+	return {}
+end
+
+local q_win, q_buf = quota.open()
+vim.wait(300, function() return quota._cache ~= nil end)
+vim.system = orig_sys
+
+assert(quota._cache ~= nil, "Quota cache should be populated by async fetch")
+local buf_lines = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
+local found_error = false
+for _, line in ipairs(buf_lines) do
+	if line:find("Not in async context") then
+		found_error = true
+		break
+	end
+end
+assert(not found_error, "Panel must NOT contain 'Not in async context' error")
+panel_mod.close()
+print("✓ quota.open() async fetching verified without 'Not in async context' error")
+
 print("\nALL MODELS & QUOTA TESTS PASSED SUCCESSFULLY!")
