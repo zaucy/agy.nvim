@@ -866,6 +866,12 @@ function M.handle_write(buf)
   local state = M.buffers[buf]
   if not state then return end
 
+  if state.is_artifact then
+    local artifacts_mod = require("agy.artifacts")
+    artifacts_mod.submit_review(buf, state.conversation_id, state.artifact_filename)
+    return
+  end
+
   if state.active_question then
     local payload, has_answer = render.extract_question_answer(buf, state.active_question)
     if not has_answer then
@@ -1182,6 +1188,7 @@ function M.handle_write(buf)
         "- `/settings` — View active configuration and options",
         "- `/status` — View session and connection status",
         "- `/tasks` — View and manage ongoing background tasks",
+        "- `/artifacts [filename]` — Review artifacts produced in session",
         "- `/usage` / `/tokens` / `/cost` — View token metrics",
         "- `/doctor` — Verify system health and dependencies",
         "- `/diff` — View git diff of changes",
@@ -1215,7 +1222,26 @@ function M.handle_write(buf)
       require("agy.tasks").open(buf)
       return
 
-    -- 20. /version: show version info
+    -- 20. /artifacts: view and review artifacts produced in conversation
+    elseif first_token == "/artifacts" then
+      local art_arg = trimmed:match("^/artifacts%s+(%S+)")
+      clear_prompt_and_clean()
+      local cid = state.conversation_id
+      if not cid or cid == "" or cid == "new" then
+        vim.notify("[agy.nvim] No active conversation session.", vim.log.levels.WARN)
+        return
+      end
+      local artifacts_mod = require("agy.artifacts")
+      local arts = artifacts_mod.get_artifacts(cid, state.config.app_data_dir)
+      if #arts == 0 then
+        vim.notify("[agy.nvim] No artifacts found for this conversation", vim.log.levels.INFO)
+        return
+      end
+      local target_art = art_arg or arts[1].filename
+      vim.cmd("edit agy://" .. cid .. "/artifacts/" .. target_art)
+      return
+
+    -- 21. /version: show version info
     elseif first_token == "/version" then
       clear_prompt_and_clean()
       local cfg = state.config or config_mod.get()
@@ -1554,6 +1580,12 @@ function M.cleanup_buffer(buf)
   completion.close()
   local state = M.buffers[buf]
   if state then
+    if state.is_artifact then
+      pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.artifacts").NS_COMMENTS, 0, -1)
+      pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.artifacts").NS_FOOTER, 0, -1)
+      M.buffers[buf] = nil
+      return
+    end
     if state.active_tool_call then
       render.close_tool_window(state, state.active_tool_call)
     end
@@ -1573,12 +1605,49 @@ function M.handle_buf_read(args)
   local buf = args.buf
   local uri = args.file
   local raw_id = uri:match("^agy://(.*)$") or ""
-  local conv_id = raw_id:match("^([^?#]+)") or ""
+  local clean_raw = raw_id:match("^([^?#]+)") or ""
 
   local cfg = config_mod.get()
 
-  -- Check if this is a reload (:e or :e!) on an already initialized agy buffer
+  -- Check if this is an artifact URL: agy://<conv_id>/artifacts[/<filename>]
+  local art_conv_id, art_subpath = clean_raw:match("^([^/]+)/artifacts/?(.*)$")
+  if art_conv_id then
+    local artifacts_mod = require("agy.artifacts")
+    local target_filename = art_subpath
+    if not target_filename or target_filename == "" then
+      local latest = artifacts_mod.get_latest_artifact(art_conv_id, cfg.app_data_dir)
+      if latest then
+        target_filename = latest.filename
+        local target_name = "agy://" .. art_conv_id .. "/artifacts/" .. target_filename
+        pcall(vim.api.nvim_buf_set_name, buf, target_name)
+      else
+        vim.notify("[agy.nvim] No artifacts found for this conversation", vim.log.levels.INFO)
+        vim.cmd("edit agy://" .. art_conv_id)
+        return
+      end
+    end
+
+    artifacts_mod.render_artifact(buf, art_conv_id, target_filename, cfg)
+    M.buffers[buf] = {
+      buf = buf,
+      conversation_id = art_conv_id,
+      artifact_filename = target_filename,
+      is_artifact = true,
+      config = cfg,
+    }
+    return
+  end
+
+  local conv_id = clean_raw
+
+  -- If previous buffer state was an artifact buffer, clear it
   local existing_state = M.buffers[buf]
+  if existing_state and existing_state.is_artifact then
+    M.buffers[buf] = nil
+    existing_state = nil
+  end
+
+  -- Check if this is a reload (:e or :e!) on an already initialized agy buffer
   if existing_state then
     local target_id = conv_id
     if (target_id == "" or target_id == "new") and existing_state.conversation_id then

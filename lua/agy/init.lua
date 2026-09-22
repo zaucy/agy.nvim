@@ -112,6 +112,63 @@ function M.tasks(caller_buf)
   return require("agy.tasks").open(caller_buf)
 end
 
+---Review Antigravity artifacts
+---@param filename? string
+function M.artifacts(filename)
+  local cur_buf = vim.api.nvim_get_current_buf()
+  local cid = nil
+  if protocol.buffers[cur_buf] and protocol.buffers[cur_buf].conversation_id then
+    cid = protocol.buffers[cur_buf].conversation_id
+  else
+    for _, st in pairs(protocol.buffers) do
+      if st.conversation_id and st.conversation_id ~= "" and st.conversation_id ~= "new" then
+        cid = st.conversation_id
+        break
+      end
+    end
+  end
+
+  if not cid or cid == "" or cid == "new" then
+    local bname = vim.api.nvim_buf_get_name(cur_buf)
+    cid = bname:match("^agy://([^/?#]+)")
+  end
+
+  if not cid or cid == "" or cid == "new" then
+    local history = require("agy.transcript").read_history(config.get().app_data_dir)
+    if history and #history > 0 then
+      cid = history[1].conversation_id
+    end
+  end
+
+  if not cid or cid == "" or cid == "new" then
+    vim.notify("[agy.nvim] No active conversation session.", vim.log.levels.WARN)
+    return
+  end
+
+  local artifacts_mod = require("agy.artifacts")
+  local arts = artifacts_mod.get_artifacts(cid, config.get().app_data_dir)
+  if #arts == 0 then
+    vim.notify("[agy.nvim] No artifacts found for this conversation", vim.log.levels.INFO)
+    return
+  end
+
+  local target_art = filename or arts[1].filename
+  vim.cmd("edit agy://" .. cid .. "/artifacts/" .. target_art)
+end
+
+---Complete artifact filenames for :AgyArtifacts
+---@param arglead string
+---@return string[]
+function M.complete_artifacts(arglead)
+  local matches = require("agy.completion").complete_artifacts(arglead)
+  local res = {}
+  for _, m in ipairs(matches) do
+    local clean = (m.insert_text:gsub("%s+$", ""))
+    table.insert(res, clean)
+  end
+  return res
+end
+
 ---Register a custom @ mention context provider (Public API)
 ---@param provider table
 function M.register_mention(provider)

@@ -99,6 +99,11 @@ You can open Antigravity conversations using the `agy://` URL scheme:
     background tasks, status, exit codes, and log viewer. Matches native
     Antigravity CLI `/tasks`.
 
+:AgyArtifacts [filename]                                       *:AgyArtifacts*
+    Review deliverables and documents produced by Antigravity in this session
+    (`agy://<id>/artifacts/<filename>`). Defaults to the latest artifact if
+    omitted. An asterisk (`*`) in autocomplete indicates unsubmitted comments.
+
 ==============================================================================
 6. KEYMAPS                                                       *agy-keymaps*
 
@@ -127,6 +132,23 @@ Inside an `agy://` buffer:
 - `<Tab>` / `<S-Tab>` (Insert mode):
   Autocomplete Antigravity `/` slash commands.
 
+Inside an `agy://<id>/artifacts/<filename>` artifact review buffer:
+
+- `c` (Normal and Visual modes):
+  Add or edit an inline review comment on the cursor line or selected range.
+  Comments render directly below target lines as virtual lines (`💬 L<num>: ...`).
+
+- `dc` (Normal mode):
+  Delete the review comment on the cursor line.
+
+- `-` (Normal mode):
+  Go up one level back to the conversation buffer (`agy://<id>`). Unsaved
+  comments are silently preserved in memory.
+
+- `:w` or `<C-s>`:
+  Submit all review comments formatted as `L<num>: <comment>` to the agent and
+  automatically return to `agy://<id>`. Silent no-op if no comments exist.
+
 ==============================================================================
 7. CONFIGURATION                                           *agy-configuration*
 
@@ -147,6 +169,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             submit = "<C-s>",      -- Save & send prompt
             stop = "<C-c>",        -- Cancel running turn
             toggle_tool = "<CR>",  -- Toggle tool output expand/collapse
+            comment = "c",         -- Add/edit artifact review comment
+            delete_comment = "dc", -- Delete artifact review comment
         },
 
         -- Icons used in session buffers and panels
@@ -165,6 +189,7 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             error = "❌",
             cancelled = "⏹️",
             queue = "⏳",
+            review_comment = "💬",
             spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
             table = {
                 top_left = "╭",
@@ -223,6 +248,7 @@ The following highlight groups are used for styling and can be customized:
 - `AgyToolInline`: Subtle background for inline tool details and virtual lines.
 - `AgyToolOutput`: Text output inside tool detail views.
 - `AgyThoughtOutput`: Text output inside thought detail views.
+- `AgyReviewComment`: Review comment virtual lines and icons on artifact buffers.
 - `AgyH1`..`AgyH6`: Scaled headers with radnvim `:scale=` protocol and bold font.
 - `AgyTableBorder`: Rounded table borders.
 - `AgyTableHeader`: Table header row text.

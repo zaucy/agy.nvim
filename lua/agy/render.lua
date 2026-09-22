@@ -232,6 +232,7 @@ function M.setup_highlights()
 		AgyQueueHeader = { link = "Title", default = true, bold = true },
 		AgyQueueBadge = { link = "DiagnosticInfo", default = true },
 		AgyQueueMessage = { link = "Normal", default = true },
+		AgyReviewComment = { link = "DiagnosticInfo", default = true, italic = true },
 		AgyHeaderTitle = { bold = true, fg = "#7aa2f7", default = true },
 		AgyHeaderSub = { fg = "#787c99", default = true },
 		AgyH1 = { font = ":scale=2.0:margin_top=0.8:margin_bottom=0.4", bold = true, fg = header_fg, default = true },

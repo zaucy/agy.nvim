@@ -10,6 +10,7 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_completion")
 M.COMMANDS = {
   { name = "/add-dir", desc = "Add a directory to the workspace", category = "control", arg_type = "dir" },
   { name = "/agents", desc = "List or manage custom agents", category = "control" },
+  { name = "/artifacts", desc = "Review artifacts produced in this session", category = "control", arg_type = "artifact" },
   { name = "/architect", desc = "Architecture and design mode", category = "modifier" },
   { name = "/auth", desc = "Manage authentication credentials", category = "control" },
   { name = "/boost", desc = "Deep thinking, strategic planning, and verification", category = "modifier" },
@@ -550,6 +551,70 @@ function M.complete_history(query, app_data_dir)
   return results
 end
 
+---Complete artifacts for /artifacts
+---@param query string
+---@param conv_id? string
+---@param app_data_dir? string
+---@return table[] matches
+function M.complete_artifacts(query, conv_id, app_data_dir)
+  local q = (query or ""):lower()
+  local artifacts_mod = require("agy.artifacts")
+
+  if not conv_id or conv_id == "" or conv_id == "new" then
+    local protocol = package.loaded["agy.protocol"]
+    if protocol and protocol.buffers then
+      local cur_buf = vim.api.nvim_get_current_buf()
+      if protocol.buffers[cur_buf] and protocol.buffers[cur_buf].conversation_id then
+        conv_id = protocol.buffers[cur_buf].conversation_id
+      else
+        for _, st in pairs(protocol.buffers) do
+          if st.conversation_id and st.conversation_id ~= "" and st.conversation_id ~= "new" then
+            conv_id = st.conversation_id
+            break
+          end
+        end
+      end
+    end
+    if not conv_id or conv_id == "" or conv_id == "new" then
+      local bname = vim.api.nvim_buf_get_name(0)
+      conv_id = bname:match("^agy://([^/?#]+)")
+    end
+    if not conv_id or conv_id == "" or conv_id == "new" then
+      local history = transcript_mod.read_history(app_data_dir)
+      if history and #history > 0 then
+        conv_id = history[1].conversation_id
+      end
+    end
+  end
+
+  if not conv_id or conv_id == "" or conv_id == "new" then
+    return {}
+  end
+
+  local arts = artifacts_mod.get_artifacts(conv_id, app_data_dir)
+  local results = {}
+  for _, art in ipairs(arts) do
+    local fname = art.filename
+    if q == "" or fname:lower():find(q, 1, true) or (art.summary and art.summary:lower():find(q, 1, true)) then
+      local has_unsaved = artifacts_mod.has_unsaved_comments(conv_id, fname)
+      local count = artifacts_mod.get_comments_count(conv_id, fname)
+      local label = fname .. (has_unsaved and " *" or "")
+      local detail = art.summary or ""
+      if has_unsaved then
+        local badge = string.format("[* %d unsaved comment%s] ", count, count > 1 and "s" or "")
+        detail = badge .. detail
+      end
+      table.insert(results, {
+        label = label,
+        kind = "Artifact",
+        detail = detail,
+        insert_text = fname .. " ",
+      })
+    end
+  end
+  return results
+end
+
 ---Cache of workspace files
 M._workspace_files_cache = {}
 
@@ -795,11 +860,24 @@ end
 ---@param col number 0-indexed cursor column
 ---@param app_data_dir? string
 ---@param workspaces? string[]
+---@param conv_id? string
 ---@return table|nil completion_data
-function M.get_completions(line_text, col, app_data_dir, workspaces)
+function M.get_completions(line_text, col, app_data_dir, workspaces, conv_id)
   local before = line_text:sub(1, col)
   if before:match("^%s*$") then
     return nil
+  end
+
+  if not conv_id or conv_id == "" or conv_id == "new" then
+    local cur_buf = vim.api.nvim_get_current_buf()
+    local protocol = package.loaded["agy.protocol"]
+    if protocol and protocol.buffers and protocol.buffers[cur_buf] then
+      conv_id = protocol.buffers[cur_buf].conversation_id
+    end
+    if not conv_id or conv_id == "" or conv_id == "new" then
+      local bname = vim.api.nvim_buf_get_name(cur_buf)
+      conv_id = bname:match("^agy://([^/?#]+)")
+    end
   end
 
   -- Check for @ mention triggers:
@@ -917,6 +995,8 @@ function M.get_completions(line_text, col, app_data_dir, workspaces)
       items = M.complete_directories(arg_query)
     elseif cmd_def.arg_type == "history" then
       items = M.complete_history(arg_query, app_data_dir)
+    elseif cmd_def.arg_type == "artifact" then
+      items = M.complete_artifacts(arg_query, conv_id, app_data_dir)
     end
     return items
   end
@@ -1382,7 +1462,7 @@ function M.accept(is_enter)
   if is_enter then
     if data.type == "command" then
       if M.is_control(it.label) then
-        if it.label ~= "/add-dir" and it.label ~= "/drop" then
+        if it.label ~= "/add-dir" and it.label ~= "/drop" and it.label ~= "/artifacts" then
           should_process = true
         end
       end
