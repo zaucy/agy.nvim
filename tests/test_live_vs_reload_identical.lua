@@ -73,7 +73,7 @@ local buf_live = vim.api.nvim_create_buf(false, false)
 local prompt_line, prompt_ext_id = render.render_new_session(buf_live, cfg)
 
 -- User writes prompt
-vim.api.nvim_buf_set_lines(buf_live, 2, 3, false, { "Please inspect lua/agy/render.lua and report." })
+vim.api.nvim_buf_set_lines(buf_live, prompt_line - 1, prompt_line, false, { "Please inspect lua/agy/render.lua and report." })
 
 -- Agent begins response: transitions user divider and starts agent turn
 local agent_extmark_id, agent_line = render.prepare_turn_submission(buf_live, prompt_line, prompt_ext_id, cfg)
@@ -191,7 +191,7 @@ print("\n[Test 2] Testing turn ending directly on tool call (spacing identity)..
 
 local buf_live_tool = vim.api.nvim_create_buf(false, false)
 local prompt_line2, prompt_ext_id2 = render.render_new_session(buf_live_tool, cfg)
-vim.api.nvim_buf_set_lines(buf_live_tool, 2, 3, false, { "Run tests now" })
+vim.api.nvim_buf_set_lines(buf_live_tool, prompt_line2 - 1, prompt_line2, false, { "Run tests now" })
 
 local a_ext2, a_line2 = render.prepare_turn_submission(buf_live_tool, prompt_line2, prompt_ext_id2, cfg)
 local t_line2, t_ext2, p_str2 = render.append_tool_call(buf_live_tool, "run_command", { CommandLine = "nu test.nu -t" }, cwd, cfg)
@@ -459,7 +459,7 @@ print("\n[Test 7] Testing multi-turn live vs. reload identity where Turn 1 ends 
 
 local b_mt_live = vim.api.nvim_create_buf(false, false)
 local pl_mt1, pe_mt1 = render.render_new_session(b_mt_live, cfg)
-vim.api.nvim_buf_set_lines(b_mt_live, 2, 3, false, { "Turn 1: run tests" })
+vim.api.nvim_buf_set_lines(b_mt_live, pl_mt1 - 1, pl_mt1, false, { "Turn 1: run tests" })
 local a_mt1, al_mt1 = render.prepare_turn_submission(b_mt_live, pl_mt1, pe_mt1, cfg)
 local t_mt_l, t_mt_e, _ = render.append_tool_call(b_mt_live, "run_command", { CommandLine = "cargo test" }, cwd, cfg)
 render.complete_tool_call(b_mt_live, {

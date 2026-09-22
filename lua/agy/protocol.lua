@@ -1558,6 +1558,8 @@ function M.cleanup_buffer(buf)
       render.close_tool_window(state, state.active_tool_call)
     end
     pcall(vim.api.nvim_buf_clear_namespace, buf, render.NS_SPACER, 0, -1)
+    render.stop_logo_animation(buf)
+    pcall(vim.api.nvim_buf_clear_namespace, buf, render.NS_LOGO, 0, -1)
     if state.session and state.session.destroy then
       state.session:destroy()
     end
@@ -1815,7 +1817,7 @@ function M.handle_buf_read(args)
           end)
         end
         M.with_modifiable(buf, function()
-          render.update_session_id(buf, cid)
+          render.update_session_id(buf, cid, state.config)
         end)
       end
 

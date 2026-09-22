@@ -828,10 +828,11 @@ end
 local cur_count_11 = vim.api.nvim_buf_line_count(test_buf_11)
 vim.api.nvim_buf_set_lines(test_buf_11, cur_count_11, cur_count_11, false, after_lines)
 
--- Position view at top line 20 so tool call (line 28) is in the middle of the 20-row window
-vim.fn.winrestview({ topline = 20 })
+-- Position view so tool call is in the middle of the 20-row window
 local pos_info = vim.api.nvim_buf_get_extmark_by_id(test_buf_11, render.NS_UI, ext_11, {})
 local actual_tool_row = pos_info[1]
+local initial_topline = math.max(1, actual_tool_row + 1 - 8)
+vim.fn.winrestview({ topline = initial_topline })
 
 vim.api.nvim_win_set_cursor(test_win_11, { actual_tool_row + 1, 0 })
 local opened_11 = protocol.toggle_tool_at_cursor(test_buf_11)
@@ -843,9 +844,9 @@ local init_cfg = vim.api.nvim_win_get_config(tc_scroll.win)
 assert(init_cfg.hide == false or init_cfg.hide == nil, "Window must initially be visible")
 local init_row = init_cfg.row
 
--- 11a. Scroll buffer down by 3 lines (topline 20 -> 23)
+-- 11a. Scroll buffer down by 3 lines
 vim.api.nvim_win_call(test_win_11, function()
-  vim.fn.winrestview({ topline = 23 })
+  vim.fn.winrestview({ topline = initial_topline + 3 })
 end)
 vim.api.nvim_exec_autocmds("WinScrolled", { pattern = "*" })
 
@@ -853,18 +854,18 @@ local scrolled_cfg = vim.api.nvim_win_get_config(tc_scroll.win)
 assert(scrolled_cfg.hide == false or scrolled_cfg.hide == nil, "Window must remain visible after small scroll")
 assert(scrolled_cfg.row == init_row - 3, string.format("Floating window row (%d) must move up by 3 lines to match scroll (%d)", scrolled_cfg.row, init_row - 3))
 
--- 11b. Scroll buffer so tool header moves completely off-screen above the viewport (topline 40)
+-- 11b. Scroll buffer so tool header moves completely off-screen above the viewport
 vim.api.nvim_win_call(test_win_11, function()
-  vim.fn.winrestview({ topline = 40 })
+  vim.fn.winrestview({ topline = actual_tool_row + 1 + 10 })
 end)
 vim.api.nvim_exec_autocmds("WinScrolled", { pattern = "*" })
 
 local hidden_cfg = vim.api.nvim_win_get_config(tc_scroll.win)
 assert(hidden_cfg.hide == true, "Floating window must be hidden (hide = true) when tool header scrolls above viewport")
 
--- 11c. Scroll back into view (topline 20)
+-- 11c. Scroll back into view
 vim.api.nvim_win_call(test_win_11, function()
-  vim.fn.winrestview({ topline = 20 })
+  vim.fn.winrestview({ topline = initial_topline })
 end)
 vim.api.nvim_exec_autocmds("WinScrolled", { pattern = "*" })
 
@@ -872,7 +873,7 @@ local restored_cfg = vim.api.nvim_win_get_config(tc_scroll.win)
 assert(restored_cfg.hide == false or restored_cfg.hide == nil, "Floating window must unhide (hide = false) when scrolled back into view")
 assert(restored_cfg.row == init_row, string.format("Floating window row (%d) must be restored to initial row (%d)", restored_cfg.row, init_row))
 
--- 11d. Scroll so tool moves off-screen below the viewport (topline 1, height 20 while tool is around line 27)
+-- 11d. Scroll so tool moves off-screen below the viewport (topline 1, height 20 while tool is around line 27+)
 vim.api.nvim_win_call(test_win_11, function()
   vim.fn.winrestview({ topline = 1 })
 end)
@@ -883,7 +884,7 @@ assert(hidden_bottom_cfg.hide == true, "Floating window must be hidden when tool
 
 -- 11e. Restore view and close window cleanly
 vim.api.nvim_win_call(test_win_11, function()
-  vim.fn.winrestview({ topline = 20 })
+  vim.fn.winrestview({ topline = initial_topline })
 end)
 vim.api.nvim_exec_autocmds("WinScrolled", { pattern = "*" })
 vim.api.nvim_win_set_cursor(test_win_11, { actual_tool_row + 1, 0 })
@@ -920,8 +921,10 @@ local state_12 = {
 protocol.buffers[test_buf_12] = state_12
 
 -- Add filler lines so tool call is on line 18, near bottom of 20-row window
+local cur_lines_12 = vim.api.nvim_buf_line_count(test_buf_12)
+local needed_fillers = math.max(0, 18 - cur_lines_12)
 local filler_12 = {}
-for i = 1, 15 do
+for i = 1, needed_fillers do
   table.insert(filler_12, "Filler line " .. i)
 end
 vim.api.nvim_buf_set_lines(test_buf_12, 0, 0, false, filler_12)

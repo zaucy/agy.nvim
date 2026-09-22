@@ -343,5 +343,33 @@ function M.shorten_path(text, cwd_or_workspaces)
   return res
 end
 
+local _agy_version_cache = nil
+
+---Get the Antigravity CLI version
+---@param config? table
+---@return string? version
+function M.get_agy_version(config)
+  if _agy_version_cache ~= nil then
+    return _agy_version_cache ~= "" and _agy_version_cache or nil
+  end
+
+  local cfg = config or (package.loaded["agy.config"] and package.loaded["agy.config"].get())
+  local cmd = (cfg and cfg.agy_cmd) or "agy"
+  local ok, res = pcall(vim.fn.system, { cmd, "--version" })
+  if ok and vim.v.shell_error == 0 and res and res ~= "" then
+    local trimmed = vim.trim(res)
+    _agy_version_cache = trimmed
+    return trimmed
+  end
+  _agy_version_cache = ""
+  return nil
+end
+
+---Clear or set cached agy CLI version (useful for tests)
+---@param version? string
+function M._set_agy_version(version)
+  _agy_version_cache = version
+end
+
 return M
 
