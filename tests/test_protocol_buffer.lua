@@ -17,11 +17,12 @@ assert(vim.bo[buf].swapfile == false, "Expected swapfile == false")
 
 local state = protocol.buffers[buf]
 assert(state ~= nil, "State must exist")
-assert(state.prompt_start_line == 3, "Prompt start line must be 3, got: " .. tostring(state.prompt_start_line))
+assert(state.prompt_start_line == 8, "Prompt start line must be 8, got: " .. tostring(state.prompt_start_line))
 
 local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 print("Buffer lines count: " .. #lines)
-assert(lines[1]:find("# Antigravity Session: agy://new", 1, true), "Line 1 must contain session title")
+assert(lines[3]:find("Antigravity CLI", 1, true), "Line 3 must contain Antigravity CLI title")
+assert(lines[4]:find("agy://new", 1, true), "Line 4 must contain session URI")
 
 -- Check virtual text divider with virt_lines_leftcol
 local ui_marks = vim.api.nvim_buf_get_extmarks(buf, render.NS_UI, 0, -1, { details = true })
@@ -54,10 +55,10 @@ assert(#vim.api.nvim_buf_get_extmarks(buf, render.NS_HISTORY, 0, -1, {}) == 0, "
 print("✓ History background highlighting option verified")
 
 -- 2. Test cursor-based modifiable toggling
--- At prompt line (line 3): modifiable should be true
-vim.api.nvim_win_set_cursor(win, { 3, 0 })
+-- At prompt line: modifiable should be true
+vim.api.nvim_win_set_cursor(win, { state.prompt_start_line, 0 })
 protocol.update_modifiable(buf)
-assert(vim.bo[buf].modifiable == true, "Must be modifiable when cursor is at prompt line 3")
+assert(vim.bo[buf].modifiable == true, "Must be modifiable when cursor is at prompt line")
 print("✓ Cursor at prompt line is modifiable")
 
 -- Move cursor up to header line 1: modifiable should automatically become false!
@@ -66,14 +67,14 @@ protocol.update_modifiable(buf)
 assert(vim.bo[buf].modifiable == false, "Must NOT be modifiable when cursor is in history line 1")
 print("✓ Cursor in history area is protected (modifiable = false)")
 
--- Move cursor back to prompt line 3: modifiable restores to true!
-vim.api.nvim_win_set_cursor(win, { 3, 0 })
+-- Move cursor back to prompt line: modifiable restores to true!
+vim.api.nvim_win_set_cursor(win, { state.prompt_start_line, 0 })
 protocol.update_modifiable(buf)
-assert(vim.bo[buf].modifiable == true, "Must be modifiable again when returning to prompt line 3")
+assert(vim.bo[buf].modifiable == true, "Must be modifiable again when returning to prompt line")
 print("✓ Cursor returned to prompt line is modifiable again")
 
 -- 3. Test prompt extraction
-vim.api.nvim_buf_set_lines(buf, 2, -1, false, {
+vim.api.nvim_buf_set_lines(buf, state.prompt_start_line - 1, -1, false, {
 	"Can you explain the difference between processes and threads?",
 	"Please keep it concise.",
 })
@@ -84,7 +85,7 @@ assert(
 	prompt == "Can you explain the difference between processes and threads?\nPlease keep it concise.",
 	"Prompt extraction mismatch"
 )
-assert(p_line == 3, "Expected p_line == 3, got: " .. tostring(p_line))
+assert(p_line == state.prompt_start_line, "Expected p_line == " .. state.prompt_start_line .. ", got: " .. tostring(p_line))
 print("✓ Prompt extraction verified")
 
 -- Clean up

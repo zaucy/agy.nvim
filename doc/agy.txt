@@ -189,6 +189,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             checkbox_checked = "󰄵 ",
             image = " ",
             link = "🔗",
+            upper_block = "▀",       -- Upper half block for inverted V logo
+            lower_block = "▄",       -- Lower half block for inverted V logo
         },
 
         -- UI settings
@@ -205,6 +207,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             tool_max_height = 20,    -- Max height of inline window for tool details
             separator = require("agy.ui.separator").line(), -- Turn separator function e.g. require("agy.ui.separator").box("rounded")
             animate_thinking = true, -- Animate thinking badge with spinner frames
+            header_style = "banner", -- "banner" (inverted V logo banner) or "markdown" (classic # heading)
+            animate_logo = true,     -- Animate inverted V logo colors dynamically
             render_markdown = require("agy.markdown").render, -- Stream markdown renderer
         },
     })
@@ -212,6 +216,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
 
 Highlight Groups:                                              *agy-highlights*
 The following highlight groups are used for styling and can be customized:
+- `AgyHeaderTitle`: Bold title on header banner line 1 (e.g. "Antigravity CLI 1.2.8").
+- `AgyHeaderSub`: Secondary text on header banner line 2 (e.g. "agy://<conversation_id>").
 - `AgyPromptArea`: Background for active prompt input area.
 - `AgyUserSign`: User sign column icon highlight.
 - `AgyToolInline`: Subtle background for inline tool details and virtual lines.

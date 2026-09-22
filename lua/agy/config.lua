@@ -21,6 +21,8 @@ local M = {}
 ---@field tool_max_height? number Maximum height of inline window for tool details (default: 20)
 ---@field separator? fun(ctx: table): table Separator function returning virt_lines (default: require("agy.ui.separator").line())
 ---@field animate_thinking? boolean Animate thinking badge on agent turn (default: true)
+---@field header_style? "banner" | "markdown" Header style at top of session buffer (default: "banner")
+---@field animate_logo? boolean Animate inverted V logo colors dynamically (default: true)
 ---@field render_markdown? fun(buf: number, delta: string, is_final: boolean, config?: table) Custom streaming markdown renderer (default: require("agy.markdown").render)
 
 ---@class AgyConfigIconsTable
@@ -64,6 +66,8 @@ local M = {}
 ---@field checkbox_checked? string Checkbox checked icon (default: "󰄵 ")
 ---@field image? string Icon for rendered image placeholder (default: " ")
 ---@field link? string Icon for link hover/inspection (default: "🔗")
+---@field upper_block? string Upper half block for logo (default: "▀")
+---@field lower_block? string Lower half block for logo (default: "▄")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -125,6 +129,8 @@ M.defaults = {
 		checkbox_checked = "󰄵 ",
 		image = " ",
 		link = "🔗",
+		upper_block = "▀",
+		lower_block = "▄",
 	},
 	keymaps = {
 		submit = "<C-s>",
@@ -145,6 +151,8 @@ M.defaults = {
 		tool_max_height = 20,
 		separator = require("agy.ui.separator").line(),
 		animate_thinking = true,
+		header_style = "banner",
+		animate_logo = true,
 		render_markdown = function(buf, delta, is_final, cfg)
 			return require("agy.markdown").render(buf, delta, is_final, cfg)
 		end,

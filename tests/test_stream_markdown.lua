@@ -5,8 +5,8 @@ local utils = require("agy.utils")
 
 print("=== Running Stream Markdown Rendering Tests ===")
 
--- Reset configuration to default
-local cfg = config_mod.setup()
+-- Reset configuration with classic markdown header for pure markdown stream testing
+local cfg = config_mod.setup({ ui = { header_style = "markdown" } })
 render.setup_highlights()
 
 -- [Test 1] Table Rendering with Rounded Box Borders and Alignments
