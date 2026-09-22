@@ -1262,8 +1262,11 @@ end
 ---Build the banner lines with padding around the logo and vertically centered text
 ---@param session_uri string
 ---@param config? table
+---@param session_uri string
+---@param config? table
+---@param sub_text? string
 ---@return string[]
-function M.build_banner_lines(session_uri, config)
+function M.build_banner_lines(session_uri, config, sub_text)
 	local cfg = get_config(config)
 	local pad = "    "
 	local version = utils.get_agy_version(cfg)
@@ -1279,6 +1282,8 @@ function M.build_banner_lines(session_uri, config)
 			table.insert(lines, logo_str .. pad .. title_text)
 		elseif r == 2 then
 			table.insert(lines, logo_str .. pad .. session_uri)
+		elseif r == 3 and sub_text then
+			table.insert(lines, logo_str .. pad .. sub_text)
 		else
 			table.insert(lines, logo_str)
 		end
@@ -1296,7 +1301,8 @@ end
 ---@param buf number
 ---@param session_uri string
 ---@param config? table
-function M.render_banner_extmarks(buf, session_uri, config)
+---@param sub_text? string
+function M.render_banner_extmarks(buf, session_uri, config, sub_text)
 	local cfg = get_config(config)
 	vim.api.nvim_buf_clear_namespace(buf, M.NS_LOGO, 0, -1)
 
@@ -1329,6 +1335,14 @@ function M.render_banner_extmarks(buf, session_uri, config)
 			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, sub_start, {
 				end_col = sub_end,
 				hl_group = "AgyHeaderSub",
+				priority = 150,
+			})
+		elseif r == 3 and sub_text then
+			local sub2_start = #logo_str + #pad
+			local sub2_end = sub2_start + #sub_text
+			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, sub2_start, {
+				end_col = sub2_end,
+				hl_group = "Comment",
 				priority = 150,
 			})
 		end

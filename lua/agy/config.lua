@@ -71,6 +71,8 @@ local M = {}
 ---@field upper_block? string Upper half block for logo (default: "▀")
 ---@field lower_block? string Lower half block for logo (default: "▄")
 ---@field review_comment? string Icon for review comments (default: "💬")
+---@field new_session? string Icon for new session entry in home buffer (default: "󰐕 ")
+---@field conversation? string Icon for conversation entries in home buffer (default: "󰭹 ")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -135,6 +137,8 @@ M.defaults = {
 		upper_block = "▀",
 		lower_block = "▄",
 		review_comment = "💬",
+		new_session = "󰐕 ",
+		conversation = "󰭹 ",
 	},
 	keymaps = {
 		submit = "<C-s>",

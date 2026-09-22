@@ -27,16 +27,23 @@ function M.setup(opts)
   })
 end
 
----Open an Antigravity conversation buffer
----@param conversation_id? string Optional conversation ID. If nil or "new", opens agy://new
+---Open an Antigravity conversation buffer or root home buffer
+---@param conversation_id? string Optional conversation ID. If nil or "", opens agy://. If "new", opens agy://new.
 function M.open(conversation_id)
   local target
-  if not conversation_id or conversation_id == "" or conversation_id == "new" then
+  if not conversation_id or conversation_id == "" or conversation_id == "home" then
+    target = "agy://"
+  elseif conversation_id == "new" then
     target = "agy://new"
   else
     target = "agy://" .. conversation_id
   end
   vim.cmd("edit " .. target)
+end
+
+---Open the Antigravity root home buffer (agy://)
+function M.home()
+  M.open("")
 end
 
 ---Start a brand new Antigravity session
@@ -133,14 +140,14 @@ function M.artifacts(filename)
     cid = bname:match("^agy://([^/?#]+)")
   end
 
-  if not cid or cid == "" or cid == "new" then
+  if not cid or cid == "" or cid == "new" or cid == "home" then
     local history = require("agy.transcript").read_history(config.get().app_data_dir)
     if history and #history > 0 then
       cid = history[1].conversation_id
     end
   end
 
-  if not cid or cid == "" or cid == "new" then
+  if not cid or cid == "" or cid == "new" or cid == "home" then
     vim.notify("[agy.nvim] No active conversation session.", vim.log.levels.WARN)
     return
   end

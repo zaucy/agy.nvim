@@ -50,7 +50,12 @@ Using vim-plug: >vim
 ==============================================================================
 4. agy:// PROTOCOL                                              *agy-protocol*
 
-You can open Antigravity conversations using the `agy://` URL scheme:
+You can open Antigravity conversations and navigation using the `agy://` URL scheme:
+
+- `agy://`
+  Opens the root home buffer displaying the current workspace, an `agy://new`
+  entry at the top to start a fresh conversation, and a list of resumable
+  conversations recorded for the active workspace.
 
 - `agy://new`
   Opens a fresh conversation. Once Antigravity initializes the session, the
@@ -61,12 +66,19 @@ You can open Antigravity conversations using the `agy://` URL scheme:
   `transcript.jsonl` is loaded, and subsequent saves (`:w`) continue the
   dialogue.
 
+- `agy://<conversation-id>/artifacts` or `.../artifacts/<filename>`
+  Opens the artifact review buffer for inspecting deliverables and leaving
+  inline review comments.
+
 ==============================================================================
 5. COMMANDS                                                     *agy-commands*
 
 :Agy [conversation-id]                                                  *:Agy*
-    Open an Antigravity conversation buffer. If no ID is provided, starts a
-    new session (`agy://new`).
+    Open the Antigravity root home buffer (`agy://`). If a conversation ID or
+    `new` is specified, opens that conversation buffer directly.
+
+:AgyHome                                                              *:AgyHome*
+    Open the root Antigravity home buffer (`agy://`).
 
 :AgyNew                                                              *:AgyNew*
     Start a brand new Antigravity session (`agy://new`).
@@ -107,7 +119,26 @@ You can open Antigravity conversations using the `agy://` URL scheme:
 ==============================================================================
 6. KEYMAPS                                                       *agy-keymaps*
 
-Inside an `agy://` buffer:
+Inside the root `agy://` home buffer:
+
+- `<CR>` (Normal mode):
+  Open `agy://new` to start a fresh conversation (when cursor is on `agy://new`
+  or header area) or resume the conversation selected under cursor.
+
+- `-` (Normal mode):
+  Notify that you are already at the agy root (`[agy.nvim] Already at agy root`).
+
+- `q` (Normal mode):
+  Close the home buffer / window.
+
+- `r` (Normal mode):
+  Refresh the home buffer and re-query resumable conversations for the current
+  workspace.
+
+Inside an `agy://<id>` or `agy://new` conversation buffer:
+
+- `-` (Normal mode):
+  Navigate up one level to the root `agy://` home buffer.
 
 - `<C-s>` (Normal and Insert modes):
   Save the buffer and submit the prompt below the User divider. If a turn
@@ -190,6 +221,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             cancelled = "⏹️",
             queue = "⏳",
             review_comment = "💬",
+            new_session = "󰐕 ",      -- Icon for agy://new in home buffer
+            conversation = "󰭹 ",     -- Icon for conversation entries in home buffer
             spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
             table = {
                 top_left = "╭",

@@ -377,6 +377,15 @@ function M._setup_buffer(buf, conversation_id)
     desc = "Open link under cursor or go to definition",
   })
 
+  -- Up navigation to agy:// home
+  vim.keymap.set("n", "-", function()
+    vim.cmd("edit agy://")
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Navigate up to agy:// home",
+  })
+
   local toggle_key = cfg.keymaps.toggle_tool or "<CR>"
   vim.keymap.set("n", toggle_key, function()
     local state = M.buffers[buf]
@@ -865,6 +874,12 @@ end
 function M.handle_write(buf)
   local state = M.buffers[buf]
   if not state then return end
+
+  if state.is_home then
+    vim.notify("[agy.nvim] Home buffer is read-only. Press <CR> to open a session.", vim.log.levels.INFO)
+    vim.bo[buf].modified = false
+    return
+  end
 
   if state.is_artifact then
     local artifacts_mod = require("agy.artifacts")
@@ -1638,11 +1653,28 @@ function M.handle_buf_read(args)
     return
   end
 
+  -- Check if this is the home buffer: agy:// or agy:/// or agy://home
+  if clean_raw == "" or clean_raw == "/" or clean_raw == "home" then
+    local existing_state = M.buffers[buf]
+    if existing_state and existing_state.session and existing_state.session.turn_active then
+      existing_state.session:stop()
+    end
+
+    local home_mod = require("agy.home")
+    home_mod.render_home(buf, cfg)
+    M.buffers[buf] = {
+      buf = buf,
+      is_home = true,
+      config = cfg,
+    }
+    return
+  end
+
   local conv_id = clean_raw
 
-  -- If previous buffer state was an artifact buffer, clear it
+  -- If previous buffer state was an artifact buffer or home buffer, clear it
   local existing_state = M.buffers[buf]
-  if existing_state and existing_state.is_artifact then
+  if existing_state and (existing_state.is_artifact or existing_state.is_home) then
     M.buffers[buf] = nil
     existing_state = nil
   end
@@ -1745,6 +1777,15 @@ function M.handle_buf_read(args)
 
     completion.setup_buffer(buf)
 
+    -- Up navigation to agy:// home
+    vim.keymap.set("n", "-", function()
+      vim.cmd("edit agy://")
+    end, {
+      buffer = buf,
+      silent = true,
+      desc = "Navigate up to agy:// home",
+    })
+
     vim.bo[buf].modified = false
     pcall(function() vim.cmd("let &undolevels = &undolevels") end)
 
@@ -1761,7 +1802,7 @@ function M.handle_buf_read(args)
 
   M._setup_buffer(buf, conv_id)
 
-  local is_new = (conv_id == "" or conv_id == "new")
+  local is_new = (conv_id == "new")
   local prompt_line, prompt_ext_id, initial_tool_calls
   local rendered_thinking = {}
 

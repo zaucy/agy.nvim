@@ -41,7 +41,8 @@ def main [
             "tests/test_stream_markdown.lua",
             "tests/test_background_task_freeze.lua",
             "tests/test_header_logo.lua",
-            "tests/test_artifacts.lua"
+            "tests/test_artifacts.lua",
+            "tests/test_home.lua"
         ]
 
         for t in $tests {
