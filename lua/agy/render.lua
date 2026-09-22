@@ -1590,6 +1590,7 @@ function M.update_task_status(buf, tool_rec, new_status, exit_code, config)
 		return
 	end
 
+	tool_rec.buf = buf
 	tool_rec.is_background_task = true
 	if new_status == "done" then
 		new_status = "success"
@@ -1633,8 +1634,22 @@ function M.update_task_status(buf, tool_rec, new_status, exit_code, config)
 	local line_text = (param_str ~= "") and string.format("%s %s `%s`", icon, tool_name, param_str)
 		or string.format("%s %s", icon, tool_name)
 
+	local cur_line = vim.api.nvim_buf_get_lines(buf, header_line, header_line + 1, false)[1]
+	if cur_line ~= line_text then
+		local proto = package.loaded["agy.protocol"]
+		if proto and proto.with_modifiable then
+			proto.with_modifiable(buf, function()
+				vim.api.nvim_buf_set_lines(buf, header_line, header_line + 1, false, { line_text })
+			end)
+		else
+			local prev_mod = vim.bo[buf].modifiable
+			vim.bo[buf].modifiable = true
+			pcall(vim.api.nvim_buf_set_lines, buf, header_line, header_line + 1, false, { line_text })
+			vim.bo[buf].modifiable = prev_mod
+		end
+	end
+
 	pcall(function()
-		vim.api.nvim_buf_set_lines(buf, header_line, header_line + 1, false, { line_text })
 		local _, e_col = line_text:find(tool_name, 1, true)
 		local opts = {
 			id = tool_rec.header_extmark_id,
@@ -1648,6 +1663,13 @@ function M.update_task_status(buf, tool_rec, new_status, exit_code, config)
 		end
 		vim.api.nvim_buf_set_extmark(buf, M.NS_UI, header_line, 0, opts)
 	end)
+
+	if (new_status == "success" or new_status == "failed") and tool_rec.log_path then
+		local full_out = M.get_tool_output(tool_rec)
+		if full_out and full_out ~= "" and not full_out:find("^Tool is running as a background task") then
+			tool_rec.output = full_out
+		end
+	end
 
 	if tool_rec.is_open then
 		if (tool_rec.is_background_task or tool_rec.log_path) and new_status == "running" then
@@ -1675,6 +1697,7 @@ function M.complete_tool_call(buf, tool_rec, duration_seconds, output, config)
 		local tasks_mod = require("agy.tasks")
 		local task_info = tasks_mod.parse_task_info(output, tool_rec.params)
 		if task_info then
+			tool_rec.buf = buf
 			tool_rec.is_background_task = true
 			tool_rec.task_id = task_info.task_id
 			tool_rec.short_id = task_info.short_id
@@ -2059,6 +2082,9 @@ function M.start_task_log_watcher(state, tc)
 		return
 	end
 
+	local proto = package.loaded["agy.protocol"]
+	state = state or (tc.buf and proto and proto.buffers and proto.buffers[tc.buf])
+
 	local timer = (vim.uv and vim.uv.new_timer) and vim.uv.new_timer() or vim.loop.new_timer()
 	tc.log_timer = timer
 
@@ -2071,6 +2097,63 @@ function M.start_task_log_watcher(state, tc)
 				return
 			end
 			M.refresh_tool_window(state, tc, false)
+
+			-- Check if task finished in log file or transcript
+			if tc.task_status == "running" and tc.log_path and vim.fn.filereadable(tc.log_path) == 1 then
+				local ok, lines = pcall(vim.fn.readfile, tc.log_path)
+				if ok and lines and #lines > 0 then
+					local last_chunk = table.concat(lines, "\n", math.max(1, #lines - 20))
+					local tasks_mod = require("agy.tasks")
+					local code = tasks_mod.parse_log_exit_code(last_chunk)
+					if code ~= nil then
+						local status = (code == 0) and "success" or "failed"
+						local buf = tc.buf or (state and state.buf)
+						if buf and vim.api.nvim_buf_is_valid(buf) then
+							M.update_task_status(buf, tc, status, code, state and state.config)
+						else
+							tc.task_status = status
+							tc.exit_code = code
+						end
+						if state then
+							state.reengage_follow_bottom = true
+							state.had_background_task = true
+						end
+					end
+				end
+			end
+
+			if tc.task_status == "running" and state then
+				local conv_id = state.conversation_id
+				if not conv_id and state.session then
+					conv_id = state.session.conversation_id
+				end
+				if conv_id and conv_id ~= "" and conv_id ~= "new" then
+					local tasks_mod = require("agy.tasks")
+					local transcript_mod = require("agy.transcript")
+					local app_dir = state.config and state.config.app_data_dir
+					local steps = transcript_mod.read_transcript(conv_id, app_dir)
+					local outcomes = tasks_mod.collect_task_outcomes(steps)
+					local outcome = nil
+					if tc.task_id then
+						outcome = outcomes[tc.task_id]
+					end
+					if not outcome and tc.short_id then
+						outcome = outcomes[tc.short_id]
+					end
+					if outcome then
+						local buf = tc.buf or state.buf
+						if buf and vim.api.nvim_buf_is_valid(buf) then
+							M.update_task_status(buf, tc, outcome.status, outcome.exit_code, state.config)
+						else
+							tc.task_status = outcome.status
+							tc.exit_code = outcome.exit_code
+						end
+						state.reengage_follow_bottom = true
+						state.had_background_task = true
+					end
+				end
+			end
+
 			if tc.task_status and tc.task_status ~= "running" then
 				M.stop_task_log_watcher(tc)
 			end

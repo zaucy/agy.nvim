@@ -38,7 +38,8 @@ def main [
             "tests/test_prompt_border_active_turn.lua",
             "tests/test_cursor_prompt_anchoring.lua",
             "tests/test_scroll_bottom_virtual_text.lua",
-            "tests/test_stream_markdown.lua"
+            "tests/test_stream_markdown.lua",
+            "tests/test_background_task_freeze.lua"
         ]
 
         for t in $tests {

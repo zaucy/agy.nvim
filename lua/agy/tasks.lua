@@ -134,6 +134,21 @@ function M.parse_task_completion(text)
   return nil
 end
 
+---Parse process exit code from log file content or lines
+---@param text_or_lines? string|string[]
+---@return number|nil exit_code
+function M.parse_log_exit_code(text_or_lines)
+  if not text_or_lines then return nil end
+  local str = (type(text_or_lines) == "table") and table.concat(text_or_lines, "\n") or tostring(text_or_lines)
+  local code_str = str:match("exited with code%s+(%d+)")
+    or str:match("Process exited with%s+(%d+)")
+    or str:match("exited with status%s+(%d+)")
+  if code_str then
+    return tonumber(code_str)
+  end
+  return nil
+end
+
 ---Collect all background tasks for a conversation (from in-memory state, transcript, and disk)
 ---@param conv_id string
 ---@param app_data_dir? string
