@@ -1588,13 +1588,15 @@ end
 function M.update_task_status(buf, tool_rec, new_status, exit_code, config)
 	assert(buf and vim.api.nvim_buf_is_valid(buf), "render.update_task_status: valid buffer required")
 	assert(tool_rec, "render.update_task_status: tool_rec required")
-	assert(new_status, "render.update_task_status: new_status required")
+	assert(new_status and type(new_status) == "string", "render.update_task_status: new_status string required")
 
 	local cfg = get_config(config)
 	assert(cfg, "render.update_task_status: config required")
 
 	tool_rec.buf = buf
-	tool_rec.is_background_task = true
+	if tool_rec.is_background_task == nil then
+		tool_rec.is_background_task = (new_status == "running")
+	end
 	tool_rec.task_status = new_status
 	if exit_code ~= nil then
 		tool_rec.exit_code = exit_code
@@ -1709,6 +1711,7 @@ function M.complete_tool_call(buf, tool_rec, duration_seconds, output, config)
 			local code_str = output and output:match("exited with code%s+(%d+)")
 			local exit_code = tonumber(code_str) or 0
 			local status = (exit_code == 0) and "success" or "failed"
+			tool_rec.is_background_task = false
 			M.update_task_status(buf, tool_rec, status, exit_code, config)
 			if config and config.ui and config.ui.auto_scroll then
 				M.scroll_to_bottom(buf)
@@ -2121,9 +2124,6 @@ function M.start_task_log_watcher(state, tc)
 
 			if tc.task_status == "running" and state then
 				local conv_id = state.conversation_id
-				if not conv_id and state.session then
-					conv_id = state.session.conversation_id
-				end
 				if conv_id and conv_id ~= "" and conv_id ~= "new" then
 					local tasks_mod = require("agy.tasks")
 					local transcript_mod = require("agy.transcript")

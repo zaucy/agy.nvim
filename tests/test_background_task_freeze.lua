@@ -502,6 +502,92 @@ local em9 = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, tc9.header_ext
 assert(em9[3].hl_group == "AgyTaskFailed", "tc9 extmark hl_group must be AgyTaskFailed")
 print("✓ manage_task kill Action marks background task as failed with exit 130")
 
+-- =========================================================================
+-- TEST 10: Fail-fast assertion on missing/invalid status in render.update_task_status
+-- =========================================================================
+print("\n[Test 10] Testing fail-fast assertion on missing/invalid status in update_task_status...")
+local bad_tc = {
+  id = 100,
+  buf = buf,
+  tool_name = "run_command",
+  params = { CommandLine = "echo test" },
+  header_extmark_id = tc9.header_extmark_id,
+  header_line_idx = tc9.header_line_idx,
+}
+local ok_nil, err_nil = pcall(render.update_task_status, buf, bad_tc, nil, nil, cfg)
+assert(ok_nil == false, "Must fail fast when new_status is nil")
+assert(tostring(err_nil):find("new_status string required", 1, true), "Error message must report new_status required: " .. tostring(err_nil))
+
+local ok_bad, err_bad = pcall(render.update_task_status, buf, bad_tc, 123, nil, cfg)
+assert(ok_bad == false, "Must fail fast when new_status is not a string")
+assert(tostring(err_bad):find("new_status string required", 1, true), "Error message must report string required: " .. tostring(err_bad))
+print("✓ Fail-fast assertion on missing/invalid status verified")
+
+-- =========================================================================
+-- TEST 11: Synchronous run_command does not flag had_background_task
+-- =========================================================================
+print("\n[Test 11] Testing synchronous run_command does not flag had_background_task...")
+state.had_background_task = false
+
+state.session.on_step_update(state.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = {
+    parameters = { CommandLine = "echo sync" },
+  },
+})
+local tc_sync = state.tool_calls[#state.tool_calls]
+
+state.session.on_step_update(state.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "DONE",
+  duration_seconds = 0.05,
+  tool_info = {
+    output = "The command exited with code 0.\nOutput:\nsync",
+  },
+})
+
+assert(tc_sync.is_background_task == false, "Synchronous command must have is_background_task == false")
+assert(tc_sync.task_status == "success", "Synchronous command must have task_status == 'success'")
+assert(state.had_background_task == false, "Synchronous command must not flag state.had_background_task")
+print("✓ Synchronous run_command correctly leaves had_background_task as false")
+
+-- =========================================================================
+-- TEST 12: manage_task kill does not overwrite already completed tasks
+-- =========================================================================
+print("\n[Test 12] Testing manage_task kill does not overwrite completed task...")
+local tc12 = {
+  id = 120,
+  buf = buf,
+  tool_name = "run_command",
+  task_id = conv_id .. "/task-120",
+  short_id = "task-120",
+  is_background_task = true,
+  task_status = "success",
+  exit_code = 0,
+  duration_seconds = 4.2,
+  header_extmark_id = tc9.header_extmark_id,
+  header_line_idx = tc9.header_line_idx,
+}
+table.insert(state.tool_calls, tc12)
+
+state.session.on_step_update(state.session, {
+  step_type = "tool",
+  tool_name = "manage_task",
+  state = "DONE",
+  tool_info = {
+    parameters = { Action = "kill", TaskId = conv_id .. "/task-120" },
+    output = "Task killed",
+  },
+})
+
+assert(tc12.task_status == "success", "Completed task must remain success after manage_task kill")
+assert(tc12.exit_code == 0, "Completed task exit_code must remain 0")
+assert(tc12.duration_seconds == 4.2, "Duration must be preserved")
+print("✓ manage_task kill ignores already completed tasks and preserves status/duration")
+
 -- Clean up
 protocol.cleanup_buffer(buf)
 

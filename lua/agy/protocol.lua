@@ -639,8 +639,8 @@ function M.reconcile_background_tasks(buf, state, conv_id)
         outcome = outcomes[tc.short_id]
       end
       if not outcome and tc.log_path and vim.fn.filereadable(tc.log_path) == 1 then
-        local lines = vim.fn.readfile(tc.log_path)
-        if lines and #lines > 0 then
+        local ok, lines = pcall(vim.fn.readfile, tc.log_path)
+        if ok and lines and #lines > 0 then
           local last_chunk = table.concat(lines, "\n", math.max(1, #lines - 20))
           local code = tasks_mod.parse_log_exit_code(last_chunk)
           if code ~= nil then
@@ -1953,7 +1953,10 @@ function M.handle_buf_read(args)
               local tasks_mod = require("agy.tasks")
               local sid = tasks_mod.short_id(p.TaskId)
               for _, tc in ipairs(state.tool_calls) do
-                if tc.is_background_task and (tc.task_id == p.TaskId or tc.short_id == sid) then
+                if tc.is_background_task and tc.task_status == "running" and (tc.task_id == p.TaskId or tc.short_id == sid) then
+                  if not tc.duration_seconds and tc.start_time then
+                    tc.duration_seconds = math.max(0, (vim.uv.hrtime() - tc.start_time) / 1e9)
+                  end
                   M.with_modifiable(buf, function()
                     render.update_task_status(buf, tc, "failed", 130, state.config)
                   end)
