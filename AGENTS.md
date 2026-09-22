@@ -36,3 +36,29 @@
    - Register any new test file in the `let tests = [...]` array inside `test.nu` so that it is included in automated test runs.
    - Tests execute in an isolated, clean Neovim instance (`nvim --clean -u NONE`) using the Lua script runner (`-l`). Shared utilities and mock helpers can be imported from `tests/test_helpers.lua`.
 
+## Git & Worktree Workflow
+
+1. **Worktree-First Changes**:
+   - For all updates, feature work, refactors, and bug fixes, do not modify the primary working tree directly.
+   - Create and work inside a dedicated Git worktree under `.worktrees/<branch-name>`:
+     ```sh
+     git worktree add .worktrees/<branch-name> -b <branch-name>
+     ```
+   - Perform all edits, staging, and verification within that worktree.
+
+2. **Subagent Delegation**:
+   - When invoking subagents via `invoke_subagent` that edit files or execute tests, set `Workspace: 'share'` (or `'branch'`) rather than `'inherit'` to ensure subagents work in isolated branch workspaces without colliding with the active working tree.
+
+3. **Verification in the Worktree**:
+   - Run the automated test suite within the worktree before completing any work:
+     ```sh
+     test.nu -t
+     ```
+     (or `nu test.nu -t`).
+
+4. **Integration & Cleanup**:
+   - Once changes are verified and committed, either merge the branch or prepare it for review as requested by the user.
+   - Clean up temporary worktrees when finished:
+     ```sh
+     git worktree remove .worktrees/<branch-name>
+     ```
