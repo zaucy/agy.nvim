@@ -63,6 +63,9 @@ function M.render_home(buf, config, cwd)
   local target_cwd = cwd or vim.fn.getcwd()
   local conversations = M.get_workspace_conversations(target_cwd, cfg.app_data_dir)
 
+  -- Prefetch models asynchronously in background so next session open is instantaneous
+  pcall(function() require("agy.completion").prefetch_models(cfg.agy_cmd) end)
+
   vim.api.nvim_buf_clear_namespace(buf, M.NS_HOME, 0, -1)
   render.setup_highlights()
 

@@ -1821,12 +1821,9 @@ function M.handle_buf_read(args)
   local render_workspaces = workspaces
   if not render_workspaces or #render_workspaces == 0 then
     if not is_new then
-      local history_items = transcript_mod.read_history(cfg.app_data_dir)
-      for _, item in ipairs(history_items) do
-        if item.conversation_id == conv_id and item.workspace and item.workspace ~= "" then
-          render_workspaces = { item.workspace }
-          break
-        end
+      local ws = transcript_mod.get_conversation_workspace(conv_id, cfg.app_data_dir)
+      if ws and ws ~= "" then
+        render_workspaces = { ws }
       end
     end
   end

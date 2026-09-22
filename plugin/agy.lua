@@ -8,6 +8,9 @@ local agy = require("agy")
 -- Initialize protocol handlers
 require("agy.protocol").setup()
 
+-- Prefetch models asynchronously in background
+pcall(function() require("agy.completion").prefetch_models() end)
+
 vim.api.nvim_create_user_command("Agy", function(opts)
   local arg = opts.args and vim.trim(opts.args) or ""
   if arg == "" then

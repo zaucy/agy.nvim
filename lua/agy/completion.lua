@@ -208,13 +208,22 @@ end
 
 ---Cached models list from dynamic CLI queries
 M._cached_models = nil
+M._prefetching = false
 
 ---Prefetch models dynamically in background
 ---@param cmd? string
 function M.prefetch_models(cmd)
+  if M._cached_models and #M._cached_models > 0 then
+    return
+  end
+  if M._prefetching then
+    return
+  end
+  M._prefetching = true
   local agy_cmd = get_agy_cmd(cmd)
   pcall(function()
     vim.system({ agy_cmd, "models" }, { text = true }, function(obj)
+      M._prefetching = false
       if obj and obj.code == 0 and obj.stdout and obj.stdout ~= "" then
         local models = parse_models(obj.stdout)
         if #models > 0 then
@@ -360,21 +369,36 @@ function M.resolve_model(model_or_name)
   local trimmed = model_or_name:gsub("^%s*", ""):gsub("%s*$", "")
   local q = trimmed:lower()
 
-  local models = M.get_available_models()
-  -- 1. Exact match on id or name
-  for _, m in ipairs(models) do
-    if m.id == trimmed or m.name == trimmed or m.id:lower() == q or m.name:lower() == q then
-      return m.id
+  -- If models are already cached, perform rich/exact matching
+  if M._cached_models and #M._cached_models > 0 then
+    -- 1. Exact match on id or name
+    for _, m in ipairs(M._cached_models) do
+      if m.id == trimmed or m.name == trimmed or m.id:lower() == q or m.name:lower() == q then
+        return m.id
+      end
     end
+
+    -- 2. Partial prefix / substring match using complete_models scoring
+    local matches = M.complete_models(trimmed)
+    if matches and #matches > 0 then
+      return matches[1].label
+    end
+  else
+    -- Trigger background prefetch so future queries are instant
+    M.prefetch_models()
   end
 
-  -- 2. Partial prefix / substring match using complete_models scoring
-  local matches = M.complete_models(trimmed)
-  if matches and #matches > 0 then
-    return matches[1].label
+  -- If trimmed is already in canonical ID format (lowercase alphanumeric with hyphens), return it directly
+  if trimmed:match("^[a-z0-9%-%.]+$") then
+    return trimmed
   end
 
-  -- 3. Return as-is if unrecognized (e.g. custom model or newer API name)
+  -- Fast slugification for display names (e.g. "Gemini 3.8 Flash (High)" -> "gemini-3.8-flash-high")
+  local slug = trimmed:lower():gsub("[()%s]+", "-"):gsub("%-+", "-"):gsub("^%-", ""):gsub("%-$", "")
+  if slug ~= "" then
+    return slug
+  end
+
   return trimmed
 end
 
@@ -382,7 +406,7 @@ end
 ---Priority:
 ---1. config_default if provided and non-empty
 ---2. Antigravity settings.json "model" field in app_data_dir
----3. First available model from agy models
+---3. First available model from agy models (or background prefetch)
 ---@param app_data_dir? string
 ---@param config_default? string
 ---@param cmd? string
