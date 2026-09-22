@@ -556,6 +556,116 @@ function M._setup_buffer(buf, conversation_id)
   })
 end
 
+---Re-engage bottom scrolling and ensure viewport visibility if disengaged during background task wait
+---@param buf number
+---@param state table
+function M.handle_post_task_bottom_visibility(buf, state)
+  if not state then return end
+  if state.reengage_follow_bottom then
+    state.reengage_follow_bottom = nil
+    if state.config and state.config.ui and state.config.ui.auto_scroll == false then
+      vim.notify("[agy.nvim] Background task finished: new agent output received", vim.log.levels.INFO)
+      return
+    end
+
+    local win = vim.fn.bufwinid(buf)
+    local wins = vim.fn.win_findbuf(buf)
+    if win == -1 and wins and #wins > 0 then
+      win = wins[1]
+    end
+
+    local prompt_start = state.prompt_start_line or vim.api.nvim_buf_line_count(buf)
+
+    if win ~= -1 then
+      local cur_line = vim.api.nvim_win_get_cursor(win)[1]
+      if cur_line < prompt_start then
+        vim.notify("[agy.nvim] Background task finished: new agent output received at bottom", vim.log.levels.INFO)
+      else
+        state.follow_bottom = true
+        render.scroll_to_bottom(buf, true)
+      end
+    else
+      state.follow_bottom = true
+    end
+
+    if wins then
+      for _, w in ipairs(wins) do
+        render.ensure_bottom_visible(w, buf)
+      end
+    end
+  end
+end
+
+---Reconcile running background tasks by reading outcomes from disk transcript and task logs
+---@param buf number
+---@param state table
+---@param conv_id? string
+function M.reconcile_background_tasks(buf, state, conv_id)
+  assert(buf and vim.api.nvim_buf_is_valid(buf), "reconcile_background_tasks: valid buffer required")
+  assert(state, "reconcile_background_tasks: buffer state required")
+  assert(type(state.tool_calls) == "table", "reconcile_background_tasks: state.tool_calls table required")
+
+  local cid = conv_id or state.conversation_id
+  if not cid or cid == "" or cid == "new" then
+    return
+  end
+
+  local has_running_tasks = false
+  for _, tc in ipairs(state.tool_calls) do
+    if tc.is_background_task and tc.task_status == "running" then
+      has_running_tasks = true
+      break
+    end
+  end
+
+  if not has_running_tasks then
+    return
+  end
+
+  local tasks_mod = require("agy.tasks")
+  local transcript_mod = require("agy.transcript")
+  assert(state.config, "reconcile_background_tasks: state.config required")
+  local app_dir = state.config.app_data_dir
+  assert(app_dir and app_dir ~= "", "reconcile_background_tasks: config.app_data_dir required")
+
+  local steps = transcript_mod.read_transcript(cid, app_dir)
+  local outcomes = tasks_mod.collect_task_outcomes(steps)
+
+  for _, tc in ipairs(state.tool_calls) do
+    if tc.is_background_task and tc.task_status == "running" then
+      tc.buf = buf
+      local outcome = outcomes[tc.task_id]
+      if not outcome and tc.short_id then
+        outcome = outcomes[tc.short_id]
+      end
+      if not outcome and tc.log_path and vim.fn.filereadable(tc.log_path) == 1 then
+        local ok, lines = pcall(vim.fn.readfile, tc.log_path)
+        if ok and lines and #lines > 0 then
+          local last_chunk = table.concat(lines, "\n", math.max(1, #lines - 20))
+          local code = tasks_mod.parse_log_exit_code(last_chunk)
+          if code ~= nil then
+            local status = (code == 0) and "success" or "failed"
+            outcome = { status = status, exit_code = code, task_id = tc.task_id, short_id = tc.short_id }
+          end
+        end
+      end
+
+      if outcome then
+        if outcome.duration_seconds and not tc.duration_seconds then
+          tc.duration_seconds = outcome.duration_seconds
+        elseif not tc.duration_seconds and tc.start_time then
+          tc.duration_seconds = math.max(0, (vim.uv.hrtime() - tc.start_time) / 1e9)
+        end
+        M.with_modifiable(buf, function()
+          render.update_task_status(buf, tc, outcome.status, outcome.exit_code, state.config)
+        end)
+        state.had_background_task = true
+        state.reengage_follow_bottom = true
+      end
+    end
+  end
+end
+
 ---Check transcript file for newly recorded agent thoughts before tool calls and render them into the buffer
 ---@param buf number
 function M.check_and_render_pending_thoughts(buf)
@@ -565,6 +675,8 @@ function M.check_and_render_pending_thoughts(buf)
 
   -- NEVER render thoughts once output text generation has begun!
   if state.active_agent_started_output then return end
+
+  M.handle_post_task_bottom_visibility(buf, state)
 
   state.rendered_thinking = state.rendered_thinking or {}
 
@@ -1123,6 +1235,8 @@ function M.handle_write(buf)
   state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
   state.active_agent_started_output = false
   state.last_thought_start_time = vim.uv.hrtime()
+  state.had_background_task = false
+  state.reengage_follow_bottom = nil
 
   M.with_modifiable(buf, function()
     -- Prepare buffer: append agent response placeholder and active thinking divider
@@ -1727,11 +1841,13 @@ function M.handle_buf_read(args)
       local stype = step.step_type
 
       if stype == "agent_response" then
+        M.reconcile_background_tasks(buf, state, state.conversation_id)
+        if not state.active_agent_started_output then
+          M.check_and_render_pending_thoughts(buf)
+          state.active_agent_started_output = true
+        end
+        M.handle_post_task_bottom_visibility(buf, state)
         if step.text_delta and step.text_delta ~= "" then
-          if not state.active_agent_started_output then
-            M.check_and_render_pending_thoughts(buf)
-            state.active_agent_started_output = true
-          end
           if state.stream_info.status ~= "generating" then
             state.stream_info.status = "generating"
             M.update_footer(buf)
@@ -1780,6 +1896,8 @@ function M.handle_buf_read(args)
         end
 
         if step.state == "ACTIVE" then
+          M.reconcile_background_tasks(buf, state, state.conversation_id)
+          M.handle_post_task_bottom_visibility(buf, state)
           M.check_and_render_pending_thoughts(buf)
           state.stream_info.status = "tool:" .. (step.tool_name or "tool")
           M.update_footer(buf)
@@ -1788,11 +1906,13 @@ function M.handle_buf_read(args)
             local tool_line, ext_id, param_str = render.append_tool_call(buf, step.tool_name or "tool", step.tool_info and step.tool_info.parameters, ws, state.config)
             local tool_rec = {
               id = #state.tool_calls + 1,
+              buf = buf,
               tool_name = step.tool_name or "tool",
               params = step.tool_info and step.tool_info.parameters,
               param_str = param_str,
               output = nil,
               duration_seconds = nil,
+              start_time = vim.uv.hrtime(),
               status = "running",
               is_open = false,
               header_extmark_id = ext_id,
@@ -1814,6 +1934,9 @@ function M.handle_buf_read(args)
           if state.active_tool_record then
             M.with_modifiable(buf, function()
               render.complete_tool_call(buf, state.active_tool_record, step.duration_seconds, step.tool_info and step.tool_info.output, state.config)
+              if state.active_tool_record and state.active_tool_record.is_background_task then
+                state.had_background_task = true
+              end
               M.ensure_prompt_line(buf)
               if state.follow_bottom then
                 render.scroll_to_bottom(buf, true)
@@ -1822,65 +1945,40 @@ function M.handle_buf_read(args)
             end)
             state.active_tool_record = nil
           end
-        end
-      end
 
-      -- Detect background task start or completion notification in any step text/delta/content/output
-      local check_text = step.text_delta or step.content or step.notification or (step.tool_info and step.tool_info.output)
-      if check_text and type(check_text) == "string" then
-        if check_text:find("Tool is running as a background task", 1, true) then
-          local tasks_mod = require("agy.tasks")
-          local info = tasks_mod.parse_task_info(check_text)
-          if info then
-            for _, tc in ipairs(state.tool_calls) do
-              if tc.tool_name == "run_command" and (tc.status == "running" or tc.task_status == "running") and not tc.is_background_task then
-                tc.is_background_task = true
-                tc.task_id = info.task_id
-                tc.short_id = info.short_id
-                tc.log_path = info.log_path
-                tc.task_status = "running"
-                M.with_modifiable(buf, function()
-                  render.update_task_status(buf, tc, "running", nil, state.config)
-                end)
+          -- Handle manage_task with Action == "kill"
+          if step.tool_name == "manage_task" and step.tool_info and step.tool_info.parameters then
+            local p = step.tool_info.parameters
+            if p.Action == "kill" and p.TaskId then
+              local tasks_mod = require("agy.tasks")
+              local sid = tasks_mod.short_id(p.TaskId)
+              for _, tc in ipairs(state.tool_calls) do
+                if tc.is_background_task and tc.task_status == "running" and (tc.task_id == p.TaskId or tc.short_id == sid) then
+                  if not tc.duration_seconds and tc.start_time then
+                    tc.duration_seconds = math.max(0, (vim.uv.hrtime() - tc.start_time) / 1e9)
+                  end
+                  M.with_modifiable(buf, function()
+                    render.update_task_status(buf, tc, "failed", 130, state.config)
+                  end)
+                  state.had_background_task = true
+                  state.reengage_follow_bottom = true
+                end
               end
             end
           end
         end
 
-        if check_text:find("Task id", 1, true) then
-          local tasks_mod = require("agy.tasks")
-          local comp = tasks_mod.parse_task_completion(check_text)
-          if comp then
-            for _, tc in ipairs(state.tool_calls) do
-              if tc.is_background_task and (tc.task_id == comp.task_id or tc.short_id == comp.short_id) then
-                M.with_modifiable(buf, function()
-                  render.update_task_status(buf, tc, comp.status, comp.exit_code, state.config)
-                end)
-              end
-            end
-          end
-        end
-      end
-
-      -- Also check if manage_task was executed with Action='kill'
-      if step.tool_name == "manage_task" and step.state == "DONE" and step.tool_info and step.tool_info.parameters then
-        local p = step.tool_info.parameters
-        if p.Action == "kill" and p.TaskId then
-          local tasks_mod = require("agy.tasks")
-          local sid = tasks_mod.short_id(p.TaskId)
-          for _, tc in ipairs(state.tool_calls) do
-            if tc.is_background_task and (tc.task_id == p.TaskId or tc.short_id == sid) then
-              M.with_modifiable(buf, function()
-                render.update_task_status(buf, tc, "failed", 130, state.config)
-              end)
-            end
-          end
-        end
+      elseif stype == "system_message" and step.state == "DONE" then
+        M.reconcile_background_tasks(buf, state, state.conversation_id)
       end
     end,
 
     on_result = function(s, result)
       state.stream_info.status = "ready"
+      state.active_agent_started_output = false
+      if result.conversation_id and result.conversation_id ~= "" then
+        state.conversation_id = result.conversation_id
+      end
       if state.active_question then
         render.finalize_question_block(buf, state.active_question, state.config)
         state.active_question = nil
@@ -1897,6 +1995,10 @@ function M.handle_buf_read(args)
       if result.model then
         state.stream_info.model = result.model
       end
+
+      -- Reconcile any remaining running background tasks from disk transcript outcomes
+      M.reconcile_background_tasks(buf, state, state.conversation_id)
+      M.handle_post_task_bottom_visibility(buf, state)
 
       if state.agent_extmark_id and state.agent_line then
         M.with_modifiable(buf, function()
@@ -1925,6 +2027,7 @@ function M.handle_buf_read(args)
                 elseif win == cur_win then
                   vim.api.nvim_win_set_cursor(win, { next_line, 0 })
                 end
+                render.ensure_bottom_visible(win, buf)
               end)
             end
             state.follow_bottom = false
