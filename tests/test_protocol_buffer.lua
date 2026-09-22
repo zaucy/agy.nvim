@@ -17,12 +17,12 @@ assert(vim.bo[buf].swapfile == false, "Expected swapfile == false")
 
 local state = protocol.buffers[buf]
 assert(state ~= nil, "State must exist")
-assert(state.prompt_start_line == 7, "Prompt start line must be 7, got: " .. tostring(state.prompt_start_line))
+assert(state.prompt_start_line == 8, "Prompt start line must be 8, got: " .. tostring(state.prompt_start_line))
 
 local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 print("Buffer lines count: " .. #lines)
-assert(lines[1]:find("Antigravity CLI", 1, true), "Line 1 must contain Antigravity CLI title")
-assert(lines[2]:find("agy://new", 1, true), "Line 2 must contain session URI")
+assert(lines[3]:find("Antigravity CLI", 1, true), "Line 3 must contain Antigravity CLI title")
+assert(lines[4]:find("agy://new", 1, true), "Line 4 must contain session URI")
 
 -- Check virtual text divider with virt_lines_leftcol
 local ui_marks = vim.api.nvim_buf_get_extmarks(buf, render.NS_UI, 0, -1, { details = true })
@@ -55,10 +55,10 @@ assert(#vim.api.nvim_buf_get_extmarks(buf, render.NS_HISTORY, 0, -1, {}) == 0, "
 print("✓ History background highlighting option verified")
 
 -- 2. Test cursor-based modifiable toggling
--- At prompt line (line 7): modifiable should be true
-vim.api.nvim_win_set_cursor(win, { 7, 0 })
+-- At prompt line: modifiable should be true
+vim.api.nvim_win_set_cursor(win, { state.prompt_start_line, 0 })
 protocol.update_modifiable(buf)
-assert(vim.bo[buf].modifiable == true, "Must be modifiable when cursor is at prompt line 7")
+assert(vim.bo[buf].modifiable == true, "Must be modifiable when cursor is at prompt line")
 print("✓ Cursor at prompt line is modifiable")
 
 -- Move cursor up to header line 1: modifiable should automatically become false!

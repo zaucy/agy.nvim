@@ -143,7 +143,9 @@ local function get_logo_row_info(r, cfg)
 	local bot_row = LOGO_PIXELS[r * 2 + 2] or {}
 	local parts = {}
 	local cells = {}
-	local byte_offset = 0
+	local left_pad = "  "
+	table.insert(parts, left_pad)
+	local byte_offset = #left_pad
 
 	for c = 1, 12 do
 		local top_c = top_row[c]
@@ -1256,7 +1258,7 @@ function M.stop_logo_animation(buf)
 	end
 end
 
----Build the 5 banner lines and trailing blank line(s)
+---Build the banner lines with padding around the logo and vertically centered text
 ---@param session_uri string
 ---@param config? table
 ---@return string[]
@@ -1267,18 +1269,23 @@ function M.build_banner_lines(session_uri, config)
 	local title_text = "Antigravity CLI" .. (version and (" " .. version) or "")
 
 	local lines = {}
+	-- Top padding line
+	table.insert(lines, "")
+
 	for r = 0, 4 do
 		local logo_str, _ = get_logo_row_info(r, cfg)
-		if r == 0 then
+		if r == 1 then
 			table.insert(lines, logo_str .. pad .. title_text)
-		elseif r == 1 then
+		elseif r == 2 then
 			table.insert(lines, logo_str .. pad .. session_uri)
 		else
 			table.insert(lines, logo_str)
 		end
 	end
 
+	-- Bottom padding line
 	table.insert(lines, "")
+	-- Active prompt line
 	table.insert(lines, "")
 
 	return lines
@@ -1298,26 +1305,27 @@ function M.render_banner_extmarks(buf, session_uri, config)
 
 	for r = 0, 4 do
 		local logo_str, cells = get_logo_row_info(r, cfg)
+		local buf_row = r + 1 -- Top padding line is at buffer line 0
 		for _, cell in ipairs(cells) do
-			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, r, cell.byte_start, {
+			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, cell.byte_start, {
 				end_col = cell.byte_end,
 				hl_group = cell.hl_group,
 				priority = 150,
 			})
 		end
 
-		if r == 0 then
+		if r == 1 then
 			local title_start = #logo_str + #pad
 			local title_end = title_start + #title_text
-			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, 0, title_start, {
+			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, title_start, {
 				end_col = title_end,
 				hl_group = "AgyHeaderTitle",
 				priority = 150,
 			})
-		elseif r == 1 then
+		elseif r == 2 then
 			local sub_start = #logo_str + #pad
 			local sub_end = sub_start + #session_uri
-			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, 1, sub_start, {
+			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, sub_start, {
 				end_col = sub_end,
 				hl_group = "AgyHeaderSub",
 				priority = 150,
@@ -1712,13 +1720,14 @@ function M.update_session_id(buf, conversation_id, config)
 	pcall(function()
 		if header_style == "banner" then
 			local pad = "    "
-			local logo_str, cells = get_logo_row_info(1, cfg)
+			local logo_str, cells = get_logo_row_info(2, cfg)
 			local new_line = logo_str .. pad .. target_uri
-			vim.api.nvim_buf_set_lines(buf, 1, 2, false, { new_line })
+			local buf_row = 3 -- Line 0: top pad, Line 1: r=0, Line 2: r=1, Line 3: r=2
+			vim.api.nvim_buf_set_lines(buf, buf_row, buf_row + 1, false, { new_line })
 
-			vim.api.nvim_buf_clear_namespace(buf, M.NS_LOGO, 1, 2)
+			vim.api.nvim_buf_clear_namespace(buf, M.NS_LOGO, buf_row, buf_row + 1)
 			for _, cell in ipairs(cells) do
-				vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, 1, cell.byte_start, {
+				vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, cell.byte_start, {
 					end_col = cell.byte_end,
 					hl_group = cell.hl_group,
 					priority = 150,
@@ -1727,7 +1736,7 @@ function M.update_session_id(buf, conversation_id, config)
 
 			local sub_start = #logo_str + #pad
 			local sub_end = sub_start + #target_uri
-			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, 1, sub_start, {
+			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, sub_start, {
 				end_col = sub_end,
 				hl_group = "AgyHeaderSub",
 				priority = 150,

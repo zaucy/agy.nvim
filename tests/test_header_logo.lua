@@ -19,7 +19,7 @@ render.setup_highlights()
 local buf = vim.api.nvim_create_buf(false, true)
 local p_line, p_ext = render.init_session_buffer(buf, "agy://new", cfg)
 
-assert(p_line == 7, "Expected prompt_start_line == 7, got: " .. tostring(p_line))
+assert(p_line == 8, "Expected prompt_start_line == 8, got: " .. tostring(p_line))
 assert(p_ext ~= nil, "Expected valid prompt extmark ID")
 
 local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -28,28 +28,30 @@ for idx, l in ipairs(lines) do
 	print(string.format("  [%d] %s", idx, l))
 end
 
-assert(#lines == 7, "Expected 7 lines total, got: " .. #lines)
-assert(lines[1]:find("Antigravity CLI", 1, true), "Line 1 must contain 'Antigravity CLI'")
-assert(lines[2]:find("agy://new", 1, true), "Line 2 must contain 'agy://new'")
-assert(lines[6] == "", "Line 6 must be empty blank line")
-assert(lines[7] == "", "Line 7 must be prompt empty line")
+assert(#lines == 8, "Expected 8 lines total, got: " .. #lines)
+assert(lines[1] == "", "Line 1 must be top padding empty line")
+assert(lines[3]:find("Antigravity CLI", 1, true), "Line 3 must contain 'Antigravity CLI'")
+assert(lines[4]:find("agy://new", 1, true), "Line 4 must contain 'agy://new'")
+assert(lines[7] == "", "Line 7 must be bottom padding empty line")
+assert(lines[8] == "", "Line 8 must be prompt empty line")
 
--- Verify inverted V logo characters on lines 1..5
--- Row 1: ▀▀▄      ▄▀▀
-assert(lines[1]:find("▀▀▄"), "Line 1 must contain left wing ▀▀▄")
-assert(lines[1]:find("▄▀▀"), "Line 1 must contain right wing ▄▀▀")
+-- Verify inverted V logo characters on lines 2..6 with left padding
+-- Row 1:   ▀▀▄      ▄▀▀
+assert(lines[2]:find("^  "), "Line 2 must have left padding")
+assert(lines[2]:find("▀▀▄"), "Line 2 must contain left wing ▀▀▄")
+assert(lines[2]:find("▄▀▀"), "Line 2 must contain right wing ▄▀▀")
 
--- Row 2:  ▀▀▀    ▀▀▀ 
-assert(lines[2]:find("▀▀▀"), "Line 2 must contain sloping wings ▀▀▀")
+-- Row 2:    ▀▀▀    ▀▀▀ 
+assert(lines[3]:find("▀▀▀"), "Line 3 must contain sloping wings ▀▀▀")
 
--- Row 3:   ▀▀▀▄▄▀▀▀  
-assert(lines[3]:find("▄▄"), "Line 3 must contain inner apex dip ▄▄")
+-- Row 3:     ▀▀▀▄▄▀▀▀  
+assert(lines[4]:find("▄▄"), "Line 4 must contain inner apex dip ▄▄")
 
--- Row 4:    ▀▀▀▀▀▀   
-assert(lines[4]:find("▀▀▀▀▀▀"), "Line 4 must contain joining body ▀▀▀▀▀▀")
+-- Row 4:      ▀▀▀▀▀▀   
+assert(lines[5]:find("▀▀▀▀▀▀"), "Line 5 must contain joining body ▀▀▀▀▀▀")
 
--- Row 5:     ▀▀▀▀    
-assert(lines[5]:find("▀▀▀▀"), "Line 5 must contain bottom apex tip ▀▀▀▀")
+-- Row 5:       ▀▀▀▀    
+assert(lines[6]:find("▀▀▀▀"), "Line 6 must contain bottom apex tip ▀▀▀▀")
 
 print("✓ Inverted V logo geometry and header text verified")
 
@@ -78,31 +80,31 @@ for _, m in ipairs(logo_marks) do
 	end
 end
 
-assert(found_title_hl, "AgyHeaderTitle extmark must exist on line 1")
-assert(found_sub_hl, "AgyHeaderSub extmark must exist on line 2")
+assert(found_title_hl, "AgyHeaderTitle extmark must exist on line 3")
+assert(found_sub_hl, "AgyHeaderSub extmark must exist on line 4")
 assert(found_two_tone, "At least one cell must have both fg and bg set for two-tone half-block rendering")
 print("✓ NS_LOGO extmarks and two-tone highlight rendering verified")
 
--- [Test 3] Testing update_session_id updating line 2 to agy://<conv_id>
+-- [Test 3] Testing update_session_id updating line 4 to agy://<conv_id>
 print("\n[Test 3] Testing update_session_id with banner header_style...")
 
 local test_conv_id = "test-conv-12345"
 render.update_session_id(buf, test_conv_id, cfg)
 
 local updated_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-assert(updated_lines[2]:find("agy://" .. test_conv_id, 1, true), "Line 2 must be updated with new conversation ID")
-assert(updated_lines[2]:find("▀▀▀"), "Line 2 must retain logo block characters")
+assert(updated_lines[4]:find("agy://" .. test_conv_id, 1, true), "Line 4 must be updated with new conversation ID")
+assert(updated_lines[4]:find("▄▄"), "Line 4 must retain logo block characters")
 
--- Verify AgyHeaderSub extmark still exists on line 2
-local line2_marks = vim.api.nvim_buf_get_extmarks(buf, render.NS_LOGO, { 1, 0 }, { 1, -1 }, { details = true })
+-- Verify AgyHeaderSub extmark still exists on line 4
+local line4_marks = vim.api.nvim_buf_get_extmarks(buf, render.NS_LOGO, { 3, 0 }, { 3, -1 }, { details = true })
 local has_updated_sub = false
-for _, m in ipairs(line2_marks) do
+for _, m in ipairs(line4_marks) do
 	if m[4].hl_group == "AgyHeaderSub" then
 		has_updated_sub = true
 	end
 end
 assert(has_updated_sub, "AgyHeaderSub must be preserved after update_session_id")
-print("✓ update_session_id dynamic line 2 updating verified")
+print("✓ update_session_id dynamic line 4 updating verified")
 
 -- [Test 4] Testing dynamic color animation lifecycle and hue shifting
 print("\n[Test 4] Testing dynamic color animation lifecycle and hue shifting...")
@@ -191,7 +193,7 @@ print("\n[Test 8] Testing version detection and display...")
 
 utils._set_agy_version("1.2.8")
 local v_lines = render.build_banner_lines("agy://version-test", cfg)
-assert(v_lines[1]:find("Antigravity CLI 1.2.8", 1, true), "Line 1 must contain 'Antigravity CLI 1.2.8'")
+assert(v_lines[3]:find("Antigravity CLI 1.2.8", 1, true), "Line 3 must contain 'Antigravity CLI 1.2.8'")
 
 utils._set_agy_version(nil)
 print("✓ Antigravity CLI version formatting verified")
