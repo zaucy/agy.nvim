@@ -1582,30 +1582,27 @@ end
 ---Update the visual display, icon, extmark, and status of a background task tool call
 ---@param buf number
 ---@param tool_rec table
----@param new_status "running"|"success"|"failed"|"done"|"error"
+---@param new_status "running"|"success"|"failed"
 ---@param exit_code? number
 ---@param config? table
 function M.update_task_status(buf, tool_rec, new_status, exit_code, config)
-	if not buf or not vim.api.nvim_buf_is_valid(buf) or not tool_rec then
-		return
-	end
+	assert(buf and vim.api.nvim_buf_is_valid(buf), "render.update_task_status: valid buffer required")
+	assert(tool_rec, "render.update_task_status: tool_rec required")
+	assert(new_status, "render.update_task_status: new_status required")
+
+	local cfg = get_config(config)
+	assert(cfg, "render.update_task_status: config required")
 
 	tool_rec.buf = buf
 	tool_rec.is_background_task = true
-	if new_status == "done" then
-		new_status = "success"
-	end
-	if new_status == "error" then
-		new_status = "failed"
-	end
 	tool_rec.task_status = new_status
 	if exit_code ~= nil then
 		tool_rec.exit_code = exit_code
 	end
 
 	local tool_name = tool_rec.tool_name or "run_command"
-	local icon = (tool_name == "run_command" or tool_rec.is_background_task) and get_icon("run_command", config)
-		or get_tool_icon(tool_name, config)
+	local icon = (tool_name == "run_command" or tool_rec.is_background_task) and get_icon("run_command", cfg)
+		or get_tool_icon(tool_name, cfg)
 	local hl_group = "AgyTaskRunning"
 	local badge_hl = "AgyTaskBadgeRunning"
 	local badge = ""

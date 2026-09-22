@@ -601,12 +601,17 @@ end
 ---@param state table
 ---@param conv_id? string
 function M.reconcile_background_tasks(buf, state, conv_id)
-  if not state or not conv_id or conv_id == "" or conv_id == "new" then
+  assert(buf and vim.api.nvim_buf_is_valid(buf), "reconcile_background_tasks: valid buffer required")
+  assert(state, "reconcile_background_tasks: buffer state required")
+  assert(type(state.tool_calls) == "table", "reconcile_background_tasks: state.tool_calls table required")
+
+  local cid = conv_id or state.conversation_id
+  if not cid or cid == "" or cid == "new" then
     return
   end
 
   local has_running_tasks = false
-  for _, tc in ipairs(state.tool_calls or {}) do
+  for _, tc in ipairs(state.tool_calls) do
     if tc.is_background_task and tc.task_status == "running" then
       has_running_tasks = true
       break
@@ -619,8 +624,11 @@ function M.reconcile_background_tasks(buf, state, conv_id)
 
   local tasks_mod = require("agy.tasks")
   local transcript_mod = require("agy.transcript")
-  local app_dir = state.config and state.config.app_data_dir
-  local steps = transcript_mod.read_transcript(conv_id, app_dir)
+  assert(state.config, "reconcile_background_tasks: state.config required")
+  local app_dir = state.config.app_data_dir
+  assert(app_dir and app_dir ~= "", "reconcile_background_tasks: config.app_data_dir required")
+
+  local steps = transcript_mod.read_transcript(cid, app_dir)
   local outcomes = tasks_mod.collect_task_outcomes(steps)
 
   for _, tc in ipairs(state.tool_calls) do
@@ -631,8 +639,8 @@ function M.reconcile_background_tasks(buf, state, conv_id)
         outcome = outcomes[tc.short_id]
       end
       if not outcome and tc.log_path and vim.fn.filereadable(tc.log_path) == 1 then
-        local ok, lines = pcall(vim.fn.readfile, tc.log_path)
-        if ok and lines and #lines > 0 then
+        local lines = vim.fn.readfile(tc.log_path)
+        if lines and #lines > 0 then
           local last_chunk = table.concat(lines, "\n", math.max(1, #lines - 20))
           local code = tasks_mod.parse_log_exit_code(last_chunk)
           if code ~= nil then
@@ -1833,11 +1841,7 @@ function M.handle_buf_read(args)
       local stype = step.step_type
 
       if stype == "agent_response" then
-        local cid = state.conversation_id
-        if not cid and s then
-          cid = s.conversation_id
-        end
-        M.reconcile_background_tasks(buf, state, cid)
+        M.reconcile_background_tasks(buf, state, state.conversation_id)
         if not state.active_agent_started_output then
           M.check_and_render_pending_thoughts(buf)
           state.active_agent_started_output = true
@@ -1892,11 +1896,7 @@ function M.handle_buf_read(args)
         end
 
         if step.state == "ACTIVE" then
-          local cid = state.conversation_id
-          if not cid and s then
-            cid = s.conversation_id
-          end
-          M.reconcile_background_tasks(buf, state, cid)
+          M.reconcile_background_tasks(buf, state, state.conversation_id)
           M.handle_post_task_bottom_visibility(buf, state)
           M.check_and_render_pending_thoughts(buf)
           state.stream_info.status = "tool:" .. (step.tool_name or "tool")
@@ -1945,74 +1945,28 @@ function M.handle_buf_read(args)
             end)
             state.active_tool_record = nil
           end
-        end
-      elseif stype == "system_message" and step.state == "DONE" then
-        local cid = state.conversation_id
-        if not cid and s then
-          cid = s.conversation_id
-        end
-        M.reconcile_background_tasks(buf, state, cid)
-      end
 
-      -- Detect background task start or completion notification in any step text/delta/content/output
-      local check_text = step.text_delta or step.content or step.notification or (step.tool_info and step.tool_info.output)
-      if check_text and type(check_text) == "string" then
-        if check_text:find("Tool is running as a background task", 1, true) then
-          local tasks_mod = require("agy.tasks")
-          local info = tasks_mod.parse_task_info(check_text)
-          if info then
-            for _, tc in ipairs(state.tool_calls) do
-              if tc.tool_name == "run_command" and (tc.status == "running" or tc.task_status == "running") and not tc.is_background_task then
-                tc.is_background_task = true
-                tc.task_id = info.task_id
-                tc.short_id = info.short_id
-                tc.log_path = info.log_path
-                tc.task_status = "running"
-                state.had_background_task = true
-                M.with_modifiable(buf, function()
-                  render.update_task_status(buf, tc, "running", nil, state.config)
-                end)
-              end
-            end
-          end
-        end
-
-        if check_text:find("Task id", 1, true) then
-          local tasks_mod = require("agy.tasks")
-          local comp = tasks_mod.parse_task_completion(check_text)
-          if comp then
-            for _, tc in ipairs(state.tool_calls) do
-              if tc.is_background_task and (tc.task_id == comp.task_id or tc.short_id == comp.short_id) then
-                if not tc.duration_seconds and tc.start_time then
-                  tc.duration_seconds = math.max(0, (vim.uv.hrtime() - tc.start_time) / 1e9)
+          -- Handle manage_task with Action == "kill"
+          if step.tool_name == "manage_task" and step.tool_info and step.tool_info.parameters then
+            local p = step.tool_info.parameters
+            if p.Action == "kill" and p.TaskId then
+              local tasks_mod = require("agy.tasks")
+              local sid = tasks_mod.short_id(p.TaskId)
+              for _, tc in ipairs(state.tool_calls) do
+                if tc.is_background_task and (tc.task_id == p.TaskId or tc.short_id == sid) then
+                  M.with_modifiable(buf, function()
+                    render.update_task_status(buf, tc, "failed", 130, state.config)
+                  end)
+                  state.had_background_task = true
+                  state.reengage_follow_bottom = true
                 end
-                M.with_modifiable(buf, function()
-                  render.update_task_status(buf, tc, comp.status, comp.exit_code, state.config)
-                end)
-                state.had_background_task = true
-                state.reengage_follow_bottom = true
               end
             end
           end
         end
-      end
 
-      -- Also check if manage_task was executed with Action='kill'
-      if step.tool_name == "manage_task" and step.state == "DONE" and step.tool_info and step.tool_info.parameters then
-        local p = step.tool_info.parameters
-        if p.Action == "kill" and p.TaskId then
-          local tasks_mod = require("agy.tasks")
-          local sid = tasks_mod.short_id(p.TaskId)
-          for _, tc in ipairs(state.tool_calls) do
-            if tc.is_background_task and (tc.task_id == p.TaskId or tc.short_id == sid) then
-              M.with_modifiable(buf, function()
-                render.update_task_status(buf, tc, "failed", 130, state.config)
-              end)
-              state.had_background_task = true
-              state.reengage_follow_bottom = true
-            end
-          end
-        end
+      elseif stype == "system_message" and step.state == "DONE" then
+        M.reconcile_background_tasks(buf, state, state.conversation_id)
       end
     end,
 
@@ -2040,14 +1994,7 @@ function M.handle_buf_read(args)
       end
 
       -- Reconcile any remaining running background tasks from disk transcript outcomes
-      local conv_id = state.conversation_id
-      if not conv_id and s then
-        conv_id = s.conversation_id
-      end
-      if not conv_id and result then
-        conv_id = result.conversation_id
-      end
-      M.reconcile_background_tasks(buf, state, conv_id)
+      M.reconcile_background_tasks(buf, state, state.conversation_id)
       M.handle_post_task_bottom_visibility(buf, state)
 
       if state.agent_extmark_id and state.agent_line then
