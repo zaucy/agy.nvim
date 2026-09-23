@@ -43,7 +43,8 @@ def main [
             "tests/test_header_logo.lua",
             "tests/test_artifacts.lua",
             "tests/test_home.lua",
-            "tests/test_async.lua"
+            "tests/test_async.lua",
+            "tests/test_stream_throttle.lua"
         ]
 
         for t in $tests {

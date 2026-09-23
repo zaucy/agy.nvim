@@ -249,6 +249,79 @@ function M.update_footer(buf)
   end
 end
 
+---Flush any queued streaming text deltas to the buffer and trigger a live screen redraw
+---@param buf number
+---@param is_final? boolean
+function M.flush_stream_delta(buf, is_final)
+  local state = M.buffers[buf]
+  if not state or not vim.api.nvim_buf_is_valid(buf) then return end
+
+  if state.stream_flush_timer then
+    pcall(function()
+      state.stream_flush_timer:stop()
+      if not state.stream_flush_timer:is_closing() then
+        state.stream_flush_timer:close()
+      end
+    end)
+    state.stream_flush_timer = nil
+  end
+
+  local delta = state.pending_text_delta
+  state.pending_text_delta = nil
+
+  if (delta and delta ~= "") or is_final then
+    state.last_stream_render_time = vim.uv.hrtime() / 1e6
+    M.with_modifiable(buf, function()
+      render.append_text_delta(buf, delta or "", state.config, is_final)
+      M.ensure_prompt_line(buf)
+      if state.follow_bottom then
+        render.scroll_to_bottom(buf, true)
+      end
+      M.update_footer(buf)
+    end)
+    if vim.fn.bufwinid(buf) ~= -1 then
+      pcall(vim.cmd, "redraw")
+    end
+  end
+end
+
+---Queue an incoming streaming delta and flush either immediately or via high-frequency throttle
+---@param buf number
+---@param delta string
+function M.queue_stream_delta(buf, delta)
+  local state = M.buffers[buf]
+  if not state or not vim.api.nvim_buf_is_valid(buf) then return end
+  if not delta or delta == "" then return end
+
+  if state.stream_info.status ~= "generating" then
+    state.stream_info.status = "generating"
+    M.update_footer(buf)
+  end
+
+  state.pending_text_delta = (state.pending_text_delta or "") .. delta
+
+  local now = vim.uv.hrtime() / 1e6
+  local elapsed = state.last_stream_render_time and (now - state.last_stream_render_time) or 9999
+
+  -- If sufficient time has elapsed since the last render, flush immediately
+  -- for zero latency on initial chunks or slow streams
+  if elapsed >= 30 and not state.stream_flush_timer then
+    M.flush_stream_delta(buf, false)
+    return
+  end
+
+  -- If rapid deltas are arriving and a timer is not already ticking, schedule a flush
+  if not state.stream_flush_timer then
+    local timer = (vim.uv and vim.uv.new_timer) and vim.uv.new_timer() or vim.loop.new_timer()
+    state.stream_flush_timer = timer
+    local wait_ms = math.max(1, math.floor(30 - elapsed))
+    timer:start(wait_ms, 0, vim.schedule_wrap(function()
+      state.stream_flush_timer = nil
+      M.flush_stream_delta(buf, false)
+    end))
+  end
+end
+
 ---Extract prompt text from the active user prompt section at the bottom of the buffer
 ---@param buf number
 ---@return string prompt_text
@@ -1276,6 +1349,7 @@ function M.handle_write(buf)
     end
   end
 
+  M.flush_stream_delta(buf, false)
   state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
   state.active_agent_started_output = false
   state.last_thought_start_time = vim.uv.hrtime()
@@ -1598,6 +1672,16 @@ function M.cleanup_buffer(buf)
   completion.close()
   local state = M.buffers[buf]
   if state then
+    if state.stream_flush_timer then
+      pcall(function()
+        state.stream_flush_timer:stop()
+        if not state.stream_flush_timer:is_closing() then
+          state.stream_flush_timer:close()
+        end
+      end)
+      state.stream_flush_timer = nil
+    end
+    state.pending_text_delta = nil
     if state.is_artifact then
       pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.artifacts").NS_COMMENTS, 0, -1)
       pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.artifacts").NS_FOOTER, 0, -1)
@@ -1953,28 +2037,18 @@ function M.handle_buf_read(args)
       local stype = step.step_type
 
       if stype == "agent_response" then
-        M.reconcile_background_tasks(buf, state, state.conversation_id)
         if not state.active_agent_started_output then
+          M.reconcile_background_tasks(buf, state, state.conversation_id)
           M.check_and_render_pending_thoughts(buf)
           state.active_agent_started_output = true
         end
         M.handle_post_task_bottom_visibility(buf, state)
         if step.text_delta and step.text_delta ~= "" then
-          if state.stream_info.status ~= "generating" then
-            state.stream_info.status = "generating"
-            M.update_footer(buf)
-          end
-          M.with_modifiable(buf, function()
-            render.append_text_delta(buf, step.text_delta, state.config)
-            M.ensure_prompt_line(buf)
-            if state.follow_bottom then
-              render.scroll_to_bottom(buf, true)
-            end
-            M.update_footer(buf)
-          end)
+          M.queue_stream_delta(buf, step.text_delta)
         end
 
       elseif stype == "tool" then
+        M.flush_stream_delta(buf, false)
         if step.tool_name == "ask_question" then
           if step.state == "ACTIVE" then
             local q_list = render.parse_question_params(step.tool_info and step.tool_info.parameters)
@@ -2081,11 +2155,15 @@ function M.handle_buf_read(args)
         end
 
       elseif stype == "system_message" and step.state == "DONE" then
+        M.flush_stream_delta(buf, false)
         M.reconcile_background_tasks(buf, state, state.conversation_id)
+      else
+        M.flush_stream_delta(buf, false)
       end
     end,
 
     on_result = function(s, result)
+      M.flush_stream_delta(buf, false)
       state.stream_info.status = "ready"
       state.active_agent_started_output = false
       if result.conversation_id and result.conversation_id ~= "" then
@@ -2173,6 +2251,7 @@ function M.handle_buf_read(args)
     end,
 
     on_error = function(s, err_msg)
+      M.flush_stream_delta(buf, false)
       state.stream_info.status = "ready"
       if state.active_question then
         render.finalize_question_block(buf, state.active_question, state.config)
