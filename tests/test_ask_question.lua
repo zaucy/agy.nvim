@@ -658,9 +658,9 @@ assert(state_lock.active_question ~= nil)
 local ui_lock = state_lock.active_question.ui
 assert(ui_lock.is_visible() == true)
 
--- Float window config: focusable must be false, relative to target win
+-- Float window config: focusable must be true so the cursor is used directly for selecting
 local win_cfg = vim.api.nvim_win_get_config(ui_lock.state.win)
-assert(win_cfg.focusable == false, "Floating window must be non-focusable so prompt win retains cursor")
+assert(win_cfg.focusable == true, "Floating window must be focusable so cursor is used directly for selecting")
 assert(win_cfg.relative == "win", "Floating window must be relative to target window")
 
 -- Overlay sits directly over top of prompt area (starting at top border), not below prompt
@@ -669,6 +669,17 @@ local prompt_screenpos = vim.fn.screenpos(win_lock, prompt_line_lock, 1)
 local win_pos_lock = vim.api.nvim_win_get_position(win_lock)
 local prompt_win_row_lock = prompt_screenpos.row - 1 - win_pos_lock[1]
 assert(win_cfg.row <= prompt_win_row_lock, string.format("Question UI row (%d) must sit directly over top of prompt area (prompt row: %d)", win_cfg.row, prompt_win_row_lock))
+
+-- Cursor is positioned directly on first option line for selection
+local cur_win = vim.api.nvim_get_current_win()
+assert(cur_win == ui_lock.state.win, "Question window must be focused for direct cursor selection")
+local cur_pos = vim.api.nvim_win_get_cursor(ui_lock.state.win)
+assert(cur_pos[1] == 4, string.format("Cursor must be on option 1 line (expected 4, got %d)", cur_pos[1]))
+
+-- Verify bottom border full width line exists under footer
+local q_buf_lines = vim.api.nvim_buf_get_lines(ui_lock.state.buf, 0, -1, false)
+local last_line = q_buf_lines[#q_buf_lines]
+assert(#last_line >= 10 and last_line:find("^[─%-]+$"), "Bottom line under footer must be a full width divider line")
 
 -- Target buffer modifiable must be false everywhere while question is active
 protocol.update_modifiable(buf_lock)
