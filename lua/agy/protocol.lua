@@ -931,6 +931,113 @@ function M.intercept_ask_question(buf, state, q_list)
   M.update_modifiable(buf)
 end
 
+---Open an artifact buffer for review
+---@param buf number
+---@param conv_id string
+---@param filename string
+function M.open_artifact(buf, conv_id, filename)
+  assert(conv_id and conv_id ~= "", "agy protocol: conv_id is required")
+  assert(filename and filename ~= "", "agy protocol: filename is required")
+  vim.cmd("edit agy://" .. conv_id .. "/artifacts/" .. filename)
+end
+
+---Intercept artifact review by displaying an interactive question UI
+---@param buf number
+---@param state table
+---@param filename string
+---@param summary? string
+function M.intercept_artifact_review(buf, state, filename, summary)
+  assert(buf and vim.api.nvim_buf_is_valid(buf), "agy protocol: valid buffer is required")
+  assert(state, "agy protocol: state is required")
+  assert(filename and filename ~= "", "agy protocol: filename is required")
+
+  if state.active_question then return end
+
+  -- Stop in-flight turn immediately to prevent print-mode auto-skipping or default continuation
+  if state.session and state.session.turn_active then
+    state.session:stop()
+  end
+
+  -- Discard pending stream deltas from cancelled turn
+  state.stream_delta_queue = {}
+  if state.stream_flush_timer then
+    pcall(function() state.stream_flush_timer:stop() end)
+  end
+
+  render.stop_thinking_animation(buf)
+  M.ensure_prompt_line(buf)
+  M.update_prompt_divider(buf)
+
+  -- Render thoughts prior to question
+  if not state.active_agent_started_output then
+    M.check_and_render_pending_thoughts(buf)
+  else
+    M.mark_transcript_thoughts_rendered(buf, state)
+  end
+
+  state.stream_info.status = "question"
+  M.update_footer(buf)
+
+  local target_win = vim.fn.bufwinid(buf)
+  if target_win == -1 or not vim.api.nvim_win_is_valid(target_win) then
+    target_win = vim.api.nvim_get_current_win()
+  end
+
+  local q_text
+  if summary and summary ~= "" then
+    q_text = string.format("Review artifact '%s': %s", filename, summary)
+  else
+    q_text = string.format("Review artifact '%s'", filename)
+  end
+
+  local q_list = {
+    {
+      question = q_text,
+      options = {
+        "Approve and proceed",
+        "Review artifact",
+      },
+      is_multi_select = false,
+    },
+  }
+
+  question_mod.show(target_win, buf, q_list, {
+    config = state.config,
+    on_submit = function(answer_payload, answered_questions)
+      state.active_question = nil
+      local chosen_opt = answered_questions and answered_questions[1] and answered_questions[1].selected and answered_questions[1].selected[1]
+      if chosen_opt == "Review artifact" then
+        state.pending_artifact_feedback = {
+          filename = filename,
+          summary = summary,
+        }
+        M.open_artifact(buf, state.conversation_id, filename)
+        return
+      end
+
+      state.pending_artifact_feedback = nil
+      M.on_question_submitted(buf, state, answer_payload, answered_questions)
+    end,
+    on_cancel = function()
+      state.active_question = nil
+      state.pending_artifact_feedback = nil
+      M.on_question_cancelled(buf, state)
+    end,
+  })
+
+  state.active_question = {
+    ui = question_mod,
+    questions = q_list,
+    is_artifact_review = true,
+    artifact_filename = filename,
+  }
+
+  if target_win and vim.api.nvim_win_is_valid(target_win) and vim.api.nvim_win_get_buf(target_win) == buf then
+    question_mod.sync_cursor()
+  end
+  M.update_modifiable(buf)
+end
+
 ---Handler called when user confirms answer in question UI
 ---@param buf number
 ---@param state table
@@ -1220,6 +1327,12 @@ function M.show_info_float(title, lines, caller_buf)
   })
 
   return win, buf
+end
+
+---Submit prompt currently in the buffer or dispatch turn submission
+---@param buf number
+function M.submit_prompt(buf)
+  M.handle_write(buf)
 end
 
 ---Handle BufWriteCmd when user runs :w in agy:// buffer
@@ -2212,6 +2325,15 @@ function M.handle_buf_read(args)
     M.update_modifiable(buf)
     M.update_footer(buf)
     vim.notify("[agy.nvim] Reloaded conversation " .. (target_id ~= "" and target_id or "new"), vim.log.levels.INFO)
+
+    if existing_state.pending_artifact_feedback and not existing_state.active_question then
+      local paf = existing_state.pending_artifact_feedback
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(buf) and M.buffers[buf] == existing_state then
+          M.intercept_artifact_review(buf, existing_state, paf.filename, paf.summary)
+        end
+      end)
+    end
     return
   end
 
@@ -2412,14 +2534,21 @@ function M.handle_buf_read(args)
 
         -- If an artifact feedback request was pending and the agent tries to run another tool:
         if state.pending_artifact_feedback and step.state == "ACTIVE" then
-          local fname = state.pending_artifact_feedback.filename or "artifact"
+          local paf = state.pending_artifact_feedback
           state.pending_artifact_feedback = nil
           if state.session and state.session.turn_active then
             state.session:stop()
           end
-          state.stream_info.status = "ready"
-          M.update_footer(buf)
-          vim.notify(string.format("[agy.nvim] Artifact review requested for '%s'. Review with :AgyArtifacts or reply below.", fname), vim.log.levels.INFO)
+          if state.agent_extmark_id and state.agent_line then
+            M.with_modifiable(buf, function()
+              local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
+              state.prompt_start_line = next_line
+              state.prompt_extmark_id = prompt_extmark_id
+              state.agent_extmark_id = nil
+              state.agent_line = nil
+            end)
+          end
+          M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
           return
         end
 
@@ -2534,11 +2663,6 @@ function M.handle_buf_read(args)
         return
       end
 
-      if state.pending_artifact_feedback then
-        local fname = state.pending_artifact_feedback.filename or "artifact"
-        state.pending_artifact_feedback = nil
-        vim.notify(string.format("[agy.nvim] Artifact review requested for '%s'. Review with :AgyArtifacts or reply below.", fname), vim.log.levels.INFO)
-      end
       if not state.active_agent_started_output then
         M.check_and_render_pending_thoughts(buf)
       else
@@ -2595,6 +2719,13 @@ function M.handle_buf_read(args)
       end
       M.update_modifiable(buf)
       M.update_footer(buf)
+
+      if state.pending_artifact_feedback then
+        local paf = state.pending_artifact_feedback
+        state.pending_artifact_feedback = nil
+        M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
+        return
+      end
 
       if state.prompt_queue and #state.prompt_queue > 0 then
         local next_item = table.remove(state.prompt_queue, 1)
