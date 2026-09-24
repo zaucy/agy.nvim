@@ -34,6 +34,7 @@ local cfg = config_mod.setup({
     fold_tool_output = false,
     protect_history = true,
     show_thoughts = true,
+    collapse_work = false,
   },
 })
 protocol.setup()

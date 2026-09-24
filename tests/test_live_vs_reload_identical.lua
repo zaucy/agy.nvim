@@ -30,6 +30,7 @@ local cfg = config_mod.setup({
     fold_tool_output = false,
     protect_history = true,
     show_thoughts = true,
+    collapse_work = false,
   }
 })
 protocol.setup()
@@ -536,7 +537,11 @@ print("✓ Multi-turn with tool call turn ending is 100% IDENTICAL between live 
 print("\n[Test 8] Testing protocol buffer reload (:e) preserves shortened workspace paths...")
 
 local reload_env, reload_cid = test_helpers.create_mock_environment()
-local reload_cfg = config_mod.setup({ app_data_dir = reload_env, icons = test_icons })
+local reload_cfg = config_mod.setup({
+  app_data_dir = reload_env,
+  icons = test_icons,
+  ui = { collapse_work = false },
+})
 local ext_ws = "C:/projects/external_repo_for_test8"
 if vim.fn.has("win32") == 0 and vim.fn.has("win64") == 0 then
   ext_ws = "/home/developer/external_repo_for_test8"
