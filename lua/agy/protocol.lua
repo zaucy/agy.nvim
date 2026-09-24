@@ -793,6 +793,28 @@ function M.check_and_render_pending_thoughts(buf)
   end
 end
 
+---Mark all thinking steps in current transcript as acknowledged without modifying buffer lines
+---@param buf number
+---@param state? table
+function M.mark_transcript_thoughts_rendered(buf, state)
+  local s = state or M.buffers[buf]
+  if not s or not s.conversation_id then return end
+
+  s.rendered_thinking = s.rendered_thinking or {}
+
+  local cid = s.conversation_id
+  local app_data = s.config and s.config.app_data_dir
+  local steps = transcript_mod.read_transcript(cid, app_data)
+  if not steps or #steps == 0 then return end
+
+  for idx, step in ipairs(steps) do
+    if step.type == "PLANNER_RESPONSE" and step.thinking and step.thinking ~= "" then
+      local key = (step.step_index or tostring(idx)) .. ":" .. step.thinking
+      s.rendered_thinking[key] = true
+    end
+  end
+end
+
 ---Record a local control command and its result into the buffer conversation history
 ---@param buf number
 ---@param command_text string
@@ -2165,7 +2187,6 @@ function M.handle_buf_read(args)
     on_result = function(s, result)
       M.flush_stream_delta(buf, false)
       state.stream_info.status = "ready"
-      state.active_agent_started_output = false
       if result.conversation_id and result.conversation_id ~= "" then
         state.conversation_id = result.conversation_id
       end
@@ -2175,7 +2196,10 @@ function M.handle_buf_read(args)
       end
       if not state.active_agent_started_output then
         M.check_and_render_pending_thoughts(buf)
+      else
+        M.mark_transcript_thoughts_rendered(buf, state)
       end
+      state.active_agent_started_output = false
       if result.usage and result.usage.total_tokens then
         state.stream_info.total_tokens = result.usage.total_tokens
       end
@@ -2253,6 +2277,7 @@ function M.handle_buf_read(args)
     on_error = function(s, err_msg)
       M.flush_stream_delta(buf, false)
       state.stream_info.status = "ready"
+      state.active_agent_started_output = false
       if state.active_question then
         render.finalize_question_block(buf, state.active_question, state.config)
         state.active_question = nil
@@ -2298,6 +2323,7 @@ function M.handle_buf_read(args)
 
     on_exit = function(s, code, was_turn_active)
       state.stream_info.status = "ready"
+      state.active_agent_started_output = false
       if state.active_question then
         render.finalize_question_block(buf, state.active_question, state.config)
         state.active_question = nil
