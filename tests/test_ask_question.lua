@@ -291,9 +291,9 @@ print("✓ Historical ask_question rendered cleanly with [x] answered option and
 protocol.cleanup_buffer(buf_hist)
 
 -- =========================================================================
--- TEST 8: Client Protocol Instructions Injection in Session
+-- TEST 8: No CLIENT_INSTRUCTIONS Injection in Session
 -- =========================================================================
-print("\n[Test 8] Testing client protocol instructions injection in session...")
+print("\n[Test 8] Testing session sends prompt directly without CLIENT_INSTRUCTIONS...")
 
 local session_mod = require("agy.session")
 local written_to_proc = nil
@@ -302,7 +302,6 @@ local mock_session = setmetatable({
   is_active = true,
   is_initialized = true,
   turn_active = false,
-  client_instructions = true,
   proc = {
     write = function(_, str)
       written_to_proc = str
@@ -314,18 +313,9 @@ mock_session:send_prompt("/plan create a rust CLI tool")
 assert(written_to_proc ~= nil, "Session must write payload to proc")
 local decoded_payload = vim.json.decode(written_to_proc)
 assert(decoded_payload.event == "user")
-assert(decoded_payload.message.content:find("/plan create a rust CLI tool", 1, true), "Payload must contain user prompt")
-assert(decoded_payload.message.content:find("<CLIENT_INSTRUCTIONS>", 1, true), "Payload must include CLIENT_INSTRUCTIONS")
-assert(decoded_payload.message.content:find("RequestFeedback: false", 1, true), "Payload must enforce RequestFeedback: false for plans")
-assert(decoded_payload.message.content:find("Do NOT invoke the `ask_question` tool", 1, true), "Payload must prohibit ask_question tool")
-print("✓ Session automatically injects client protocol instructions for planning and questions")
-
--- Test opt-out with client_instructions = false
-mock_session.client_instructions = false
-mock_session:send_prompt("regular prompt")
-local decoded_optout = vim.json.decode(written_to_proc)
-assert(decoded_optout.message.content == "regular prompt", "When client_instructions is false, prompt should not be modified")
-print("✓ client_instructions = false cleanly disables instruction injection")
+assert(decoded_payload.message.content == "/plan create a rust CLI tool", "Payload must contain exact user prompt without injection")
+assert(not decoded_payload.message.content:find("<CLIENT_INSTRUCTIONS>", 1, true), "Payload must not include CLIENT_INSTRUCTIONS")
+print("✓ Session cleanly transmits user prompt without prompt injection")
 
 -- =========================================================================
 -- TEST 9: utils.clean_user_content Stripping of CLIENT_INSTRUCTIONS
@@ -351,33 +341,105 @@ assert(cleaned == "/plan implement user authentication", "Cleaned user content m
 print("✓ utils.clean_user_content cleanly strips CLIENT_INSTRUCTIONS from conversation history")
 
 -- =========================================================================
--- TEST 10: Safe Handling of Zombie ask_question State on DONE / Result
+-- TEST 10: Turn Cancellation & Question UI on ask_question
 -- =========================================================================
-print("\n[Test 10] Testing zombie active_question cleanup...")
+print("\n[Test 10] Testing turn cancellation and interactive question on ask_question...")
 
 vim.cmd("edit! agy://new")
-local buf_guard = vim.api.nvim_get_current_buf()
-local pstate = protocol.buffers[buf_guard]
+local buf_cancel = vim.api.nvim_get_current_buf()
+local pstate = protocol.buffers[buf_cancel]
 
--- Simulate ACTIVE ask_question
-local dummy_q = { { question = "Proceed?", options = { "Yes", "No" }, is_multi_select = false } }
-pstate.active_question = render.render_question_block(buf_guard, dummy_q, pstate.config)
-assert(pstate.active_question ~= nil)
+local session_stopped = false
+local session_next_prompt = nil
 
--- Simulate DONE with User Skipped (headless agy behavior)
+pstate.session.turn_active = true
+pstate.session.stop = function()
+  session_stopped = true
+  pstate.session.turn_active = false
+end
+pstate.session.send_prompt = function(_, prompt)
+  session_next_prompt = prompt
+  return true
+end
+
+-- Simulate step_update arriving with ask_question
 pstate.session.on_step_update(pstate.session, {
   step_type = "tool",
   tool_name = "ask_question",
-  state = "DONE",
+  state = "ACTIVE",
   tool_info = {
     name = "ask_question",
-    output = "A1: User Skipped"
+    parameters = {
+      questions = {
+        {
+          question = "Choose deployment strategy:",
+          options = { "Blue/Green", "Canary", "Rolling" },
+          is_multi_select = false,
+        }
+      }
+    }
   }
 })
 
-assert(pstate.active_question == nil, "active_question must be cleared when User Skipped arrives")
-print("✓ active_question safely cleared on auto-skipped DONE event")
+assert(session_stopped == true, "Turn must be cancelled immediately when ask_question arrives")
+assert(pstate.active_question ~= nil, "active_question state must be set")
+assert(pstate.stream_info.status == "question", "Stream status must be set to 'question'")
 
-protocol.cleanup_buffer(buf_guard)
+local buf_lines = vim.api.nvim_buf_get_lines(buf_cancel, 0, -1, false)
+local found_cancelled_banner = false
+local found_q_title = false
+for _, l in ipairs(buf_lines) do
+  if l:find("Turn cancelled") then
+    found_cancelled_banner = true
+  end
+  if l:find("Choose deployment strategy:") then
+    found_q_title = true
+  end
+end
+
+assert(found_cancelled_banner == false, "Turn cancelled banner must NOT be rendered for ask_question")
+assert(found_q_title == true, "Question title must be rendered in buffer")
+
+-- Toggle option 2 (Canary)
+local opt2_line = pstate.active_question.questions[1].options_start_line + 1
+render.toggle_question_option(buf_cancel, opt2_line, pstate.active_question)
+
+-- Submit answer via :write
+vim.cmd("write")
+
+assert(session_next_prompt ~= nil, "Answer must be sent to session as next turn")
+assert(session_next_prompt:find("A: Canary"), "Payload must contain selected option Canary, got: " .. tostring(session_next_prompt))
+assert(pstate.active_question == nil, "active_question must be cleared after submission")
+
+protocol.cleanup_buffer(buf_cancel)
+print("✓ ask_question cleanly cancels turn, displays question UI without banner, and submits response as next turn")
+
+-- =========================================================================
+-- TEST 11: Cancel Active Question with <C-c>
+-- =========================================================================
+print("\n[Test 11] Testing manual cancellation of active question with stop_turn...")
+
+vim.cmd("edit! agy://new")
+local buf_stop = vim.api.nvim_get_current_buf()
+local stop_state = protocol.buffers[buf_stop]
+
+stop_state.session = {
+  turn_active = false,
+  stop = function() end,
+  send_prompt = function() return true end,
+  destroy = function() end,
+}
+
+local dummy_q = { { question = "Proceed?", options = { "Yes", "No" }, is_multi_select = false } }
+stop_state.active_question = render.render_question_block(buf_stop, dummy_q, stop_state.config)
+assert(stop_state.active_question ~= nil)
+
+protocol.stop_turn(buf_stop)
+
+assert(stop_state.active_question == nil, "active_question must be cleared when user cancels with stop_turn")
+assert(stop_state.stream_info.status == "ready", "Status must return to ready")
+
+protocol.cleanup_buffer(buf_stop)
+print("✓ stop_turn cleanly clears active_question and restores prompt divider")
 
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")

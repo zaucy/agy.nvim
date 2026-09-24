@@ -75,13 +75,8 @@ function M.new(opts)
   return self
 end
 
----Client instructions injected into stream-json prompt payloads to enforce clean planning stops and text questions
-M.CLIENT_INSTRUCTIONS = [[
-
-<CLIENT_INSTRUCTIONS>
-1. Interactive Questions: Do NOT invoke the `ask_question` tool. In this stream environment, interactive tool calls are not supported and are automatically skipped. Whenever you need clarification, user preferences, design decisions, or interview questions (such as during interview or planning mode), format your questions and choices (e.g. A, B, C...) directly in your markdown text response and STOP cleanly to await the user's reply.
-2. Planning & Artifacts: When creating or writing a plan artifact via `write_to_file`, ALWAYS set `RequestFeedback: false` in `ArtifactMetadata`. Present the plan summary and markdown file link in your response, and STOP immediately without running commands or creating implementation files. Wait for explicit user review and approval in a subsequent turn before executing the plan.
-</CLIENT_INSTRUCTIONS>]]
+---Deprecated / unused instruction injection constant
+M.CLIENT_INSTRUCTIONS = ""
 
 ---Build the command argument list for spawning agy
 ---@return string[]
@@ -296,9 +291,6 @@ function M:send_prompt(prompt)
   end
 
   local full_prompt = prompt
-  if self.client_instructions ~= false and not prompt:find("<CLIENT_INSTRUCTIONS>", 1, true) then
-    full_prompt = prompt .. M.CLIENT_INSTRUCTIONS
-  end
 
   if not self.is_initialized then
     self.pending_prompt = full_prompt

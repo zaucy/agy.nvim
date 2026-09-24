@@ -386,7 +386,10 @@ function M._setup_buffer(buf, conversation_id)
     end
   end)
 
+  local buf_group = vim.api.nvim_create_augroup("AgyBuffer_" .. buf, { clear = true })
+
   vim.api.nvim_create_autocmd("BufWinEnter", {
+    group = buf_group,
     buffer = buf,
     callback = function()
       local wins = vim.fn.win_findbuf(buf)
@@ -625,6 +628,7 @@ function M._setup_buffer(buf, conversation_id)
 
   -- BufWriteCmd autocommand for this buffer
   vim.api.nvim_create_autocmd("BufWriteCmd", {
+    group = buf_group,
     buffer = buf,
     callback = function()
       M.handle_write(buf)
@@ -633,6 +637,7 @@ function M._setup_buffer(buf, conversation_id)
 
   -- Cleanup on buffer wipeout / delete
   vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = buf_group,
     buffer = buf,
     callback = function()
       M.cleanup_buffer(buf)
@@ -817,6 +822,106 @@ function M.mark_transcript_thoughts_rendered(buf, state)
   end
 end
 
+---Check if tool call parameters indicate an artifact requesting feedback
+---@param tool_name? string
+---@param params? table
+---@return boolean is_feedback, string? filename, string? summary
+local function check_artifact_feedback_request(tool_name, params)
+  if tool_name ~= "write_to_file" or type(params) ~= "table" then
+    return false
+  end
+  local meta = params.ArtifactMetadata or params.artifact_metadata or params.artifactMetadata
+  if type(meta) == "string" then
+    meta = utils.json_decode(meta)
+  end
+  if type(meta) == "table" then
+    local req = (meta.RequestFeedback == true or meta.requestFeedback == true)
+    if req then
+      local target = params.TargetFile or params.target_file or params.targetFile or "artifact"
+      local fname = vim.fs.basename(target)
+      return true, fname, meta.Summary or meta.summary
+    end
+  end
+  return false
+end
+
+---Intercept ask_question tool call by cancelling the in-flight turn and displaying the question UI
+---@param buf number
+---@param state table
+---@param q_list table[]
+function M.intercept_ask_question(buf, state, q_list)
+  if state.active_question then return end
+
+  -- Stop in-flight turn immediately to prevent print-mode auto-skipping or default continuation
+  if state.session and state.session.turn_active then
+    state.session:stop()
+  end
+
+  -- Discard pending stream deltas from cancelled turn
+  state.stream_delta_queue = {}
+  if state.stream_flush_timer then
+    pcall(function() state.stream_flush_timer:stop() end)
+  end
+
+  -- Render thoughts prior to question
+  if not state.active_agent_started_output then
+    M.check_and_render_pending_thoughts(buf)
+  else
+    M.mark_transcript_thoughts_rendered(buf, state)
+  end
+
+  state.stream_info.status = "question"
+  M.update_footer(buf)
+
+  M.with_modifiable(buf, function()
+    local q_state = render.render_question_block(buf, q_list, state.config)
+    state.active_question = q_state
+    state.prompt_start_line = q_state.first_option_line
+
+    local win = vim.fn.bufwinid(buf)
+    if win ~= -1 and vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_set_cursor, win, { q_state.first_option_line, 2 })
+    end
+  end)
+
+  vim.bo[buf].modifiable = true
+  vim.bo[buf].modified = false
+end
+
+---Check if recent transcript contains an ask_question tool call to intercept
+---@param buf number
+---@param state table
+---@return boolean intercepted
+function M.check_and_intercept_ask_question(buf, state)
+  if state.active_question then return true end
+  if not state.session or not state.session.turn_active then return false end
+  if not state.conversation_id or state.conversation_id == "" or state.conversation_id == "new" then return false end
+
+  local cid = state.conversation_id
+  local app_data = state.config and state.config.app_data_dir
+  local steps = transcript_mod.read_transcript(cid, app_data)
+  if not steps or #steps == 0 then return false end
+
+  for i = #steps, 1, -1 do
+    local step = steps[i]
+    if step.type == "PLANNER_RESPONSE" and step.tool_calls then
+      for _, tc in ipairs(step.tool_calls) do
+        if tc.name == "ask_question" then
+          local q_list = render.parse_question_params(tc.args)
+          if #q_list > 0 then
+            M.intercept_ask_question(buf, state, q_list)
+            return true
+          end
+        end
+      end
+      break
+    elseif step.type == "USER_INPUT" then
+      break
+    end
+  end
+  return false
+end
+
 ---Record a local control command and its result into the buffer conversation history
 ---@param buf number
 ---@param command_text string
@@ -994,6 +1099,8 @@ function M.handle_write(buf)
 
     state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
     state.active_agent_started_output = false
+    state.agent_extmark_id = nil
+    state.agent_start_line = nil
     state.last_thought_start_time = vim.uv.hrtime()
     render.finalize_question_block(buf, state.active_question, state.config)
     state.active_question = nil
@@ -1650,6 +1757,20 @@ function M.stop_turn(buf)
   local state = M.buffers[buf]
   if not state or not state.session then return end
 
+  if state.active_question then
+    render.finalize_question_block(buf, state.active_question, state.config)
+    state.active_question = nil
+    state.stream_info.status = "ready"
+    M.with_modifiable(buf, function()
+      local next_line, prompt_extmark_id = render.render_cancelled(buf, state.config)
+      state.prompt_start_line = next_line
+      state.prompt_extmark_id = prompt_extmark_id
+    end)
+    M.update_footer(buf)
+    vim.notify("[agy.nvim] Question cancelled.", vim.log.levels.INFO)
+    return
+  end
+
   if state.session.turn_active then
     state.session:stop()
     state.stream_info.status = "ready"
@@ -1726,6 +1847,7 @@ end
 ---@param buf number
 function M.cleanup_buffer(buf)
   completion.close()
+  pcall(vim.api.nvim_del_augroup_by_name, "AgyBuffer_" .. buf)
   local state = M.buffers[buf]
   if state then
     if state.stream_flush_timer then
@@ -2104,6 +2226,26 @@ function M.handle_buf_read(args)
     on_step_update = function(s, step)
       local stype = step.step_type
 
+      -- If active question is waiting for user response, ignore subsequent steps from cancelled turn
+      if state.active_question then
+        return
+      end
+
+      -- Check direct ask_question tool step
+      if stype == "tool" and (step.tool_name == "ask_question" or (step.tool_info and step.tool_info.name == "ask_question")) then
+        local params = step.tool_info and step.tool_info.parameters
+        local q_list = render.parse_question_params(params)
+        if #q_list > 0 then
+          M.intercept_ask_question(buf, state, q_list)
+          return
+        end
+      end
+
+      -- Check transcript for ask_question
+      if M.check_and_intercept_ask_question(buf, state) then
+        return
+      end
+
       if stype == "agent_response" then
         if not state.active_agent_started_output then
           M.reconcile_background_tasks(buf, state, state.conversation_id)
@@ -2117,39 +2259,29 @@ function M.handle_buf_read(args)
 
       elseif stype == "tool" then
         M.flush_stream_delta(buf, false)
-        if step.tool_name == "ask_question" then
-          if step.state == "ACTIVE" then
-            local q_list = render.parse_question_params(step.tool_info and step.tool_info.parameters)
-            if #q_list > 0 then
-              state.stream_info.status = "question"
-              M.update_footer(buf)
-              M.with_modifiable(buf, function()
-                local q_state = render.render_question_block(buf, q_list, state.config)
-                state.active_question = q_state
-                state.prompt_start_line = q_state.first_option_line
 
-                local win = vim.fn.bufwinid(buf)
-                if win ~= -1 then
-                  pcall(vim.api.nvim_win_set_cursor, win, { q_state.first_option_line, 2 })
-                end
-              end)
-              vim.bo[buf].modifiable = true
-              vim.bo[buf].modified = false
-              return
-            end
-          elseif step.state == "DONE" then
-            state.stream_info.status = "thinking"
-            state.last_thought_start_time = vim.uv.hrtime()
-            M.update_footer(buf)
-            if state.active_question and step.tool_info and step.tool_info.output and tostring(step.tool_info.output):find("User Skipped") then
-              render.finalize_question_block(buf, state.active_question, state.config)
-              state.active_question = nil
-            end
-            return
+        -- If an artifact feedback request was pending and the agent tries to run another tool:
+        if state.pending_artifact_feedback and step.state == "ACTIVE" then
+          local fname = state.pending_artifact_feedback.filename or "artifact"
+          state.pending_artifact_feedback = nil
+          if state.session and state.session.turn_active then
+            state.session:stop()
           end
+          state.stream_info.status = "ready"
+          M.update_footer(buf)
+          vim.notify(string.format("[agy.nvim] Artifact review requested for '%s'. Review with :AgyArtifacts or reply below.", fname), vim.log.levels.INFO)
+          return
         end
 
         if step.state == "ACTIVE" then
+          local is_feedback, fname, summary = check_artifact_feedback_request(step.tool_name, step.tool_info and step.tool_info.parameters)
+          if is_feedback then
+            state.pending_artifact_feedback = {
+              filename = fname,
+              summary = summary,
+            }
+          end
+
           M.reconcile_background_tasks(buf, state, state.conversation_id)
           M.handle_post_task_bottom_visibility(buf, state)
           M.check_and_render_pending_thoughts(buf)
@@ -2248,8 +2380,14 @@ function M.handle_buf_read(args)
         state.pending_history_display = nil
       end
       if state.active_question then
-        render.finalize_question_block(buf, state.active_question, state.config)
-        state.active_question = nil
+        -- Interactive question is waiting for user response; do not finalize or clear it
+        return
+      end
+
+      if state.pending_artifact_feedback then
+        local fname = state.pending_artifact_feedback.filename or "artifact"
+        state.pending_artifact_feedback = nil
+        vim.notify(string.format("[agy.nvim] Artifact review requested for '%s'. Review with :AgyArtifacts or reply below.", fname), vim.log.levels.INFO)
       end
       if not state.active_agent_started_output then
         M.check_and_render_pending_thoughts(buf)
@@ -2332,13 +2470,12 @@ function M.handle_buf_read(args)
     end,
 
     on_error = function(s, err_msg)
+      if state.active_question then
+        return
+      end
       M.flush_stream_delta(buf, false)
       state.stream_info.status = "ready"
       state.active_agent_started_output = false
-      if state.active_question then
-        render.finalize_question_block(buf, state.active_question, state.config)
-        state.active_question = nil
-      end
       M.with_modifiable(buf, function()
         if state.agent_extmark_id and state.agent_line then
           pcall(function()
@@ -2379,12 +2516,11 @@ function M.handle_buf_read(args)
     end,
 
     on_exit = function(s, code, was_turn_active)
+      if state.active_question then
+        return
+      end
       state.stream_info.status = "ready"
       state.active_agent_started_output = false
-      if state.active_question then
-        render.finalize_question_block(buf, state.active_question, state.config)
-        state.active_question = nil
-      end
       if was_turn_active or s.turn_active or state.agent_extmark_id ~= nil then
         M.with_modifiable(buf, function()
           if state.agent_extmark_id and state.agent_line then

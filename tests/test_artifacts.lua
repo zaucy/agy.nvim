@@ -282,6 +282,63 @@ assert(#comp_candidates >= 1, "Expected complete_artifacts to match walkthrough"
 assert(comp_candidates[1]:find("walkthrough%.md"), "Expected walkthrough.md in completion candidates")
 print("✓ :AgyArtifacts user command and completion verified")
 
+-- [Test 11] Testing RequestFeedback: true artifact turn stopping
+print("\n[Test 11] Testing RequestFeedback: true artifact turn stopping...")
+vim.cmd("edit! agy://new")
+local art_buf = vim.api.nvim_get_current_buf()
+local art_st = protocol.buffers[art_buf]
+
+local stop_called = false
+art_st.session.turn_active = true
+art_st.session.stop = function()
+  stop_called = true
+  art_st.session.turn_active = false
+end
+
+-- 1. write_to_file tool with RequestFeedback: true
+art_st.session.on_step_update(art_st.session, {
+  step_type = "tool",
+  tool_name = "write_to_file",
+  state = "ACTIVE",
+  tool_info = {
+    name = "write_to_file",
+    parameters = {
+      TargetFile = "implementation_plan.md",
+      ArtifactMetadata = {
+        RequestFeedback = true,
+        Summary = "Implementation plan for feature",
+      },
+    },
+  },
+})
+
+assert(art_st.pending_artifact_feedback ~= nil, "pending_artifact_feedback must be tracked")
+assert(art_st.pending_artifact_feedback.filename == "implementation_plan.md", "Filename must match")
+
+-- 2. Agent provides text delta
+art_st.session.on_step_update(art_st.session, {
+  step_type = "agent_response",
+  state = "ACTIVE",
+  text_delta = "Here is the implementation plan.",
+})
+
+-- 3. If agent attempts to execute another tool before user review, turn is stopped
+art_st.session.on_step_update(art_st.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = {
+    name = "run_command",
+    parameters = { CommandLine = "cargo build" },
+  },
+})
+
+assert(stop_called == true, "Turn must be stopped before subsequent tool can execute")
+assert(art_st.pending_artifact_feedback == nil, "pending_artifact_feedback must be cleared after stop")
+
+protocol.cleanup_buffer(art_buf)
+print("✓ RequestFeedback: true prevents subsequent tool execution and stops turn")
+
 -- Cleanup test files
 pcall(vim.fn.delete, tmp_root, "rf")
 
