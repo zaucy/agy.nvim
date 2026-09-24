@@ -6,7 +6,7 @@ local M = {}
 M.NS_HL = vim.api.nvim_create_namespace("agy_question")
 
 ---@class AgyQuestionItem
----@field type "option"|"write_in"|"submit"
+---@field type "option"|"write_in"|"submit"|"submit_all"
 ---@field opt_idx number
 ---@field text string
 
@@ -16,6 +16,7 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_question")
 ---@field target_win? number
 ---@field target_buf? number
 ---@field mapped_buf? number
+---@field start_line? number
 ---@field is_hidden boolean
 ---@field questions table[]
 ---@field current_q_idx number
@@ -24,6 +25,7 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_question")
 ---@field selected_answers table<number, any>
 ---@field write_in_text table<number, string>
 ---@field items AgyQuestionItem[]
+---@field is_editing_write_in boolean
 ---@field config? table
 ---@field on_submit? fun(answer_payload: string, answered_questions: table[])
 ---@field on_cancel? fun()
@@ -35,6 +37,7 @@ M.state = {
   target_win = nil,
   target_buf = nil,
   mapped_buf = nil,
+  start_line = nil,
   is_hidden = false,
   questions = {},
   current_q_idx = 1,
@@ -56,10 +59,6 @@ local QUESTION_BUF_KEYS = {
   "<Space>", "<CR>", "<C-s>", "w", "i", "a",
   "1", "2", "3", "4", "5", "6", "7", "8", "9",
   "q", "<Esc>", "<C-c>",
-}
-
-local TARGET_NAV_KEYS = {
-  "j", "<Down>", "<C-n>",
 }
 
 local function get_icon(name, cfg)
@@ -195,30 +194,85 @@ local function build_progression(cfg, base_col)
   return table.concat(parts, ""), hls
 end
 
----Check whether the question floating window is currently visible and not hidden
----@return boolean
-function M.is_visible()
-  return M.state.win ~= nil and vim.api.nvim_win_is_valid(M.state.win) and not M.state.is_hidden
+---Get the 1-indexed line in the target session buffer where the question block starts
+---@return number
+function M.get_start_line()
+  local b = M.state.buf or M.state.target_buf
+  if not b or not vim.api.nvim_buf_is_valid(b) then return 1 end
+  local protocol = package.loaded["agy.protocol"]
+  local pstate = protocol and protocol.buffers and protocol.buffers[b]
+  if pstate and pstate.prompt_extmark_id then
+    local render = require("agy.render")
+    local pos = vim.api.nvim_buf_get_extmark_by_id(b, render.NS_UI, pstate.prompt_extmark_id, {})
+    if pos and #pos >= 1 then
+      return pos[1] + 1
+    end
+  end
+  if pstate and pstate.prompt_start_line then
+    return pstate.prompt_start_line
+  end
+  return M.state.start_line or vim.api.nvim_buf_line_count(b)
 end
 
----Temporarily hide the question floating window (e.g. when scrolling up into history)
-function M.hide()
-  if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
-    local target_win = M.state.target_win
-    if vim.api.nvim_get_current_win() == M.state.win and target_win and vim.api.nvim_win_is_valid(target_win) then
-      pcall(vim.api.nvim_set_current_win, target_win)
-    end
-    pcall(vim.api.nvim_win_close, M.state.win, true)
+---Get the 1-indexed line in the target session buffer where options begin
+---@return number
+function M.get_opt_start_line()
+  local start_line = M.get_start_line()
+  if M.is_summary_page() then
+    return start_line + 3 + (#M.state.questions * 2)
   end
-  M.state.win = nil
+  return start_line + 2
+end
+
+---Get all buffer lines comprising the interactive question block
+---@return string[]
+function M.get_question_lines()
+  local b = M.state.buf or M.state.target_buf
+  if not b or not vim.api.nvim_buf_is_valid(b) then return {} end
+  local start_line = M.get_start_line()
+  return vim.api.nvim_buf_get_lines(b, start_line - 1, -1, false)
+end
+
+---Check whether the interactive question UI is currently active and visible
+---@return boolean
+function M.is_visible()
+  local b = M.state.buf or M.state.target_buf
+  return b ~= nil and vim.api.nvim_buf_is_valid(b) and #M.state.questions > 0 and not M.state.is_hidden
+end
+
+---Temporarily hide the question UI
+function M.hide()
   M.state.is_hidden = true
 end
 
----Remove question keymaps from mapped buffer and floating buffer
+---Legacy compatibility helper for prompt bottom row
+---@param target_win number
+---@param target_buf number
+---@param height number
+---@param should_scroll boolean
+---@return number row
+function M.calc_prompt_bottom_row(target_win, target_buf, height, should_scroll)
+  local start_line = M.get_start_line()
+  local pos = vim.fn.screenpos(target_win, start_line, 1)
+  if pos and pos.row > 0 then
+    local win_pos = vim.api.nvim_win_get_position(target_win)
+    return math.max(0, pos.row - 1 - win_pos[1])
+  end
+  return 0
+end
+
+---Update question UI layout upon window resize
+function M.update_win_config()
+  if M.is_visible() then
+    M.render_buffer()
+  end
+end
+
+---Remove question keymaps from the conversation session buffer
 function M.clear_keymaps()
-  local b = M.state.mapped_buf or M.state.target_buf
+  local b = M.state.mapped_buf or M.state.target_buf or M.state.buf
   if b and vim.api.nvim_buf_is_valid(b) then
-    for _, key in ipairs(TARGET_NAV_KEYS) do
+    for _, key in ipairs(QUESTION_BUF_KEYS) do
       pcall(vim.keymap.del, "n", key, { buffer = b })
     end
     local protocol = package.loaded["agy.protocol"]
@@ -227,32 +281,40 @@ function M.clear_keymaps()
       pcall(protocol._setup_buffer, b, state.conversation_id)
     end
   end
-  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
-    for _, key in ipairs(QUESTION_BUF_KEYS) do
-      pcall(vim.keymap.del, "n", key, { buffer = M.state.buf })
-    end
-    local insert_keys = { "<CR>", "<Esc>", "<C-c>", "<BS>", "<C-h>", "<C-w>", "<C-u>", "<Left>", "<Home>", "<Up>", "<Down>" }
-    for _, key in ipairs(insert_keys) do
-      pcall(vim.keymap.del, "i", key, { buffer = M.state.buf })
-    end
-  end
   M.state.mapped_buf = nil
 end
 
----Close question floating window, delete keymaps, and reset state
+---Close question UI, clear buffer lines, delete keymaps, and reset state
 function M.close()
   pcall(vim.cmd, "stopinsert")
   M.state.is_editing_write_in = false
-  M.hide()
+  pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn")
   M.clear_keymaps()
-  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
-    pcall(vim.api.nvim_buf_delete, M.state.buf, { force = true })
+
+  local b = M.state.buf or M.state.target_buf
+  if b and vim.api.nvim_buf_is_valid(b) then
+    local start_line = M.get_start_line()
+    local start_row = start_line - 1
+    local protocol = package.loaded["agy.protocol"]
+    local prev_guard = protocol and protocol._internal_guard
+    if protocol then protocol._internal_guard = true end
+
+    local prev_mod = vim.bo[b].modifiable
+    vim.bo[b].modifiable = true
+    vim.api.nvim_buf_clear_namespace(b, M.NS_HL, 0, -1)
+    vim.api.nvim_buf_set_lines(b, start_row, -1, false, { "" })
+    vim.bo[b].modified = false
+    vim.bo[b].modifiable = prev_mod
+
+    if protocol then protocol._internal_guard = prev_guard end
   end
 
   M.state.win = nil
   M.state.buf = nil
   M.state.target_win = nil
   M.state.target_buf = nil
+  M.state.mapped_buf = nil
+  M.state.start_line = nil
   M.state.questions = {}
   M.state.current_q_idx = 1
   M.state.selected_idx = 1
@@ -347,9 +409,10 @@ function M.build_items()
   end
 end
 
----Render the question floating buffer contents and highlights
+---Render the in-buffer question block directly into target_buf starting at start_line
 function M.render_buffer()
-  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+  local b = M.state.buf or M.state.target_buf
+  if not b or not vim.api.nvim_buf_is_valid(b) then return end
 
   ensure_highlights()
 
@@ -358,24 +421,15 @@ function M.render_buffer()
   local horiz_char = get_horizontal_sep(cfg)
 
   local win_width = 80
-  if M.state.target_win and vim.api.nvim_win_is_valid(M.state.target_win) then
-    win_width = vim.api.nvim_win_get_width(M.state.target_win)
+  local target_win = M.state.win or M.state.target_win
+  if target_win and vim.api.nvim_win_is_valid(target_win) then
+    win_width = vim.api.nvim_win_get_width(target_win)
   end
 
+  local lines = {}
+  local highlights = {}
+
   if M.is_summary_page() then
-    local lines = {}
-    local highlights = {}
-
-    -- Top border divider
-    local top_divider = string.rep(horiz_char, win_width)
-    table.insert(lines, top_divider)
-    table.insert(highlights, {
-      row = 0,
-      start_col = 0,
-      end_col = #top_divider,
-      hl_group = "AgyDividerLine",
-    })
-
     -- Header line
     local prog_str, prog_hls = build_progression(cfg, 2)
     local header_text
@@ -493,15 +547,27 @@ function M.render_buffer()
       hl_group = "AgyDividerLine",
     })
 
-    vim.bo[M.state.buf].modifiable = true
-    vim.api.nvim_buf_set_lines(M.state.buf, 0, -1, false, lines)
-    vim.bo[M.state.buf].modifiable = false
+    local start_line = M.get_start_line()
+    local start_row = start_line - 1
+
+    local protocol = package.loaded["agy.protocol"]
+    local prev_guard = protocol and protocol._internal_guard
+    if protocol then protocol._internal_guard = true end
+
+    local prev_mod = vim.bo[b].modifiable
+    vim.bo[b].modifiable = true
+    vim.api.nvim_buf_set_lines(b, start_row, -1, false, lines)
+    vim.bo[b].modified = false
+    vim.bo[b].modifiable = prev_mod
+
+    if protocol then protocol._internal_guard = prev_guard end
 
     -- Extmarks
-    vim.api.nvim_buf_clear_namespace(M.state.buf, M.NS_HL, 0, -1)
+    vim.api.nvim_buf_clear_namespace(b, M.NS_HL, start_row, -1)
     for _, hl in ipairs(highlights) do
+      local actual_row = start_row + hl.row
       if hl.hl_group then
-        vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, hl.start_col or 0, {
+        vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, hl.start_col or 0, {
           end_col = hl.end_col,
           hl_group = hl.hl_group,
           priority = hl.priority or 100,
@@ -509,18 +575,18 @@ function M.render_buffer()
       elseif hl.is_sel ~= nil then
         if hl.item and hl.item.type == "submit_all" then
           if hl.is_sel then
-            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 0, {
               end_col = 2,
               hl_group = "AgyCompletionPointer",
               priority = 101,
             })
-            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+            vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 2, {
               end_col = #hl.line_str,
               hl_group = "AgyQuestionSubmitSel",
               priority = 102,
             })
           else
-            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+            vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 2, {
               end_col = #hl.line_str,
               hl_group = "AgyQuestionSubmit",
               priority = 100,
@@ -528,11 +594,11 @@ function M.render_buffer()
           end
         else
           if hl.is_sel then
-            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 0, {
               line_hl_group = "AgyCompletionSel",
               priority = 100,
             })
-            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 0, {
               end_col = 2,
               hl_group = "AgyCompletionPointer",
               priority = 101,
@@ -542,15 +608,15 @@ function M.render_buffer()
       end
     end
 
-    local footer_row = #lines - 2
-    vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, footer_row, 0, {
+    local footer_row = start_row + #lines - 2
+    vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, 0, {
       hl_group = "AgyCompletionFooter",
     })
     local key_tokens = { "←/h", "enter", "esc" }
     for _, tok in ipairs(key_tokens) do
       local s, e = footer_text:find(tok, 1, true)
       if s and e then
-        vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, footer_row, s - 1, {
+        vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, s - 1, {
           end_col = e,
           hl_group = "AgyCompletionKey",
         })
@@ -579,19 +645,6 @@ function M.render_buffer()
 
   local start_idx = M.state.scroll_offset
   local end_idx = math.min(total_count, start_idx + max_visible - 1)
-
-  local lines = {}
-  local highlights = {}
-
-  -- Top border divider
-  local top_divider = string.rep(horiz_char, win_width)
-  table.insert(lines, top_divider)
-  table.insert(highlights, {
-    row = 0,
-    start_col = 0,
-    end_col = #top_divider,
-    hl_group = "AgyDividerLine",
-  })
 
   -- Question header line
   local prog_str, prog_hls = build_progression(cfg, 2)
@@ -721,15 +774,27 @@ function M.render_buffer()
     hl_group = "AgyDividerLine",
   })
 
-  vim.bo[M.state.buf].modifiable = true
-  vim.api.nvim_buf_set_lines(M.state.buf, 0, -1, false, lines)
-  vim.bo[M.state.buf].modifiable = false
+  local start_line = M.get_start_line()
+  local start_row = start_line - 1
+
+  local protocol = package.loaded["agy.protocol"]
+  local prev_guard = protocol and protocol._internal_guard
+  if protocol then protocol._internal_guard = true end
+
+  local prev_mod = vim.bo[b].modifiable
+  vim.bo[b].modifiable = true
+  vim.api.nvim_buf_set_lines(b, start_row, -1, false, lines)
+  vim.bo[b].modified = false
+  vim.bo[b].modifiable = prev_mod
+
+  if protocol then protocol._internal_guard = prev_guard end
 
   -- Extmark application
-  vim.api.nvim_buf_clear_namespace(M.state.buf, M.NS_HL, 0, -1)
+  vim.api.nvim_buf_clear_namespace(b, M.NS_HL, start_row, -1)
   for _, hl in ipairs(highlights) do
+    local actual_row = start_row + hl.row
     if hl.hl_group then
-      vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, hl.start_col or 0, {
+      vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, hl.start_col or 0, {
         end_col = hl.end_col,
         hl_group = hl.hl_group,
         priority = hl.priority or 100,
@@ -737,18 +802,18 @@ function M.render_buffer()
     elseif hl.is_sel ~= nil then
       if hl.item and hl.item.type == "submit" then
         if hl.is_sel then
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+          vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 0, {
             end_col = 2,
             hl_group = "AgyCompletionPointer",
             priority = 101,
           })
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+          vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 2, {
             end_col = #hl.line_str,
             hl_group = "AgyQuestionSubmitSel",
             priority = 102,
           })
         else
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+          vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 2, {
             end_col = #hl.line_str,
             hl_group = "AgyQuestionSubmit",
             priority = 100,
@@ -756,11 +821,11 @@ function M.render_buffer()
         end
       else
         if hl.is_sel then
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+          vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 0, {
             line_hl_group = "AgyCompletionSel",
             priority = 100,
           })
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+          vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, 0, {
             end_col = 2,
             hl_group = "AgyCompletionPointer",
             priority = 101,
@@ -770,7 +835,7 @@ function M.render_buffer()
           local s, e = hl.line_str:find("%[x%]")
           if not s then s, e = hl.line_str:find("%(•%)") end
           if s and e then
-            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, s - 1, {
+            vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, s - 1, {
               end_col = e,
               hl_group = "AgyQuestionChecked",
               priority = 101,
@@ -781,8 +846,8 @@ function M.render_buffer()
     end
   end
 
-  local footer_row = #lines - 2
-  vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, footer_row, 0, {
+  local footer_row = start_row + #lines - 2
+  vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, 0, {
     hl_group = "AgyCompletionFooter",
   })
   local key_tokens = { "tab/h/l", "↑/↓/j/k", "enter", "space", "w", "esc" }
@@ -792,7 +857,7 @@ function M.render_buffer()
   for _, tok in ipairs(key_tokens) do
     local s, e = footer_text:find(tok, 1, true)
     if s and e then
-      vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, footer_row, s - 1, {
+      vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, s - 1, {
         end_col = e,
         hl_group = "AgyCompletionKey",
       })
@@ -800,113 +865,31 @@ function M.render_buffer()
   end
 end
 
----Calculate the target window row for the question popup so it renders directly over top of the prompt area
----@param target_win number
----@param target_buf number
----@param height number
----@param should_scroll boolean
----@return number row
-function M.calc_prompt_bottom_row(target_win, target_buf, height, should_scroll)
-  local win_height = vim.api.nvim_win_get_height(target_win)
-  local protocol = package.loaded["agy.protocol"]
-  local state = protocol and protocol.buffers[target_buf]
-  local prompt_line = (state and state.prompt_start_line) or vim.api.nvim_buf_line_count(target_buf)
-
-  local win_pos = vim.api.nvim_win_get_position(target_win)
-  local pos = vim.fn.screenpos(target_win, prompt_line, 1)
-
-  if (not pos or pos.row == 0) and vim.api.nvim_get_current_win() == target_win then
-    pcall(vim.cmd, "redraw")
-    pos = vim.fn.screenpos(target_win, prompt_line, 1)
-  end
-
-  local top_offset = 0
-  if state and state.prompt_extmark_id then
-    local ok, ext = pcall(vim.api.nvim_buf_get_extmark_by_id, target_buf, require("agy.render").NS_UI, state.prompt_extmark_id, { details = true })
-    if ok and ext and ext[3] and ext[3].virt_lines and ext[3].virt_lines_above then
-      top_offset = #ext[3].virt_lines
-    end
-  end
-
-  if pos and pos.row > 0 then
-    local prompt_win_row = pos.row - 1 - win_pos[1]
-    local target_row = math.max(0, prompt_win_row - top_offset)
-
-    if should_scroll and (target_row + height > win_height) then
-      local cur_win = vim.api.nvim_get_current_win()
-      if cur_win == target_win then
-        local cur_line = vim.api.nvim_win_get_cursor(target_win)[1]
-        if cur_line >= prompt_line then
-          local needed = (target_row + height) - win_height
-          local view = vim.fn.winsaveview()
-          view.topline = view.topline + needed
-          vim.fn.winrestview(view)
-          pcall(vim.cmd, "redraw")
-          pos = vim.fn.screenpos(target_win, prompt_line, 1)
-          if pos and pos.row > 0 then
-            prompt_win_row = pos.row - 1 - win_pos[1]
-            target_row = math.max(0, prompt_win_row - top_offset)
-          end
-        end
-      end
-    end
-
-    return math.max(0, math.min(target_row, win_height - height))
-  end
-
-  return math.max(0, win_height - height)
-end
-
----Update floating window geometry to stay docked at target window bottom of prompt
-function M.update_win_config()
-  if not M.is_visible() or not M.state.target_win or not vim.api.nvim_win_is_valid(M.state.target_win) then
-    return
-  end
-  local target_win = M.state.target_win
-  local target_buf = M.state.target_buf or vim.api.nvim_win_get_buf(target_win)
-  local win_width = vim.api.nvim_win_get_width(target_win)
-  local win_height = vim.api.nvim_win_get_height(target_win)
-  local line_count = vim.api.nvim_buf_line_count(M.state.buf)
-  local height = math.min(line_count, win_height)
-  local row = M.calc_prompt_bottom_row(target_win, target_buf, height, false)
-
-  local win_cfg = {
-    relative = "win",
-    win = target_win,
-    row = row,
-    col = 0,
-    width = win_width,
-    height = height,
-    style = "minimal",
-    border = "none",
-    focusable = true,
-    zindex = 200,
-  }
-  vim.api.nvim_win_set_config(M.state.win, win_cfg)
-end
-
----Synchronize cursor position in the question window to the selected option
+---Synchronize cursor position in the conversation window to the selected option line
 function M.sync_cursor()
-  if not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
-  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+  local win = M.state.win or M.state.target_win
+  if not win or not vim.api.nvim_win_is_valid(win) then return end
   if M.state.is_editing_write_in then return end
-  local opt_start = 4
-  if M.is_summary_page() then
-    opt_start = 5 + (#M.state.questions * 2)
+
+  local opt_start_line = M.get_opt_start_line()
+  local cursor_line = opt_start_line + (M.state.selected_idx - (M.state.scroll_offset or 1))
+  local b = M.state.buf or M.state.target_buf
+  if b and vim.api.nvim_buf_is_valid(b) then
+    local line_count = vim.api.nvim_buf_line_count(b)
+    cursor_line = math.max(1, math.min(cursor_line, line_count))
   end
-  local cursor_line = opt_start + (M.state.selected_idx - (M.state.scroll_offset or 1))
-  local line_count = vim.api.nvim_buf_line_count(M.state.buf)
-  cursor_line = math.max(1, math.min(cursor_line, line_count))
-  pcall(vim.api.nvim_win_set_cursor, M.state.win, { cursor_line, 0 })
+  pcall(vim.api.nvim_win_set_cursor, win, { cursor_line, 0 })
 end
 
----Focus the question floating window and position cursor on active option
+---Focus the target window and position cursor on the active option
 function M.focus()
-  if not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
-  if vim.api.nvim_get_current_win() ~= M.state.win then
-    vim.api.nvim_set_current_win(M.state.win)
+  local win = M.state.win or M.state.target_win
+  if win and vim.api.nvim_win_is_valid(win) then
+    if vim.api.nvim_get_current_win() ~= win then
+      vim.api.nvim_set_current_win(win)
+    end
+    M.sync_cursor()
   end
-  M.sync_cursor()
 end
 
 ---Select next item
@@ -950,7 +933,6 @@ function M.go_to_question(idx)
 
   M.build_items()
   M.render_buffer()
-  M.update_win_config()
   M.sync_cursor()
   M.focus()
 end
@@ -1069,10 +1051,11 @@ function M.accept()
 end
 
 local function clear_inline_insert_keymaps()
-  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+  local b = M.state.buf or M.state.target_buf
+  if not b or not vim.api.nvim_buf_is_valid(b) then return end
   local keys = { "<CR>", "<Esc>", "<C-c>", "<BS>", "<C-h>", "<C-w>", "<C-u>", "<Left>", "<Home>", "<Up>", "<Down>" }
   for _, k in ipairs(keys) do
-    pcall(vim.keymap.del, "i", k, { buffer = M.state.buf })
+    pcall(vim.keymap.del, "i", k, { buffer = b })
   end
 end
 
@@ -1085,8 +1068,9 @@ function M.finish_inline_write_in(confirmed, text)
   clear_inline_insert_keymaps()
   pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn")
 
-  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
-    vim.bo[M.state.buf].modifiable = false
+  local b = M.state.buf or M.state.target_buf
+  if b and vim.api.nvim_buf_is_valid(b) then
+    vim.bo[b].modifiable = false
   end
 
   local trimmed = utils.trim(text or "")
@@ -1128,12 +1112,13 @@ end
 ---@param write_line number
 ---@param prefix_end number
 function M.setup_inline_insert_keymaps(write_line, prefix_end)
-  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
-  local b = M.state.buf
+  local b = M.state.buf or M.state.target_buf
+  if not b or not vim.api.nvim_buf_is_valid(b) then return end
+  local win = M.state.win or M.state.target_win or vim.api.nvim_get_current_win()
 
   local function get_input_text()
-    if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return "" end
-    local line = vim.api.nvim_buf_get_lines(M.state.buf, write_line - 1, write_line, false)[1] or ""
+    if not b or not vim.api.nvim_buf_is_valid(b) then return "" end
+    local line = vim.api.nvim_buf_get_lines(b, write_line - 1, write_line, false)[1] or ""
     if #line >= prefix_end then
       return line:sub(prefix_end + 1)
     end
@@ -1164,7 +1149,7 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   end, { buffer = b, silent = true, nowait = true })
 
   vim.keymap.set("i", "<BS>", function()
-    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    local cur = vim.api.nvim_win_get_cursor(win)
     if cur[1] == write_line and cur[2] > prefix_end then
       return "<BS>"
     end
@@ -1172,7 +1157,7 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   end, { buffer = b, expr = true, silent = true })
 
   vim.keymap.set("i", "<C-h>", function()
-    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    local cur = vim.api.nvim_win_get_cursor(win)
     if cur[1] == write_line and cur[2] > prefix_end then
       return "<BS>"
     end
@@ -1180,7 +1165,7 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   end, { buffer = b, expr = true, silent = true })
 
   vim.keymap.set("i", "<C-w>", function()
-    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    local cur = vim.api.nvim_win_get_cursor(win)
     if cur[1] == write_line and cur[2] > prefix_end then
       return "<C-w>"
     end
@@ -1188,18 +1173,18 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   end, { buffer = b, expr = true, silent = true })
 
   vim.keymap.set("i", "<C-u>", function()
-    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    local cur = vim.api.nvim_win_get_cursor(win)
     if cur[1] == write_line then
-      local line = vim.api.nvim_buf_get_lines(M.state.buf, write_line - 1, write_line, false)[1] or ""
+      local line = vim.api.nvim_buf_get_lines(b, write_line - 1, write_line, false)[1] or ""
       local prefix = line:sub(1, prefix_end)
-      vim.api.nvim_buf_set_lines(M.state.buf, write_line - 1, write_line, false, { prefix })
-      pcall(vim.api.nvim_win_set_cursor, M.state.win, { write_line, prefix_end })
+      vim.api.nvim_buf_set_lines(b, write_line - 1, write_line, false, { prefix })
+      pcall(vim.api.nvim_win_set_cursor, win, { write_line, prefix_end })
     end
     return ""
   end, { buffer = b, silent = true })
 
   vim.keymap.set("i", "<Left>", function()
-    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    local cur = vim.api.nvim_win_get_cursor(win)
     if cur[1] == write_line and cur[2] > prefix_end then
       return "<Left>"
     end
@@ -1207,7 +1192,7 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   end, { buffer = b, expr = true, silent = true })
 
   vim.keymap.set("i", "<Home>", function()
-    pcall(vim.api.nvim_win_set_cursor, M.state.win, { write_line, prefix_end })
+    pcall(vim.api.nvim_win_set_cursor, win, { write_line, prefix_end })
     return ""
   end, { buffer = b, silent = true })
 
@@ -1244,26 +1229,28 @@ function M.start_inline_write_in()
 
   M.render_buffer()
 
-  if not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
-  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+  local b = M.state.buf or M.state.target_buf
+  local win = M.state.win or M.state.target_win
+  if not win or not vim.api.nvim_win_is_valid(win) then return end
+  if not b or not vim.api.nvim_buf_is_valid(b) then return end
 
-  local opt_start = 4
-  local write_line = opt_start + (write_in_idx - (M.state.scroll_offset or 1))
+  local opt_start_line = M.get_opt_start_line()
+  local write_line = opt_start_line + (write_in_idx - (M.state.scroll_offset or 1))
 
-  vim.bo[M.state.buf].modifiable = true
+  vim.bo[b].modifiable = true
 
-  if vim.api.nvim_get_current_win() ~= M.state.win then
-    pcall(vim.api.nvim_set_current_win, M.state.win)
+  if vim.api.nvim_get_current_win() ~= win then
+    pcall(vim.api.nvim_set_current_win, win)
   end
 
-  local line = vim.api.nvim_buf_get_lines(M.state.buf, write_line - 1, write_line, false)[1] or ""
+  local line = vim.api.nvim_buf_get_lines(b, write_line - 1, write_line, false)[1] or ""
   local prefix_end = #line
   local s, e = line:find("Write%-in:%s*")
   if e then
     prefix_end = e
   end
 
-  pcall(vim.api.nvim_win_set_cursor, M.state.win, { write_line, #line })
+  pcall(vim.api.nvim_win_set_cursor, win, { write_line, #line })
 
   M.setup_inline_insert_keymaps(write_line, prefix_end)
 
@@ -1401,224 +1388,198 @@ function M.confirm_current_question()
   end
 end
 
----Setup buffer-local keymaps on the target session buffer and question buffer
+---Setup buffer-local keymaps on the conversation session buffer
 ---@param target_buf number
 function M.setup_keymaps(target_buf)
   if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then return end
   M.state.mapped_buf = target_buf
 
-  -- Down navigation on target_buf: j, <Down>, <C-n>
-  -- Moves cursor in history; if crossing into the prompt area where the question is docked, focus question popup
-  local function handle_target_down()
+  local function is_in_question()
+    local start_line = M.get_start_line()
     local win = vim.api.nvim_get_current_win()
+    if not win or not vim.api.nvim_win_is_valid(win) then return false end
     local cur = vim.api.nvim_win_get_cursor(win)
-    local line_count = vim.api.nvim_buf_line_count(target_buf)
-    local protocol = package.loaded["agy.protocol"]
-    local state = protocol and protocol.buffers[target_buf]
-    local prompt_start = (state and state.prompt_start_line) or line_count
-    if (cur[1] + 1 >= prompt_start or cur[1] >= prompt_start) and M.is_visible() then
-      M.focus()
-    elseif cur[1] < line_count then
-      local next_l = vim.api.nvim_buf_get_lines(target_buf, cur[1], cur[1] + 1, false)[1] or ""
-      vim.api.nvim_win_set_cursor(win, { cur[1] + 1, math.min(cur[2], #next_l) })
-    end
+    return cur[1] >= start_line
   end
 
-  local target_opts = { buffer = target_buf, silent = true, nowait = true }
-  for _, k in ipairs(TARGET_NAV_KEYS) do
-    vim.keymap.set("n", k, handle_target_down, target_opts)
-  end
-
-  -- Keys on question buffer (M.state.buf)
-  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) and M.state.buf ~= target_buf then
-    local q_opts = { buffer = M.state.buf, silent = true, nowait = true }
-
-    -- Up navigation: k, <Up>, <C-p>
-    -- Moves selection up, or if at top option, moves focus into target_win history above prompt
-    local function handle_up()
+  local function handle_down()
+    if is_in_question() then
+      M.select_next()
+    else
       local win = vim.api.nvim_get_current_win()
-      if win == M.state.win then
-        if M.state.selected_idx > 1 then
-          M.select_prev()
-        else
-          local target_win = M.state.target_win
-          if target_win and vim.api.nvim_win_is_valid(target_win) then
-            vim.api.nvim_set_current_win(target_win)
-            local protocol = package.loaded["agy.protocol"]
-            local state = protocol and protocol.buffers[target_buf]
-            local prompt_start = (state and state.prompt_start_line) or vim.api.nvim_buf_line_count(target_buf)
-            local target_line = math.max(1, prompt_start - 1)
-            local line_text = vim.api.nvim_buf_get_lines(target_buf, target_line - 1, target_line, false)[1] or ""
-            vim.api.nvim_win_set_cursor(target_win, { target_line, math.min(0, #line_text) })
-          end
+      local cur = vim.api.nvim_win_get_cursor(win)
+      local start_line = M.get_start_line()
+      if cur[1] + 1 >= start_line then
+        M.sync_cursor()
+      else
+        local line_count = vim.api.nvim_buf_line_count(target_buf)
+        if cur[1] < line_count then
+          local next_l = vim.api.nvim_buf_get_lines(target_buf, cur[1], cur[1] + 1, false)[1] or ""
+          vim.api.nvim_win_set_cursor(win, { cur[1] + 1, math.min(cur[2], #next_l) })
         end
       end
     end
+  end
 
-    local function handle_tab()
-      if #M.state.questions > 1 then
-        M.next_question()
-      else
-        M.select_next()
-      end
-    end
-
-    local function handle_s_tab()
-      if #M.state.questions > 1 then
-        M.prev_question()
-      else
+  local function handle_up()
+    if is_in_question() then
+      if M.state.selected_idx > 1 then
         M.select_prev()
+      else
+        local start_line = M.get_start_line()
+        local target_line = math.max(1, start_line - 1)
+        local win = M.state.win or M.state.target_win or vim.api.nvim_get_current_win()
+        local line_text = vim.api.nvim_buf_get_lines(target_buf, target_line - 1, target_line, false)[1] or ""
+        pcall(vim.api.nvim_win_set_cursor, win, { target_line, math.min(0, #line_text) })
       end
-    end
-
-    local function handle_bracket_prev()
-      if #M.state.questions > 1 then
-        M.prev_question()
+    else
+      local win = vim.api.nvim_get_current_win()
+      local cur = vim.api.nvim_win_get_cursor(win)
+      if cur[1] > 1 then
+        local prev_l = vim.api.nvim_buf_get_lines(target_buf, cur[1] - 2, cur[1] - 1, false)[1] or ""
+        vim.api.nvim_win_set_cursor(win, { cur[1] - 1, math.min(cur[2], #prev_l) })
       end
-    end
-
-    local function handle_bracket_next()
-      if #M.state.questions > 1 then
-        M.next_question()
-      end
-    end
-
-    for _, k in ipairs({ "j", "<Down>", "<C-n>" }) do
-      vim.keymap.set("n", k, function() M.select_next() end, q_opts)
-    end
-    for _, k in ipairs({ "k", "<Up>", "<C-p>" }) do
-      vim.keymap.set("n", k, handle_up, q_opts)
-    end
-    for _, k in ipairs({ "h", "<Left>" }) do
-      vim.keymap.set("n", k, function()
-        if #M.state.questions > 1 then M.prev_question() end
-      end, q_opts)
-    end
-    for _, k in ipairs({ "l", "<Right>" }) do
-      vim.keymap.set("n", k, function()
-        if #M.state.questions > 1 then M.next_question() end
-      end, q_opts)
-    end
-    vim.keymap.set("n", "<Tab>", handle_tab, q_opts)
-    vim.keymap.set("n", "<S-Tab>", handle_s_tab, q_opts)
-    vim.keymap.set("n", "[", handle_bracket_prev, q_opts)
-    vim.keymap.set("n", "]", handle_bracket_next, q_opts)
-
-    vim.keymap.set("n", "<Space>", function() M.toggle() end, q_opts)
-    vim.keymap.set("n", "<CR>", function() M.accept() end, q_opts)
-    vim.keymap.set("n", "<C-s>", function() M.submit_all() end, q_opts)
-
-    for _, k in ipairs({ "w", "i", "a" }) do
-      vim.keymap.set("n", k, function() M.prompt_write_in() end, q_opts)
-    end
-
-    for num = 1, 9 do
-      vim.keymap.set("n", tostring(num), function() M.jump_to(num) end, q_opts)
-    end
-
-    for _, k in ipairs({ "q", "<Esc>", "<C-c>" }) do
-      vim.keymap.set("n", k, function() M.cancel() end, q_opts)
     end
   end
 
-  -- Cursor tracking in question buffer: sync selected_idx if cursor moves via mouse or motion
-  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
-    local q_group = vim.api.nvim_create_augroup("AgyQuestionCursor_" .. M.state.buf, { clear = true })
-    vim.api.nvim_create_autocmd("CursorMoved", {
-      group = q_group,
-      buffer = M.state.buf,
-      callback = function()
-        if not M.is_visible() or not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
-        if vim.api.nvim_get_current_win() ~= M.state.win then return end
-        if M.state.is_editing_write_in then return end
-        local cur = vim.api.nvim_win_get_cursor(M.state.win)
-        local cur_line = cur[1]
-        local opt_start = 4
-        if M.is_summary_page() then
-          opt_start = 5 + (#M.state.questions * 2)
+  local function pass_or(fn, fallback_key)
+    return function()
+      if is_in_question() then
+        fn()
+      else
+        if fallback_key then
+          vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(fallback_key, true, false, true), "n", false)
         end
-        local max_visible = 6
-        local start_idx = M.state.scroll_offset or 1
-        local total_count = #M.state.items
-        local end_idx = math.min(total_count, start_idx + max_visible - 1)
-        local opt_end = opt_start + (end_idx - start_idx)
-
-        if cur_line >= opt_start and cur_line <= opt_end then
-          local item_idx = start_idx + (cur_line - opt_start)
-          if item_idx ~= M.state.selected_idx then
-            M.state.selected_idx = item_idx
-            M.render_buffer()
-            pcall(vim.api.nvim_win_set_cursor, M.state.win, { cur_line, 0 })
-          end
-        elseif cur_line < opt_start then
-          pcall(vim.api.nvim_win_set_cursor, M.state.win, { opt_start, 0 })
-        elseif cur_line > opt_end then
-          pcall(vim.api.nvim_win_set_cursor, M.state.win, { opt_end, 0 })
-        end
-      end,
-    })
+      end
+    end
   end
+
+  local q_opts = { buffer = target_buf, silent = true, nowait = true }
+
+  for _, k in ipairs({ "j", "<Down>", "<C-n>" }) do
+    vim.keymap.set("n", k, handle_down, q_opts)
+  end
+  for _, k in ipairs({ "k", "<Up>", "<C-p>" }) do
+    vim.keymap.set("n", k, handle_up, q_opts)
+  end
+  for _, k in ipairs({ "h", "<Left>" }) do
+    vim.keymap.set("n", k, pass_or(function()
+      if #M.state.questions > 1 then M.prev_question() end
+    end, "h"), q_opts)
+  end
+  for _, k in ipairs({ "l", "<Right>" }) do
+    vim.keymap.set("n", k, pass_or(function()
+      if #M.state.questions > 1 then M.next_question() end
+    end, "l"), q_opts)
+  end
+
+  vim.keymap.set("n", "<Tab>", pass_or(function()
+    if #M.state.questions > 1 then M.next_question() else M.select_next() end
+  end, "<Tab>"), q_opts)
+  vim.keymap.set("n", "<S-Tab>", pass_or(function()
+    if #M.state.questions > 1 then M.prev_question() else M.select_prev() end
+  end, "<S-Tab>"), q_opts)
+  vim.keymap.set("n", "[", pass_or(function()
+    if #M.state.questions > 1 then M.prev_question() end
+  end, "["), q_opts)
+  vim.keymap.set("n", "]", pass_or(function()
+    if #M.state.questions > 1 then M.next_question() end
+  end, "]"), q_opts)
+
+  vim.keymap.set("n", "<Space>", pass_or(function() M.toggle() end, "<Space>"), q_opts)
+
+  -- <CR>: if in question, accept; if in history, toggle tool output
+  local function handle_cr()
+    if is_in_question() then
+      M.accept()
+    else
+      local protocol = package.loaded["agy.protocol"]
+      if protocol and protocol.buffers and protocol.buffers[target_buf] then
+        local handled = protocol.toggle_tool_at_cursor(target_buf, vim.api.nvim_get_current_win())
+        if not handled then
+          vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "n", false)
+        end
+      else
+        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "n", false)
+      end
+    end
+  end
+  vim.keymap.set("n", "<CR>", handle_cr, q_opts)
+
+  vim.keymap.set("n", "<C-s>", function() M.submit_all() end, q_opts)
+
+  for _, k in ipairs({ "w", "i", "a" }) do
+    vim.keymap.set("n", k, pass_or(function() M.prompt_write_in() end, k), q_opts)
+  end
+
+  for num = 1, 9 do
+    vim.keymap.set("n", tostring(num), pass_or(function() M.jump_to(num) end, tostring(num)), q_opts)
+  end
+
+  for _, k in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", k, pass_or(function() M.cancel() end, k), q_opts)
+  end
+
+  vim.keymap.set("n", "<C-c>", function() M.cancel() end, q_opts)
+
+  -- Cursor tracking in target_buf: sync selected_idx if cursor moves via motion
+  local q_group = vim.api.nvim_create_augroup("AgyQuestionCursor_" .. target_buf, { clear = true })
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = q_group,
+    buffer = target_buf,
+    callback = function()
+      if not M.is_visible() then return end
+      if M.state.is_editing_write_in then return end
+      local win = M.state.win or M.state.target_win
+      if not win or not vim.api.nvim_win_is_valid(win) then return end
+      if vim.api.nvim_get_current_win() ~= win then return end
+
+      local start_line = M.get_start_line()
+      local cur = vim.api.nvim_win_get_cursor(win)
+      local cur_line = cur[1]
+      if cur_line < start_line then
+        return
+      end
+
+      local opt_start_line = M.get_opt_start_line()
+      local max_visible = 6
+      local start_idx = M.state.scroll_offset or 1
+      local total_count = #M.state.items
+      local end_idx = math.min(total_count, start_idx + max_visible - 1)
+      local opt_end_line = opt_start_line + (end_idx - start_idx)
+
+      if cur_line >= opt_start_line and cur_line <= opt_end_line then
+        local item_idx = start_idx + (cur_line - opt_start_line)
+        if item_idx ~= M.state.selected_idx then
+          M.state.selected_idx = item_idx
+          M.render_buffer()
+          pcall(vim.api.nvim_win_set_cursor, win, { cur_line, 0 })
+        end
+      end
+    end,
+  })
 end
 
----Display or update the interactive question popup window over top of the prompt
+---Display or update the interactive question UI in the conversation buffer
 ---@param target_win number
 ---@param target_buf number
 function M.show_over_prompt(target_win, target_buf)
   if not M.state.questions or #M.state.questions == 0 then return end
-  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
-    target_win = M.state.target_win or vim.api.nvim_get_current_win()
+  if target_win and vim.api.nvim_win_is_valid(target_win) then
+    M.state.target_win = target_win
+    M.state.win = target_win
   end
-  if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then
-    target_buf = M.state.target_buf or vim.api.nvim_get_current_buf()
+  if target_buf and vim.api.nvim_buf_is_valid(target_buf) then
+    M.state.target_buf = target_buf
+    M.state.buf = target_buf
   end
-
-  M.state.target_win = target_win
-  M.state.target_buf = target_buf
   M.state.is_hidden = false
-
-  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then
-    M.state.buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[M.state.buf].buftype = "nofile"
-    vim.bo[M.state.buf].bufhidden = "wipe"
-    vim.bo[M.state.buf].swapfile = false
-    vim.bo[M.state.buf].filetype = "agy_question"
-  end
-
   M.render_buffer()
-
-  local win_width = vim.api.nvim_win_get_width(target_win)
-  local win_height = vim.api.nvim_win_get_height(target_win)
-  local line_count = vim.api.nvim_buf_line_count(M.state.buf)
-  local height = math.min(line_count, win_height)
-  local row = M.calc_prompt_bottom_row(target_win, target_buf, height, true)
-
-  local win_cfg = {
-    relative = "win",
-    win = target_win,
-    row = row,
-    col = 0,
-    width = win_width,
-    height = height,
-    style = "minimal",
-    border = "none",
-    focusable = true,
-    zindex = 200,
-  }
-
-  if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
-    vim.api.nvim_win_set_config(M.state.win, win_cfg)
-  else
-    M.state.win = vim.api.nvim_open_win(M.state.buf, false, win_cfg)
-    vim.wo[M.state.win].wrap = false
-    vim.wo[M.state.win].cursorline = true
-    vim.wo[M.state.win].winhighlight = "Normal:Normal,NormalFloat:Normal"
-  end
-
-  M.setup_keymaps(target_buf)
-  M.focus()
+  M.setup_keymaps(M.state.buf)
+  M.sync_cursor()
 end
 
----Display or update the interactive question popup window
+---Display or update the interactive question UI directly inside the conversation session buffer
 ---@param target_win number
 ---@param target_buf number
 ---@param questions table[]
@@ -1636,6 +1597,8 @@ function M.show(target_win, target_buf, questions, opts)
 
   M.state.target_win = target_win
   M.state.target_buf = target_buf
+  M.state.win = target_win
+  M.state.buf = target_buf
   M.state.questions = questions
   M.state.current_q_idx = 1
   M.state.selected_idx = 1
@@ -1647,13 +1610,20 @@ function M.show(target_win, target_buf, questions, opts)
   M.state.on_cancel = opts.on_cancel
   M.state.is_hidden = false
 
+  local protocol = package.loaded["agy.protocol"]
+  local pstate = protocol and protocol.buffers and protocol.buffers[target_buf]
+  M.state.start_line = (pstate and pstate.prompt_start_line) or vim.api.nvim_buf_line_count(target_buf)
+
   M.build_items()
-  M.show_over_prompt(target_win, target_buf)
+  M.render_buffer()
+  M.setup_keymaps(target_buf)
+  M.sync_cursor()
+  M.focus()
 end
 
--- Resize and scroll listener to keep question menu docked cleanly at bottom of prompt
+-- Resize listener to re-render question divider lines when window geometry changes
 local resize_group = vim.api.nvim_create_augroup("AgyQuestionResize", { clear = true })
-vim.api.nvim_create_autocmd({ "WinResized", "VimResized", "WinScrolled" }, {
+vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
   group = resize_group,
   callback = function()
     if M.is_visible() then

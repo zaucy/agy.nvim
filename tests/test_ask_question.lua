@@ -603,7 +603,7 @@ assert(write_ui.state.is_editing_write_in == true, "is_editing_write_in must be 
 assert(vim.bo[write_ui.state.buf].modifiable == true, "Buffer must be modifiable during inline editing")
 
 -- Verify write-in line is rendered inline in buffer
-local opt_start = 4
+local opt_start = write_ui.get_opt_start_line()
 local write_line = opt_start + (#state_write.active_question.questions[1].options + 1 - 1)
 local line = vim.api.nvim_buf_get_lines(write_ui.state.buf, write_line - 1, write_line, false)[1] or ""
 assert(line:find("Write%-in:"), "Buffer line must display inline Write-in: " .. line)
@@ -678,26 +678,24 @@ assert(state_lock.active_question ~= nil)
 local ui_lock = state_lock.active_question.ui
 assert(ui_lock.is_visible() == true)
 
--- Float window config: focusable must be true so the cursor is used directly for selecting
-local win_cfg = vim.api.nvim_win_get_config(ui_lock.state.win)
-assert(win_cfg.focusable == true, "Floating window must be focusable so cursor is used directly for selecting")
-assert(win_cfg.relative == "win", "Floating window must be relative to target window")
+-- In-buffer UI config: renders directly in target window and buffer
+assert(ui_lock.state.win == win_lock, "Question UI must render directly in target window")
+assert(ui_lock.state.buf == buf_lock, "Question UI must render directly in target buffer")
 
--- Overlay sits directly over top of prompt area (starting at top border), not below prompt
+-- Overlay sits directly in prompt area starting at prompt_start_line
 local prompt_line_lock = state_lock.prompt_start_line or vim.api.nvim_buf_line_count(buf_lock)
-local prompt_screenpos = vim.fn.screenpos(win_lock, prompt_line_lock, 1)
-local win_pos_lock = vim.api.nvim_win_get_position(win_lock)
-local prompt_win_row_lock = prompt_screenpos.row - 1 - win_pos_lock[1]
-assert(win_cfg.row <= prompt_win_row_lock, string.format("Question UI row (%d) must sit directly over top of prompt area (prompt row: %d)", win_cfg.row, prompt_win_row_lock))
+local start_line = ui_lock.get_start_line()
+assert(start_line == prompt_line_lock, string.format("Question start_line (%d) must match prompt start line (%d)", start_line, prompt_line_lock))
 
 -- Cursor is positioned directly on first option line for selection
 local cur_win = vim.api.nvim_get_current_win()
-assert(cur_win == ui_lock.state.win, "Question window must be focused for direct cursor selection")
-local cur_pos = vim.api.nvim_win_get_cursor(ui_lock.state.win)
-assert(cur_pos[1] == 4, string.format("Cursor must be on option 1 line (expected 4, got %d)", cur_pos[1]))
+assert(cur_win == win_lock, "Target window must be focused for direct cursor selection")
+local cur_pos = vim.api.nvim_win_get_cursor(win_lock)
+local opt_start = ui_lock.get_opt_start_line()
+assert(cur_pos[1] == opt_start, string.format("Cursor must be on option 1 line (expected %d, got %d)", opt_start, cur_pos[1]))
 
 -- Verify bottom border full width line exists under footer
-local q_buf_lines = vim.api.nvim_buf_get_lines(ui_lock.state.buf, 0, -1, false)
+local q_buf_lines = ui_lock.get_question_lines()
 local last_line = q_buf_lines[#q_buf_lines]
 assert(#last_line >= 10 and last_line:find("^[─%-]+$"), "Bottom line under footer must be a full width divider line")
 
@@ -961,14 +959,15 @@ question_mod.show(test18_win, test18_buf, dup_questions, {
 })
 
 -- 1. Check Question 1 header: should have progression "○ ── ○ ── ○ ── ○" and title without "Question" prefix
-local q1_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
-local q1_header = q1_lines[2]
+local q1_lines = question_mod.get_question_lines()
+local q1_header = q1_lines[1]
 assert(q1_header:find("○ ── ○ ── ○ ── ○"), "Q1 header must contain progression with non-filled circles: " .. tostring(q1_header))
 assert(q1_header:find("What database backend should we deploy%?"), "Q1 header must contain cleaned question title: " .. tostring(q1_header))
 assert(not q1_header:find("Question"), "Q1 header must not contain any 'Question' prefix: " .. tostring(q1_header))
 
 -- Verify progression extmarks on Q1: step 1 is current (AgyQuestionStepCurrent), lines are AgyQuestionStepLine, step 2 is todo (AgyQuestionStepTodo)
-local q1_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { 1, 0 }, { 1, -1 }, { details = true })
+local header_row = question_mod.get_start_line() - 1
+local q1_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { header_row, 0 }, { header_row, -1 }, { details = true })
 local has_step1_curr = false
 local has_step2_todo = false
 local has_step_line = false
@@ -1041,14 +1040,14 @@ assert(has_unsel_hl == true, "Unselected submit button must have AgyQuestionSubm
 
 -- 3. Check Question 2 header: step 1 is answered (●), step 2 is current (○), no "Question 2 of 4:" prefix
 question_mod.next_question()
-local q2_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
-local q2_header = q2_lines[2]
+local q2_lines = question_mod.get_question_lines()
+local q2_header = q2_lines[1]
 assert(q2_header:find("● ── ○ ── ○ ── ○"), "Q2 progression must show step 1 answered (●) and step 2-4 unanswered (○): " .. tostring(q2_header))
 assert(q2_header:find("Which cache layer%?"), "Q2 title must be present: " .. tostring(q2_header))
 assert(not q2_header:find("Question"), "Q2 header must not contain Question prefix: " .. tostring(q2_header))
 
 -- Verify step 1 has AgyQuestionStepDone
-local q2_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { 1, 0 }, { 1, -1 }, { details = true })
+local q2_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { header_row, 0 }, { header_row, -1 }, { details = true })
 local has_step1_done = false
 for _, em in ipairs(q2_extmarks) do
   local d = em[4] or {}
@@ -1060,15 +1059,15 @@ assert(has_step1_done == true, "Step 1 must have AgyQuestionStepDone highlight n
 
 -- 4. Check Question 3 header: "Question 3/4" alone -> title cleaned, shows progression
 question_mod.next_question()
-local q3_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
-local q3_header = q3_lines[2]
+local q3_lines = question_mod.get_question_lines()
+local q3_header = q3_lines[1]
 assert(q3_header:find("● ── ○ ── ○ ── ○"), "Q3 header must have progression: " .. tostring(q3_header))
 assert(not q3_header:find("Question"), "Q3 header must not contain Question prefix: " .. tostring(q3_header))
 
 -- 5. Check Question 4 header: "4/4: Final verification step?" -> title cleaned, no "4/4:" prefix
 question_mod.next_question()
-local q4_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
-local q4_header = q4_lines[2]
+local q4_lines = question_mod.get_question_lines()
+local q4_header = q4_lines[1]
 assert(q4_header:find("Final verification step%?"), "Q4 header must have title: " .. tostring(q4_header))
 assert(not q4_header:find("4/4"), "Q4 header must not have '4/4' prefix: " .. tostring(q4_header))
 assert(not q4_header:find("Question"), "Q4 header must not contain Question prefix: " .. tostring(q4_header))
@@ -1076,15 +1075,16 @@ assert(not q4_header:find("Question"), "Q4 header must not contain Question pref
 -- 6. Check Summary Page (Page 5)
 question_mod.next_question()
 assert(question_mod.is_summary_page() == true, "Must be on summary page")
-local sum_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
-local sum_header = sum_lines[2]
+local sum_lines = question_mod.get_question_lines()
+local sum_header = sum_lines[1]
 assert(sum_header:find("● ── ○ ── ○ ── ○"), "Summary header must show progression across all questions: " .. tostring(sum_header))
 assert(sum_header:find("Review Answers"), "Summary header must contain 'Review Answers': " .. tostring(sum_header))
 assert(not sum_header:find("Question"), "Summary header must not contain 'Question' prefix: " .. tostring(sum_header))
 
 local submit_all_line = nil
 local submit_all_row = nil
-for idx, l in ipairs(sum_lines) do
+local sum_buf_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+for idx, l in ipairs(sum_buf_lines) do
   if l:find("Submit All Answers") then
     submit_all_line = l
     submit_all_row = idx - 1

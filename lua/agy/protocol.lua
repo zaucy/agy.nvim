@@ -148,7 +148,11 @@ function M.update_modifiable(buf)
 
   local should_be_modifiable = (cur_line >= prompt_start)
   if state.active_question then
-    should_be_modifiable = false
+    if state.active_question.ui and state.active_question.ui.state and state.active_question.ui.state.is_editing_write_in then
+      should_be_modifiable = true
+    else
+      should_be_modifiable = false
+    end
   end
 
   if is_visual then
@@ -931,8 +935,7 @@ function M.intercept_ask_question(buf, state, q_list)
   }
 
   if target_win and vim.api.nvim_win_is_valid(target_win) and vim.api.nvim_win_get_buf(target_win) == buf then
-    local prompt_line = state.prompt_start_line or vim.api.nvim_buf_line_count(buf)
-    pcall(vim.api.nvim_win_set_cursor, target_win, { prompt_line, 0 })
+    question_mod.sync_cursor()
   end
   M.update_modifiable(buf)
 end
