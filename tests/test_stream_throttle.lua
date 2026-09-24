@@ -126,7 +126,7 @@ print("✓ cleanup_buffer properly clears timer and state")
 -- [Test 6] Persistent uv_timer Animation Lifecycle
 print("\n[Test 6] Testing thinking and logo uv_timer lifecycles...")
 local anim_buf = vim.api.nvim_create_buf(false, true)
-local ext_anim = render.set_divider(anim_buf, 0, "agent", " [Thinking...]", "AgyBadgeActive", false, nil, cfg)
+local ext_anim = render.set_divider(anim_buf, 0, "user", nil, nil, true, nil, cfg)
 render.start_thinking_animation(anim_buf, 0, ext_anim, cfg)
 assert(render.thinking_timers[anim_buf] ~= nil, "Thinking timer must exist")
 

@@ -264,7 +264,7 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             show_thoughts = true,    -- Show agent thoughts between calls
             tool_max_height = 20,    -- Max height of inline window for tool details
             separator = require("agy.ui.separator").line(), -- Turn separator function e.g. require("agy.ui.separator").box("rounded")
-            animate_thinking = true, -- Animate thinking badge with spinner frames
+            animate_thinking = true, -- Animate thinking indicator above prompt area with spinner frames
             header_style = "banner", -- "banner" (inverted V logo banner) or "markdown" (classic # heading)
             animate_logo = true,     -- Animate inverted V logo colors dynamically
             render_markdown = require("agy.markdown").render, -- Stream markdown renderer

@@ -904,11 +904,13 @@ function M.set_divider(buf, line, role, badge_text, badge_hl, sign, extmark_id, 
 
 	if is_active_input then
 		local width = M.get_max_window_width(buf)
-		local chunks = {
-			{ string.rep("─", width), "AgyPromptBorder" },
-		}
+		local virt_lines = {}
+		if badge_text and badge_text ~= "" then
+			table.insert(virt_lines, { { badge_text, badge_hl or "AgyBadgeActive" } })
+		end
+		table.insert(virt_lines, { { string.rep("─", width), "AgyPromptBorder" } })
 		local opts = {
-			virt_lines = { chunks },
+			virt_lines = virt_lines,
 			virt_lines_leftcol = true,
 			virt_lines_above = true,
 			right_gravity = false,
@@ -975,13 +977,23 @@ function M.set_divider(buf, line, role, badge_text, badge_hl, sign, extmark_id, 
 end
 
 M.thinking_timers = {}
+M.current_thinking_badge = {}
 
----Start thinking spinner animation on the agent divider
----@param buf number
----@param agent_line number 0-indexed line of agent divider
----@param extmark_id number Extmark ID of the agent divider
+---Get initial thinking badge text using spinner icon
 ---@param config? table
-function M.start_thinking_animation(buf, agent_line, extmark_id, config)
+---@return string
+function M.get_thinking_badge(config)
+	local cfg = get_config(config)
+	local frames = get_spinner_frames(cfg)
+	return string.format("  %s Thinking...", frames[1])
+end
+
+---Start thinking spinner animation above the prompt area
+---@param buf number
+---@param line? number 0-indexed line if extmark_id is not yet created
+---@param extmark_id? number Extmark ID (e.g. prompt_extmark_id or target divider)
+---@param config? table
+function M.start_thinking_animation(buf, line, extmark_id, config)
 	M.stop_thinking_animation(buf)
 
 	local cfg = get_config(config)
@@ -991,6 +1003,29 @@ function M.start_thinking_animation(buf, agent_line, extmark_id, config)
 
 	local frames = get_spinner_frames(cfg)
 	local frame_idx = 1
+	local initial_badge = string.format("  %s Thinking...", frames[1])
+	M.current_thinking_badge[buf] = initial_badge
+
+	pcall(function()
+		local protocol = package.loaded["agy.protocol"]
+		local state = protocol and protocol.buffers and protocol.buffers[buf]
+		local target_id = (state and state.prompt_extmark_id) or (not state and extmark_id) or nil
+		if target_id then
+			local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, target_id, { details = true })
+			if pos and #pos >= 1 then
+				local row = pos[1]
+				local details = pos[3] or {}
+				local is_prompt = details.sign_hl_group == "AgyUserSign"
+					or details.number_hl_group == "AgyPromptArea"
+				if is_prompt then
+					M.set_divider(buf, row, "user", initial_badge, "AgyBadgeActive", true, target_id, cfg)
+				else
+					M.set_divider(buf, row, "agent", initial_badge, "AgyBadgeActive", false, target_id, cfg)
+				end
+			end
+		end
+	end)
+
 	local timer = (vim.uv and vim.uv.new_timer) and vim.uv.new_timer() or vim.loop.new_timer()
 	M.thinking_timers[buf] = timer
 
@@ -1008,16 +1043,35 @@ function M.start_thinking_animation(buf, agent_line, extmark_id, config)
 
 			local frame = frames[frame_idx]
 			frame_idx = (frame_idx % #frames) + 1
-			local badge = string.format(" [%s Thinking...]", frame)
+			local badge = string.format("  %s Thinking...", frame)
+			M.current_thinking_badge[buf] = badge
 
 			pcall(function()
-				M.set_divider(buf, agent_line, "agent", badge, "AgyBadgeActive", false, extmark_id, cfg)
+				local protocol = package.loaded["agy.protocol"]
+				local state = protocol and protocol.buffers and protocol.buffers[buf]
+				local target_id = (state and state.prompt_extmark_id) or (not state and extmark_id) or nil
+				if target_id then
+					local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, target_id, { details = true })
+					if pos and #pos >= 1 then
+						local row = pos[1]
+						local details = pos[3] or {}
+						local is_prompt = details.sign_hl_group == "AgyUserSign"
+							or details.number_hl_group == "AgyPromptArea"
+						if is_prompt then
+							M.set_divider(buf, row, "user", badge, "AgyBadgeActive", true, target_id, cfg)
+						else
+							M.set_divider(buf, row, "agent", badge, "AgyBadgeActive", false, target_id, cfg)
+						end
+					end
+				elseif line and not state then
+					M.set_divider(buf, line, "user", badge, "AgyBadgeActive", true, nil, cfg)
+				end
 			end)
 		end)
 	)
 end
 
----Stop thinking spinner animation on the agent divider
+---Stop thinking spinner animation on the prompt area
 ---@param buf number
 function M.stop_thinking_animation(buf)
 	local timer = M.thinking_timers[buf]
@@ -1027,6 +1081,19 @@ function M.stop_thinking_animation(buf)
 			timer:stop()
 			if not timer:is_closing() then
 				timer:close()
+			end
+		end)
+	end
+	M.current_thinking_badge[buf] = nil
+	if buf and vim.api.nvim_buf_is_valid(buf) then
+		pcall(function()
+			local protocol = package.loaded["agy.protocol"]
+			local state = protocol and protocol.buffers and protocol.buffers[buf]
+			if state and state.prompt_extmark_id then
+				local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.prompt_extmark_id, {})
+				if pos and #pos >= 1 then
+					M.set_divider(buf, pos[1], "user", nil, nil, true, state.prompt_extmark_id, state.config)
+				end
 			end
 		end)
 	end
@@ -1580,7 +1647,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 				has_user_input_for_current_turn = false
 			else
 				agent_line = prompt_start_line - 1
-				agent_extmark_id = M.set_divider(buf, agent_line, "agent", " [Thinking...]", "AgyBadgeActive", false, prompt_extmark_id, config)
+				agent_extmark_id = M.set_divider(buf, agent_line, "agent", nil, nil, false, prompt_extmark_id, config)
 				prompt_extmark_id = nil
 			end
 			in_agent_turn = true
@@ -1811,9 +1878,8 @@ function M.prepare_turn_submission(buf, old_prompt_start_line, prompt_extmark_id
 	local new_count = vim.api.nvim_buf_line_count(buf)
 	local agent_line = new_count - 1
 
-	-- Place active thinking divider above agent response
-	local extmark_id = M.set_divider(buf, agent_line, "agent", " [Thinking...]", "AgyBadgeActive", false, nil, config)
-	M.start_thinking_animation(buf, agent_line, extmark_id, config)
+	-- Place agent divider above agent response without thinking badge
+	local extmark_id = M.set_divider(buf, agent_line, "agent", nil, nil, false, nil, config)
 
 	return extmark_id, agent_line
 end

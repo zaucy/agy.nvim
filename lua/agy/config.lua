@@ -22,7 +22,7 @@ local M = {}
 ---@field show_thoughts? boolean Show agent thoughts between calls (default: true)
 ---@field tool_max_height? number Maximum height of inline window for tool details (default: 20)
 ---@field separator? fun(ctx: table): table Separator function returning virt_lines (default: require("agy.ui.separator").line())
----@field animate_thinking? boolean Animate thinking badge on agent turn (default: true)
+---@field animate_thinking? boolean Animate thinking indicator above prompt area on agent turn (default: true)
 ---@field header_style? "banner" | "markdown" Header style at top of session buffer (default: "banner")
 ---@field animate_logo? boolean Animate inverted V logo colors dynamically (default: true)
 ---@field render_markdown? fun(buf: number, delta: string, is_final: boolean, config?: table) Custom streaming markdown renderer (default: require("agy.markdown").render)
