@@ -663,6 +663,13 @@ local win_cfg = vim.api.nvim_win_get_config(ui_lock.state.win)
 assert(win_cfg.focusable == false, "Floating window must be non-focusable so prompt win retains cursor")
 assert(win_cfg.relative == "win", "Floating window must be relative to target window")
 
+-- Overlay sits directly over top of prompt area (starting at top border), not below prompt
+local prompt_line_lock = state_lock.prompt_start_line or vim.api.nvim_buf_line_count(buf_lock)
+local prompt_screenpos = vim.fn.screenpos(win_lock, prompt_line_lock, 1)
+local win_pos_lock = vim.api.nvim_win_get_position(win_lock)
+local prompt_win_row_lock = prompt_screenpos.row - 1 - win_pos_lock[1]
+assert(win_cfg.row <= prompt_win_row_lock, string.format("Question UI row (%d) must sit directly over top of prompt area (prompt row: %d)", win_cfg.row, prompt_win_row_lock))
+
 -- Target buffer modifiable must be false everywhere while question is active
 protocol.update_modifiable(buf_lock)
 assert(vim.bo[buf_lock].modifiable == false, "Target buffer modifiable must be false while active_question is active")

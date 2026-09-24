@@ -350,7 +350,7 @@ function M.render_buffer()
   end
 end
 
----Calculate the target window row for the question popup so it sits directly at the bottom of the prompt
+---Calculate the target window row for the question popup so it renders directly over top of the prompt area
 ---@param target_win number
 ---@param target_buf number
 ---@param height number
@@ -370,17 +370,17 @@ function M.calc_prompt_bottom_row(target_win, target_buf, height, should_scroll)
     pos = vim.fn.screenpos(target_win, prompt_line, 1)
   end
 
-  local border_offset = 0
-  if state and state.footer_extmark_id then
-    local ok, ext = pcall(vim.api.nvim_buf_get_extmark_by_id, target_buf, require("agy.render").NS_UI, state.footer_extmark_id, {})
-    if ok and ext and #ext >= 1 then
-      border_offset = 1
+  local top_offset = 0
+  if state and state.prompt_extmark_id then
+    local ok, ext = pcall(vim.api.nvim_buf_get_extmark_by_id, target_buf, require("agy.render").NS_UI, state.prompt_extmark_id, { details = true })
+    if ok and ext and ext[3] and ext[3].virt_lines and ext[3].virt_lines_above then
+      top_offset = #ext[3].virt_lines
     end
   end
 
   if pos and pos.row > 0 then
     local prompt_win_row = pos.row - 1 - win_pos[1]
-    local target_row = prompt_win_row + 1 + border_offset
+    local target_row = math.max(0, prompt_win_row - top_offset)
 
     if should_scroll and (target_row + height > win_height) then
       local cur_win = vim.api.nvim_get_current_win()
@@ -395,7 +395,7 @@ function M.calc_prompt_bottom_row(target_win, target_buf, height, should_scroll)
           pos = vim.fn.screenpos(target_win, prompt_line, 1)
           if pos and pos.row > 0 then
             prompt_win_row = pos.row - 1 - win_pos[1]
-            target_row = prompt_win_row + 1 + border_offset
+            target_row = math.max(0, prompt_win_row - top_offset)
           end
         end
       end
