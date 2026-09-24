@@ -1514,6 +1514,18 @@ function M.parse_answers_from_payload(answer_text, q_list)
 		return results
 	end
 
+	-- Clean tool output wrapper headers if present
+	if answer_text:find("Output:%s*") then
+		local after = answer_text:match("Output:%s*(.*)$")
+		if after then
+			answer_text = after
+		end
+	end
+	answer_text = answer_text:gsub("Created At:%s*[^\r\n]+[\r\n]*", "")
+	answer_text = answer_text:gsub("Completed At:%s*[^\r\n]+[\r\n]*", "")
+	answer_text = answer_text:gsub("The command exited[^\r\n]+[\r\n]*", "")
+	answer_text = utils.trim(answer_text)
+
 	local is_multi_q = (#q_list > 1)
 
 	if not is_multi_q then
@@ -1522,31 +1534,37 @@ function M.parse_answers_from_payload(answer_text, q_list)
 		if notes then
 			text = text:gsub("%s*Notes:%s*.*$", "")
 		end
-		text = text:gsub("^A:%s*", "")
+		text = text:gsub("^A%d*:%s*", "")
 		text = utils.trim(text)
+
+		local is_skipped = text:match("^[Uu]ser%s+[Ss]kipped") ~= nil
 
 		local q = q_list[1]
 		local selected = {}
-		if q.is_multi_select then
-			for _, opt in ipairs(q.options) do
-				if text:find("%-%s*" .. vim.pesc(opt)) or text:find(opt, 1, true) then
-					table.insert(selected, opt)
+		if not is_skipped then
+			if q.is_multi_select then
+				for _, opt in ipairs(q.options) do
+					if text:find("%-%s*" .. vim.pesc(opt)) or text:find(opt, 1, true) then
+						table.insert(selected, opt)
+					end
 				end
-			end
-		else
-			for _, opt in ipairs(q.options) do
-				if text == opt or text:find(opt, 1, true) then
-					table.insert(selected, opt)
-					break
+			else
+				for _, opt in ipairs(q.options) do
+					if text == opt or text:find(opt, 1, true) then
+						table.insert(selected, opt)
+						break
+					end
 				end
 			end
 		end
 
 		local write_in = nil
-		if #selected == 0 and text ~= "" then
-			write_in = text
-		elseif notes and notes ~= "" then
-			write_in = utils.trim(notes)
+		if not is_skipped then
+			if #selected == 0 and text ~= "" then
+				write_in = text
+			elseif notes and notes ~= "" then
+				write_in = utils.trim(notes)
+			end
 		end
 
 		results[1] = {
@@ -1575,27 +1593,33 @@ function M.parse_answers_from_payload(answer_text, q_list)
 				section = section:gsub("%s*Notes:%s*.*$", "")
 			end
 			local text = utils.trim(section)
+			local is_skipped = text:match("^[Uu]ser%s+[Ss]kipped") ~= nil
+
 			local selected = {}
-			if q.is_multi_select then
-				for _, opt in ipairs(q.options) do
-					if text:find("%-%s*" .. vim.pesc(opt)) or text:find(opt, 1, true) then
-						table.insert(selected, opt)
+			if not is_skipped then
+				if q.is_multi_select then
+					for _, opt in ipairs(q.options) do
+						if text:find("%-%s*" .. vim.pesc(opt)) or text:find(opt, 1, true) then
+							table.insert(selected, opt)
+						end
 					end
-				end
-			else
-				for _, opt in ipairs(q.options) do
-					if text == opt or text:find(opt, 1, true) then
-						table.insert(selected, opt)
-						break
+				else
+					for _, opt in ipairs(q.options) do
+						if text == opt or text:find(opt, 1, true) then
+							table.insert(selected, opt)
+							break
+						end
 					end
 				end
 			end
 
 			local write_in = nil
-			if #selected == 0 and text ~= "" then
-				write_in = text
-			elseif notes and notes ~= "" then
-				write_in = utils.trim(notes)
+			if not is_skipped then
+				if #selected == 0 and text ~= "" then
+					write_in = text
+				elseif notes and notes ~= "" then
+					write_in = utils.trim(notes)
+				end
 			end
 
 			results[q_idx] = {
@@ -1653,8 +1677,12 @@ function M.render_historical_question(buf, params, output, config, cwd)
 				or string.format("%s Question", q_icon)
 		end
 
-		table.insert(to_append, header_text)
+		local h_lines = utils.split_lines(header_text)
+		table.insert(to_append, h_lines[1])
 		table.insert(header_indices, #to_append)
+		for h_i = 2, #h_lines do
+			table.insert(to_append, "  " .. h_lines[h_i])
+		end
 		table.insert(to_append, "")
 
 		local sel_list = q.selected
@@ -1672,14 +1700,25 @@ function M.render_historical_question(buf, params, output, config, cwd)
 
 		for _, opt in ipairs(q.options) do
 			local is_checked = sel_map[opt] == true
-			table.insert(to_append, string.format("- [%s] %s", is_checked and "x" or " ", opt))
+			local opt_lines = utils.split_lines(tostring(opt))
+			table.insert(to_append, string.format("- [%s] %s", is_checked and "x" or " ", opt_lines[1]))
+			for o_i = 2, #opt_lines do
+				table.insert(to_append, "      " .. opt_lines[o_i])
+			end
 		end
 
 		if write_in and write_in ~= "" then
+			local w_lines = utils.split_lines(tostring(write_in))
 			if #sel_list == 0 then
-				table.insert(to_append, string.format("- [x] Write-in: %s", write_in))
+				table.insert(to_append, string.format("- [x] Write-in: %s", w_lines[1]))
+				for w_i = 2, #w_lines do
+					table.insert(to_append, "      " .. w_lines[w_i])
+				end
 			else
-				table.insert(to_append, string.format("  Notes: %s", write_in))
+				table.insert(to_append, string.format("  Notes: %s", w_lines[1]))
+				for w_i = 2, #w_lines do
+					table.insert(to_append, "         " .. w_lines[w_i])
+				end
 			end
 		end
 
@@ -1688,13 +1727,21 @@ function M.render_historical_question(buf, params, output, config, cwd)
 		end
 	end
 
+	local safe_to_append = {}
+	for _, l in ipairs(to_append) do
+		local sub = utils.split_lines(tostring(l))
+		for _, sl in ipairs(sub) do
+			table.insert(safe_to_append, sl)
+		end
+	end
+
 	local start_line
 	if last_line == "" then
 		start_line = line_count - 1
-		vim.api.nvim_buf_set_lines(buf, start_line, line_count, false, to_append)
+		vim.api.nvim_buf_set_lines(buf, start_line, line_count, false, safe_to_append)
 	else
 		start_line = line_count
-		vim.api.nvim_buf_set_lines(buf, start_line, start_line, false, to_append)
+		vim.api.nvim_buf_set_lines(buf, start_line, start_line, false, safe_to_append)
 	end
 
 	for _, h_idx in ipairs(header_indices) do
@@ -3242,13 +3289,21 @@ function M.render_question_block(buf, question_list, config)
 				or string.format("%s Question", q_icon)
 		end
 
-		table.insert(to_append, header_text)
+		local h_lines = utils.split_lines(header_text)
+		table.insert(to_append, h_lines[1])
 		table.insert(header_lines, line_count + #to_append)
+		for h_i = 2, #h_lines do
+			table.insert(to_append, "  " .. h_lines[h_i])
+		end
 		table.insert(to_append, "")
 
 		local opt_start = line_count + #to_append + 1
 		for _, opt in ipairs(q.options) do
-			table.insert(to_append, string.format("- [ ] %s", opt))
+			local opt_lines = utils.split_lines(tostring(opt))
+			table.insert(to_append, string.format("- [ ] %s", opt_lines[1]))
+			for o_i = 2, #opt_lines do
+				table.insert(to_append, "      " .. opt_lines[o_i])
+			end
 		end
 		local opt_end = line_count + #to_append
 
@@ -3271,7 +3326,15 @@ function M.render_question_block(buf, question_list, config)
 	table.insert(to_append, "")
 	local write_in_start_line = line_count + #to_append
 
-	vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, to_append)
+	local safe_to_append = {}
+	for _, l in ipairs(to_append) do
+		local sub = utils.split_lines(tostring(l))
+		for _, sl in ipairs(sub) do
+			table.insert(safe_to_append, sl)
+		end
+	end
+
+	vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, safe_to_append)
 	vim.bo[buf].modified = false
 
 	-- Add highlights for question headers

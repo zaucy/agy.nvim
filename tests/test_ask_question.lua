@@ -221,108 +221,176 @@ protocol.cleanup_buffer(buf)
 -- =========================================================================
 -- TEST 7: Historical Transcript Rendering of ask_question
 -- =========================================================================
-print("\n[Test 7] Testing transcript rendering of historical ask_question...")
+do
+  print("\n[Test 7] Testing transcript rendering of historical ask_question...")
 
-vim.cmd("edit agy://new")
-local buf_hist = vim.api.nvim_get_current_buf()
+  vim.cmd("edit agy://new")
+  local buf_hist = vim.api.nvim_get_current_buf()
 
-local mock_steps = {
-  {
-    type = "PLANNER_RESPONSE",
-    content = "I need some clarification on how to proceed.",
-    tool_calls = {
-      {
-        name = "ask_question",
-        args = {
-          questions = {
-            {
-              question = "Which database backend should we use?",
-              options = { "SQLite", "PostgreSQL", "In-memory" },
-              is_multi_select = false,
+  local mock_steps = {
+    {
+      type = "PLANNER_RESPONSE",
+      content = "I need some clarification on how to proceed.",
+      tool_calls = {
+        {
+          name = "ask_question",
+          args = {
+            questions = {
+              {
+                question = "Which database backend should we use?",
+                options = { "SQLite", "PostgreSQL", "In-memory" },
+                is_multi_select = false,
+              }
             }
           }
         }
       }
+    },
+    {
+      type = "GENERIC",
+      content = "A: SQLite\n\nNotes: Lightweight for local dev",
+    },
+    {
+      type = "PLANNER_RESPONSE",
+      content = "Understood! Proceeding with SQLite implementation.",
+      tool_calls = {},
     }
-  },
-  {
-    type = "GENERIC",
-    content = "A: SQLite\n\nNotes: Lightweight for local dev",
-  },
-  {
-    type = "PLANNER_RESPONSE",
-    content = "Understood! Proceeding with SQLite implementation.",
-    tool_calls = {},
   }
-}
 
-render.render_transcript(buf_hist, "mock-conv-123", mock_steps, state.config)
-local hist_lines = vim.api.nvim_buf_get_lines(buf_hist, 0, -1, false)
+  render.render_transcript(buf_hist, "mock-conv-123", mock_steps, state.config)
+  local hist_lines = vim.api.nvim_buf_get_lines(buf_hist, 0, -1, false)
 
-local found_q_header = false
-local found_sqlite_checked = false
-local found_postgres_unchecked = false
-local found_notes = false
+  local found_q_header = false
+  local found_sqlite_checked = false
+  local found_postgres_unchecked = false
+  local found_notes = false
 
-for _, l in ipairs(hist_lines) do
-  if l:find("❓ Question: Which database backend should we use%?") then
-    found_q_header = true
-    assert(not l:find(">"), "Question header should not contain '>'")
-    assert(not l:find("%*%*"), "Question header should not contain '**'")
-  elseif l:find("%- %[x%] SQLite") then
-    found_sqlite_checked = true
-    assert(not l:find(">"), "Option should not contain '>'")
-  elseif l:find("%- %[ %] PostgreSQL") then
-    found_postgres_unchecked = true
-    assert(not l:find(">"), "Option should not contain '>'")
-  elseif l:find("Notes: Lightweight for local dev") then
-    found_notes = true
-    assert(not l:find(">"), "Notes should not contain '>'")
-    assert(not l:find("%*%*"), "Notes should not contain '**'")
+  for _, l in ipairs(hist_lines) do
+    if l:find("❓ Question: Which database backend should we use%?") then
+      found_q_header = true
+      assert(not l:find(">"), "Question header should not contain '>'")
+      assert(not l:find("%*%*"), "Question header should not contain '**'")
+    elseif l:find("%- %[x%] SQLite") then
+      found_sqlite_checked = true
+      assert(not l:find(">"), "Option should not contain '>'")
+    elseif l:find("%- %[ %] PostgreSQL") then
+      found_postgres_unchecked = true
+      assert(not l:find(">"), "Option should not contain '>'")
+    elseif l:find("Notes: Lightweight for local dev") then
+      found_notes = true
+      assert(not l:find(">"), "Notes should not contain '>'")
+      assert(not l:find("%*%*"), "Notes should not contain '**'")
+    end
   end
+
+  assert(found_q_header, "Transcript must render question header")
+  assert(found_sqlite_checked, "Answered option SQLite must be rendered checked [x]")
+  assert(found_postgres_unchecked, "Unanswered option PostgreSQL must be rendered unchecked [ ]")
+  assert(found_notes, "User notes must be rendered cleanly without > or **")
+  print("✓ Historical ask_question rendered cleanly with [x] answered option and notes")
+
+  protocol.cleanup_buffer(buf_hist)
 end
 
-assert(found_q_header, "Transcript must render question header")
-assert(found_sqlite_checked, "Answered option SQLite must be rendered checked [x]")
-assert(found_postgres_unchecked, "Unanswered option PostgreSQL must be rendered unchecked [ ]")
-assert(found_notes, "User notes must be rendered cleanly without > or **")
-print("✓ Historical ask_question rendered cleanly with [x] answered option and notes")
+-- =========================================================================
+-- TEST 7b: Multi-line Questions and CLI Runner Headers Replay
+-- =========================================================================
+do
+  print("\n[Test 7b] Testing transcript rendering with multi-line question and runner headers...")
 
-protocol.cleanup_buffer(buf_hist)
+  vim.cmd("edit agy://new")
+  local buf_multi = vim.api.nvim_get_current_buf()
+
+  local multi_steps = {
+    {
+      type = "PLANNER_RESPONSE",
+      content = "",
+      tool_calls = {
+        {
+          name = "ask_question",
+          id = "call_multiline_123",
+          status = "DONE",
+          args = {
+            questions = vim.json.encode({
+              {
+                question = "Which architecture should we use?\n(Consider long-term performance)",
+                options = { "Monolith\n(Simple deployment)", "Microservices\n(Scalable)" },
+                is_multi_select = false,
+              }
+            })
+          }
+        }
+      }
+    },
+    {
+      type = "GENERIC",
+      status = "DONE",
+      content = "Created At: 2026-09-24T11:29:54-07:00\nCompleted At: 2026-09-24T11:29:54-07:00\nA1: User Skipped",
+    },
+    {
+      type = "PLANNER_RESPONSE",
+      content = "User skipped question. Proceeding with defaults.",
+      tool_calls = {},
+    }
+  }
+
+  local ok_render, err_render = pcall(function()
+    render.render_transcript(buf_multi, "mock-conv-multi", multi_steps, state.config)
+  end)
+  assert(ok_render, "render_transcript should not fail on multi-line questions: " .. tostring(err_render))
+
+  local multi_lines = vim.api.nvim_buf_get_lines(buf_multi, 0, -1, false)
+  for _, l in ipairs(multi_lines) do
+    assert(not l:find("\n"), "No buffer line should contain embedded newline")
+    assert(not l:find("\r"), "No buffer line should contain embedded CR")
+  end
+  local text_all = table.concat(multi_lines, "\n")
+  assert(text_all:find("Which architecture should we use%?"), "Question header should be rendered")
+  assert(text_all:find("Consider long%-term performance"), "Second line of question should be rendered")
+  assert(text_all:find("Monolith"), "Option 1 should be rendered")
+  assert(text_all:find("Microservices"), "Option 2 should be rendered")
+  assert(not text_all:find("Created At:"), "Runner metadata headers should be stripped")
+  print("✓ Historical ask_question with newlines and runner metadata rendered cleanly without error")
+
+  protocol.cleanup_buffer(buf_multi)
+end
 
 -- =========================================================================
 -- TEST 8: No CLIENT_INSTRUCTIONS Injection in Session
 -- =========================================================================
-print("\n[Test 8] Testing session sends prompt directly without CLIENT_INSTRUCTIONS...")
+do
+  print("\n[Test 8] Testing session sends prompt directly without CLIENT_INSTRUCTIONS...")
 
-local session_mod = require("agy.session")
-local written_to_proc = nil
+  local session_mod = require("agy.session")
+  local written_to_proc = nil
 
-local mock_session = setmetatable({
-  is_active = true,
-  is_initialized = true,
-  turn_active = false,
-  proc = {
-    write = function(_, str)
-      written_to_proc = str
-    end
-  }
-}, { __index = session_mod })
+  local mock_session = setmetatable({
+    is_active = true,
+    is_initialized = true,
+    turn_active = false,
+    proc = {
+      write = function(_, str)
+        written_to_proc = str
+      end
+    }
+  }, { __index = session_mod })
 
-mock_session:send_prompt("/plan create a rust CLI tool")
-assert(written_to_proc ~= nil, "Session must write payload to proc")
-local decoded_payload = vim.json.decode(written_to_proc)
-assert(decoded_payload.event == "user")
-assert(decoded_payload.message.content == "/plan create a rust CLI tool", "Payload must contain exact user prompt without injection")
-assert(not decoded_payload.message.content:find("<CLIENT_INSTRUCTIONS>", 1, true), "Payload must not include CLIENT_INSTRUCTIONS")
-print("✓ Session cleanly transmits user prompt without prompt injection")
+  mock_session:send_prompt("/plan create a rust CLI tool")
+  assert(written_to_proc ~= nil, "Session must write payload to proc")
+  local decoded_payload = vim.json.decode(written_to_proc)
+  assert(decoded_payload.event == "user")
+  assert(decoded_payload.message.content == "/plan create a rust CLI tool", "Payload must contain exact user prompt without injection")
+  assert(not decoded_payload.message.content:find("<CLIENT_INSTRUCTIONS>", 1, true), "Payload must not include CLIENT_INSTRUCTIONS")
+  print("✓ Session cleanly transmits user prompt without prompt injection")
+end
 
 -- =========================================================================
 -- TEST 9: utils.clean_user_content Stripping of CLIENT_INSTRUCTIONS
 -- =========================================================================
-print("\n[Test 9] Testing utils.clean_user_content strips CLIENT_INSTRUCTIONS...")
+do
+  print("\n[Test 9] Testing utils.clean_user_content strips CLIENT_INSTRUCTIONS...")
 
-local sample_raw = [[
+  local sample_raw = [[
 <USER_REQUEST>
 /plan implement user authentication
 
@@ -336,9 +404,10 @@ The current local time is: 2026-09-19T18:00:00.
 </ADDITIONAL_METADATA>
 ]]
 
-local cleaned = utils.clean_user_content(sample_raw)
-assert(cleaned == "/plan implement user authentication", "Cleaned user content must only contain prompt without CLIENT_INSTRUCTIONS, got: " .. cleaned)
-print("✓ utils.clean_user_content cleanly strips CLIENT_INSTRUCTIONS from conversation history")
+  local cleaned = utils.clean_user_content(sample_raw)
+  assert(cleaned == "/plan implement user authentication", "Cleaned user content must only contain prompt without CLIENT_INSTRUCTIONS, got: " .. cleaned)
+  print("✓ utils.clean_user_content cleanly strips CLIENT_INSTRUCTIONS from conversation history")
+end
 
 -- =========================================================================
 -- TEST 10: Turn Cancellation & Question UI on ask_question

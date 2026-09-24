@@ -84,6 +84,7 @@ local function clean_question_text(text)
   local cleaned = utils.trim(text)
   cleaned = cleaned:gsub("^[Qq]uestion%s*%(?%d+[%s/of%-]*%d*%)?%s*[:.-]?%s*", "")
   cleaned = cleaned:gsub("^%d+[%s/of%-]+%d+%s*[:.-]?%s*", "")
+  cleaned = cleaned:gsub("[\r\n]+", " ")
   cleaned = utils.trim(cleaned)
   return cleaned
 end
@@ -544,9 +545,16 @@ function M.render_buffer()
     local prev_guard = protocol and protocol._internal_guard
     if protocol then protocol._internal_guard = true end
 
+    local safe_lines = {}
+    for _, l in ipairs(lines) do
+      local sub = utils.split_lines(tostring(l))
+      for _, sl in ipairs(sub) do
+        table.insert(safe_lines, sl)
+      end
+    end
     local prev_mod = vim.bo[b].modifiable
     vim.bo[b].modifiable = true
-    vim.api.nvim_buf_set_lines(b, start_row, -1, false, lines)
+    vim.api.nvim_buf_set_lines(b, start_row, -1, false, safe_lines)
     vim.bo[b].modified = false
     vim.bo[b].modifiable = prev_mod
 
@@ -775,9 +783,16 @@ function M.render_buffer()
   local prev_guard = protocol and protocol._internal_guard
   if protocol then protocol._internal_guard = true end
 
+  local safe_lines = {}
+  for _, l in ipairs(lines) do
+    local sub = utils.split_lines(tostring(l))
+    for _, sl in ipairs(sub) do
+      table.insert(safe_lines, sl)
+    end
+  end
   local prev_mod = vim.bo[b].modifiable
   vim.bo[b].modifiable = true
-  vim.api.nvim_buf_set_lines(b, start_row, -1, false, lines)
+  vim.api.nvim_buf_set_lines(b, start_row, -1, false, safe_lines)
   vim.bo[b].modified = false
   vim.bo[b].modifiable = prev_mod
 
