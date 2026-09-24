@@ -249,6 +249,10 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             review_comment = "💬",
             new_session = "󰐕 ",      -- Icon for agy://new in home buffer
             conversation = "󰭹 ",     -- Icon for conversation entries in home buffer
+            step_unanswered = "○",   -- Unanswered question step in progression
+            step_answered = "●",     -- Answered question step in progression
+            step_current = "◉",      -- Current active question step in progression
+            step_line = "─",         -- Connecting line between question steps
             spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
             table = {
                 top_left = "╭",
@@ -328,6 +332,10 @@ The following highlight groups are used for styling and can be customized:
 - `AgyQuestionChecked`: Checked option marks and icons.
 - `AgyQuestionSubmit`: Unhovered submission button text.
 - `AgyQuestionSubmitSel`: Hovered block submission button with solid background.
+- `AgyQuestionStepDone`: Answered question step circle in progression.
+- `AgyQuestionStepTodo`: Unanswered question step circle in progression.
+- `AgyQuestionStepCurrent`: Current active question step circle in progression.
+- `AgyQuestionStepLine`: Connecting line between question steps in progression.
 
 ==============================================================================
 8. MENTIONS & EXTENSION API                                     *agy-mentions*

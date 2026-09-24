@@ -798,16 +798,16 @@ assert(mq_ui.is_visible() == true)
 assert(#mq_ui.state.questions == 3, "Must have 3 questions loaded")
 assert(mq_ui.state.current_q_idx == 1, "Starts on question 1")
 
--- Verify header shows (1/3) and footer mentions question navigation
+-- Verify header shows progression circles and footer mentions question navigation
 local q_buf = mq_ui.state.buf
 local lines_q1 = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
-local found_count_1 = false
+local found_prog_1 = false
 local found_footer_q_nav = false
 for _, l in ipairs(lines_q1) do
-  if l:find("%(1/3%)") then found_count_1 = true end
+  if l:find("○ ── ○ ── ○") or l:find("○ ──") then found_prog_1 = true end
   if l:find("tab/h/l Questions") then found_footer_q_nav = true end
 end
-assert(found_count_1 == true, "Header must show (1/3) for question 1")
+assert(found_prog_1 == true, "Header must show progression circles for question 1")
 assert(found_footer_q_nav == true, "Footer must display tab/h/l question navigation hint")
 
 -- Navigate to Question 2 via next_question()
@@ -885,7 +885,7 @@ assert(multi_q_submitted_prompt == nil, "Submission must wait for confirmation o
 -- Verify summary buffer content displays all answers
 local summary_lines = vim.api.nvim_buf_get_lines(mq_ui.state.buf, 0, -1, false)
 local summary_text = table.concat(summary_lines, "\n")
-assert(summary_text:find("Summary: Review Answers"), "Summary header must be present")
+assert(summary_text:find("Review Answers"), "Summary header must be present")
 assert(summary_text:find("SQLite"), "Summary must list Q1 answer SQLite")
 assert(summary_text:find("Auth, Metrics"), "Summary must list Q2 answers Auth, Metrics")
 assert(summary_text:find("Kubernetes"), "Summary must list Q3 answer Kubernetes")
@@ -960,16 +960,44 @@ question_mod.show(test18_win, test18_buf, dup_questions, {
   end,
 })
 
--- 1. Check Question 1 header: should be "Question (1/4): What database backend should we deploy?"
+-- 1. Check Question 1 header: should have progression "○ ── ○ ── ○ ── ○" and title without "Question" prefix
 local q1_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
 local q1_header = q1_lines[2]
-assert(q1_header:find("Question %(1/4%): What database backend should we deploy%?"), "Q1 header must not double Question prefix: " .. tostring(q1_header))
-assert(not q1_header:find("Question %(1/4%): Question"), "Q1 header must deduplicate Question prefix: " .. tostring(q1_header))
+assert(q1_header:find("○ ── ○ ── ○ ── ○"), "Q1 header must contain progression with non-filled circles: " .. tostring(q1_header))
+assert(q1_header:find("What database backend should we deploy%?"), "Q1 header must contain cleaned question title: " .. tostring(q1_header))
+assert(not q1_header:find("Question"), "Q1 header must not contain any 'Question' prefix: " .. tostring(q1_header))
+
+-- Verify progression extmarks on Q1: step 1 is current (AgyQuestionStepCurrent), lines are AgyQuestionStepLine, step 2 is todo (AgyQuestionStepTodo)
+local q1_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { 1, 0 }, { 1, -1 }, { details = true })
+local has_step1_curr = false
+local has_step2_todo = false
+local has_step_line = false
+for _, em in ipairs(q1_extmarks) do
+  local d = em[4] or {}
+  if d.hl_group == "AgyQuestionStepCurrent" and em[3] == 2 then
+    has_step1_curr = true
+  end
+  if d.hl_group == "AgyQuestionStepTodo" then
+    has_step2_todo = true
+  end
+  if d.hl_group == "AgyQuestionStepLine" then
+    has_step_line = true
+  end
+end
+assert(has_step1_curr == true, "Step 1 circle must have AgyQuestionStepCurrent highlight")
+assert(has_step2_todo == true, "Step 2 circle must have AgyQuestionStepTodo highlight")
+assert(has_step_line == true, "Connecting lines must have AgyQuestionStepLine highlight")
+
+-- Answer Question 1 (toggle option 1)
+question_mod.jump_to(1)
+question_mod.toggle()
+assert(question_mod.has_question_answer(1) == true, "Q1 must be answered")
 
 -- 2. Multi-select submit item on Question 1: "Next Question" without brackets
 local next_btn_line = nil
 local next_btn_row = nil
-for idx, l in ipairs(q1_lines) do
+local q1_lines_ans = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+for idx, l in ipairs(q1_lines_ans) do
   if l:find("Next Question") then
     next_btn_line = l
     next_btn_row = idx - 1
@@ -1011,29 +1039,49 @@ for _, em in ipairs(extmarks) do
 end
 assert(has_unsel_hl == true, "Unselected submit button must have AgyQuestionSubmit highlight")
 
--- 3. Check Question 2 header: "Question 2 of 4: Which cache layer?" -> deduplicated to "Question (2/4): Which cache layer?"
+-- 3. Check Question 2 header: step 1 is answered (●), step 2 is current (○), no "Question 2 of 4:" prefix
 question_mod.next_question()
 local q2_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
 local q2_header = q2_lines[2]
-assert(q2_header:find("Question %(2/4%): Which cache layer%?"), "Q2 header must deduplicate 'Question 2 of 4': " .. tostring(q2_header))
+assert(q2_header:find("● ── ○ ── ○ ── ○"), "Q2 progression must show step 1 answered (●) and step 2-4 unanswered (○): " .. tostring(q2_header))
+assert(q2_header:find("Which cache layer%?"), "Q2 title must be present: " .. tostring(q2_header))
+assert(not q2_header:find("Question"), "Q2 header must not contain Question prefix: " .. tostring(q2_header))
 
--- 4. Check Question 3 header: "Question 3/4" alone -> header is "Question (3/4)" without trailing colon
+-- Verify step 1 has AgyQuestionStepDone
+local q2_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { 1, 0 }, { 1, -1 }, { details = true })
+local has_step1_done = false
+for _, em in ipairs(q2_extmarks) do
+  local d = em[4] or {}
+  if d.hl_group == "AgyQuestionStepDone" and em[3] == 2 then
+    has_step1_done = true
+  end
+end
+assert(has_step1_done == true, "Step 1 must have AgyQuestionStepDone highlight now that it is answered")
+
+-- 4. Check Question 3 header: "Question 3/4" alone -> title cleaned, shows progression
 question_mod.next_question()
 local q3_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
 local q3_header = q3_lines[2]
-assert(q3_header:find("Question %(3/4%)"), "Q3 header must have Question (3/4): " .. tostring(q3_header))
-assert(not q3_header:find("Question %(3/4%):"), "Q3 header with empty title must not have trailing colon: " .. tostring(q3_header))
+assert(q3_header:find("● ── ○ ── ○ ── ○"), "Q3 header must have progression: " .. tostring(q3_header))
+assert(not q3_header:find("Question"), "Q3 header must not contain Question prefix: " .. tostring(q3_header))
 
--- 5. Check Question 4 header: "4/4: Final verification step?" -> deduplicated to "Question (4/4): Final verification step?"
+-- 5. Check Question 4 header: "4/4: Final verification step?" -> title cleaned, no "4/4:" prefix
 question_mod.next_question()
 local q4_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
 local q4_header = q4_lines[2]
-assert(q4_header:find("Question %(4/4%): Final verification step%?"), "Q4 header must deduplicate '4/4:': " .. tostring(q4_header))
+assert(q4_header:find("Final verification step%?"), "Q4 header must have title: " .. tostring(q4_header))
+assert(not q4_header:find("4/4"), "Q4 header must not have '4/4' prefix: " .. tostring(q4_header))
+assert(not q4_header:find("Question"), "Q4 header must not contain Question prefix: " .. tostring(q4_header))
 
 -- 6. Check Summary Page (Page 5)
 question_mod.next_question()
 assert(question_mod.is_summary_page() == true, "Must be on summary page")
 local sum_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+local sum_header = sum_lines[2]
+assert(sum_header:find("● ── ○ ── ○ ── ○"), "Summary header must show progression across all questions: " .. tostring(sum_header))
+assert(sum_header:find("Review Answers"), "Summary header must contain 'Review Answers': " .. tostring(sum_header))
+assert(not sum_header:find("Question"), "Summary header must not contain 'Question' prefix: " .. tostring(sum_header))
+
 local submit_all_line = nil
 local submit_all_row = nil
 for idx, l in ipairs(sum_lines) do

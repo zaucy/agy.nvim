@@ -96,6 +96,99 @@ local function ensure_highlights()
     bold = true,
     default = true,
   })
+  vim.api.nvim_set_hl(0, "AgyQuestionStepDone", { link = "DiagnosticOk", default = true, bold = true })
+  vim.api.nvim_set_hl(0, "AgyQuestionStepTodo", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "AgyQuestionStepCurrent", { link = "Special", default = true, bold = true })
+  vim.api.nvim_set_hl(0, "AgyQuestionStepLine", { link = "Comment", default = true })
+end
+
+---Check if a question has at least one selected answer or write-in text
+---@param q_idx number
+---@return boolean
+local function has_question_answer(q_idx)
+  local q = M.state.questions[q_idx]
+  if not q then return false end
+
+  if q.is_multi_select then
+    local sel_map = M.state.selected_answers[q_idx]
+    if sel_map then
+      for _, v in pairs(sel_map) do
+        if v then return true end
+      end
+    end
+  else
+    if M.state.selected_answers[q_idx] ~= nil then
+      return true
+    end
+  end
+  if M.state.write_in_text[q_idx] and M.state.write_in_text[q_idx] ~= "" then
+    return true
+  end
+  return false
+end
+
+---Build progression string and extmark highlight descriptors for multi-question workflows
+---@param cfg? table
+---@param base_col number
+---@return string prog_text, table[] highlights
+local function build_progression(cfg, base_col)
+  local c = cfg or config_mod.get()
+  local step_unanswered = get_icon("step_unanswered", c)
+  local step_answered = get_icon("step_answered", c)
+  local step_current = get_icon("step_current", c)
+  local step_line = get_icon("step_line", c)
+
+  local num_q = #M.state.questions
+  if num_q <= 1 then return "", {} end
+
+  local is_summary = M.is_summary_page()
+  local cur_q = M.state.current_q_idx
+
+  local parts = {}
+  local hls = {}
+  local cur_col = base_col or 0
+
+  for i = 1, num_q do
+    if i > 1 then
+      local line_str = " " .. step_line .. step_line .. " "
+      table.insert(parts, line_str)
+      table.insert(hls, {
+        start_col = cur_col,
+        end_col = cur_col + #line_str,
+        hl_group = "AgyQuestionStepLine",
+      })
+      cur_col = cur_col + #line_str
+    end
+
+    local answered = has_question_answer(i)
+    local is_curr = (not is_summary and i == cur_q)
+    local sym
+    local hl_group
+    if is_curr then
+      if answered then
+        sym = step_current or step_answered
+      else
+        sym = step_unanswered
+      end
+      hl_group = "AgyQuestionStepCurrent"
+    elseif answered then
+      sym = step_answered
+      hl_group = "AgyQuestionStepDone"
+    else
+      sym = step_unanswered
+      hl_group = "AgyQuestionStepTodo"
+    end
+
+    table.insert(parts, sym)
+    table.insert(hls, {
+      start_col = cur_col,
+      end_col = cur_col + #sym,
+      hl_group = hl_group,
+    })
+    cur_col = cur_col + #sym
+  end
+
+  return table.concat(parts, ""), hls
 end
 
 ---Check whether the question floating window is currently visible and not hidden
@@ -275,7 +368,13 @@ function M.render_buffer()
     })
 
     -- Header line
-    local header_text = string.format("  %s Summary: Review Answers (%d/%d)", q_icon, #M.state.questions, #M.state.questions)
+    local prog_str, prog_hls = build_progression(cfg, 2)
+    local header_text
+    if prog_str ~= "" then
+      header_text = string.format("  %s   Review Answers", prog_str)
+    else
+      header_text = "  Review Answers"
+    end
     table.insert(lines, header_text)
     table.insert(highlights, {
       row = #lines - 1,
@@ -283,6 +382,15 @@ function M.render_buffer()
       end_col = #header_text,
       hl_group = "AgyQuestionHeader",
     })
+    for _, ph in ipairs(prog_hls) do
+      table.insert(highlights, {
+        row = #lines - 1,
+        start_col = ph.start_col,
+        end_col = ph.end_col,
+        hl_group = ph.hl_group,
+        priority = 101,
+      })
+    end
 
     -- Spacer
     table.insert(lines, "")
@@ -387,7 +495,7 @@ function M.render_buffer()
         vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, hl.start_col or 0, {
           end_col = hl.end_col,
           hl_group = hl.hl_group,
-          priority = 100,
+          priority = hl.priority or 100,
         })
       elseif hl.is_sel ~= nil then
         if hl.item and hl.item.type == "submit_all" then
@@ -477,15 +585,21 @@ function M.render_buffer()
   })
 
   -- Question header line
-  local count_str = #M.state.questions > 1 and string.format(" (%d/%d)", M.state.current_q_idx, #M.state.questions) or ""
+  local prog_str, prog_hls = build_progression(cfg, 2)
   local title = clean_question_text(q.question)
+  if title == "" and prog_str == "" then
+    title = q.question
+  end
+
   local header_text
-  if title ~= "" then
-    header_text = string.format("  %s Question%s: %s", q_icon, count_str, title)
-  elseif count_str ~= "" then
-    header_text = string.format("  %s Question%s", q_icon, count_str)
+  if prog_str ~= "" then
+    if title ~= "" then
+      header_text = string.format("  %s   %s", prog_str, title)
+    else
+      header_text = string.format("  %s", prog_str)
+    end
   else
-    header_text = string.format("  %s Question: %s", q_icon, q.question)
+    header_text = string.format("  %s", title)
   end
   table.insert(lines, header_text)
   table.insert(highlights, {
@@ -494,6 +608,15 @@ function M.render_buffer()
     end_col = #header_text,
     hl_group = "AgyQuestionHeader",
   })
+  for _, ph in ipairs(prog_hls) do
+    table.insert(highlights, {
+      row = #lines - 1,
+      start_col = ph.start_col,
+      end_col = ph.end_col,
+      hl_group = ph.hl_group,
+      priority = 101,
+    })
+  end
 
   -- Spacer
   table.insert(lines, "")
@@ -600,7 +723,7 @@ function M.render_buffer()
       vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, hl.start_col or 0, {
         end_col = hl.end_col,
         hl_group = hl.hl_group,
-        priority = 100,
+        priority = hl.priority or 100,
       })
     elseif hl.is_sel ~= nil then
       if hl.item and hl.item.type == "submit" then
@@ -1231,25 +1354,7 @@ end
 ---@param q_idx number
 ---@return boolean
 function M.has_question_answer(q_idx)
-  local q = M.state.questions[q_idx]
-  if not q then return false end
-
-  if q.is_multi_select then
-    local sel_map = M.state.selected_answers[q_idx]
-    if sel_map then
-      for _, v in pairs(sel_map) do
-        if v then return true end
-      end
-    end
-  else
-    if M.state.selected_answers[q_idx] ~= nil then
-      return true
-    end
-  end
-  if M.state.write_in_text[q_idx] and M.state.write_in_text[q_idx] ~= "" then
-    return true
-  end
-  return false
+  return has_question_answer(q_idx)
 end
 
 ---Validate and submit all answers across questions
