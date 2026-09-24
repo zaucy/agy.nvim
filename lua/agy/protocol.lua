@@ -2235,13 +2235,14 @@ function M.handle_buf_read(args)
     vim.bo[buf].swapfile = false
     vim.bo[buf].bufhidden = "hide"
 
+    local steps = nil
     local prompt_line, prompt_ext_id, tool_calls
     M.with_modifiable(buf, function()
       if target_id == "" or target_id == "new" then
         prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
         tool_calls = {}
       else
-        local steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
+        steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
         local ws = existing_state.workspaces
           or (existing_state.session and (existing_state.session.workspaces or existing_state.session.cwd))
           or vim.fn.getcwd()
@@ -2259,9 +2260,8 @@ function M.handle_buf_read(args)
     existing_state.active_tool_line = nil
     existing_state.active_tool_extmark_id = nil
     existing_state.rendered_thinking = {}
-    if target_id ~= "" and target_id ~= "new" then
-      local loaded_steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
-      for idx, s in ipairs(loaded_steps) do
+    if target_id ~= "" and target_id ~= "new" and steps then
+      for idx, s in ipairs(steps) do
         if s.type == "PLANNER_RESPONSE" and s.thinking and s.thinking ~= "" then
           local key = (s.step_index or tostring(idx)) .. ":" .. s.thinking
           existing_state.rendered_thinking[key] = true
@@ -2273,9 +2273,8 @@ function M.handle_buf_read(args)
       existing_state.stream_info = {}
     end
     if not existing_state.stream_info.model or existing_state.stream_info.model == "" then
-      if target_id ~= "" and target_id ~= "new" then
-        local loaded_steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
-        local conv_model = transcript_mod.extract_model_from_steps(loaded_steps)
+      if target_id ~= "" and target_id ~= "new" and steps then
+        local conv_model = transcript_mod.extract_model_from_steps(steps)
         existing_state.stream_info.model = conv_model and completion.resolve_model(conv_model) or completion.get_default_model(cfg.app_data_dir, cfg.default_model, cfg.agy_cmd)
       else
         existing_state.stream_info.model = completion.get_default_model(cfg.app_data_dir, cfg.default_model, cfg.agy_cmd)

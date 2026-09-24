@@ -813,18 +813,50 @@ function M.get_agent_boundary(buf, from_agent_row)
 		return nil, nil
 	end
 
+	if M._in_transcript_replay then
+		return nil, from_agent_row or M._transcript_agent_line
+	end
+
 	local agent_row = from_agent_row
-	if not agent_row then
-		local protocol = package.loaded["agy.protocol"]
-		local state = protocol and protocol.buffers and protocol.buffers[buf]
-		if state and state.agent_extmark_id then
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+	if not agent_row and state then
+		if state.agent_extmark_id then
 			local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.agent_extmark_id, {})
 			if pos and #pos >= 1 then
 				agent_row = pos[1]
 			end
 		end
-		if not agent_row and state and state.agent_line then
+		if not agent_row and state.agent_line then
 			agent_row = state.agent_line
+		end
+	end
+
+	-- Fast path: if state exists, query prompt extmark and queue directly without scanning all extmarks
+	if state and state.prompt_extmark_id then
+		local boundary_row = nil
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.prompt_extmark_id, {})
+		if pos and #pos >= 1 then
+			local p_row = pos[1]
+			if not agent_row or p_row > agent_row then
+				boundary_row = p_row
+			end
+		end
+
+		if state.queued_prompts and #state.queued_prompts > 0 then
+			local q_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_QUEUE, 0, -1, {})
+			for _, qm in ipairs(q_marks) do
+				local row = qm[2]
+				if not agent_row or row > agent_row then
+					if not boundary_row or row < boundary_row then
+						boundary_row = row
+					end
+				end
+			end
+		end
+
+		if agent_row then
+			return boundary_row, agent_row
 		end
 	end
 
@@ -1777,6 +1809,9 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		return prompt_start_line, prompt_extmark_id, {}
 	end
 
+	M._in_transcript_replay = true
+	M._transcript_agent_line = nil
+
 	local tasks_mod = require("agy.tasks")
 	local task_outcomes = tasks_mod.collect_task_outcomes(steps)
 
@@ -1838,6 +1873,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		in_agent_turn = false
 		agent_extmark_id = nil
 		agent_line = nil
+		M._transcript_agent_line = nil
 		current_agent_turn_duration = 0
 		current_agent_turn_has_explicit_duration = false
 		current_agent_turn_start_time = nil
@@ -1868,6 +1904,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 				prompt_extmark_id = nil
 			end
 			in_agent_turn = true
+			M._transcript_agent_line = agent_line
 			current_agent_turn_duration = 0
 			current_agent_turn_has_explicit_duration = false
 			current_agent_turn_start_time = last_user_input_time
@@ -2039,6 +2076,8 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 
 	M.stop_thinking_animation(buf)
 	vim.bo[buf].modified = false
+	M._in_transcript_replay = nil
+	M._transcript_agent_line = nil
 
 	return prompt_start_line, prompt_extmark_id, tool_calls
 end
