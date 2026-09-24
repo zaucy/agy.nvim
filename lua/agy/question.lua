@@ -263,7 +263,7 @@ end
 
 ---Update question UI layout upon window resize
 function M.update_win_config()
-  if M.is_visible() then
+  if M.is_visible() and not M.state.is_editing_write_in then
     M.render_buffer()
   end
 end
@@ -1175,10 +1175,17 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   vim.keymap.set("i", "<C-w>", function()
     local cur = vim.api.nvim_win_get_cursor(win)
     if cur[1] == write_line and cur[2] > prefix_end then
-      return "<C-w>"
+      local line = vim.api.nvim_buf_get_lines(b, write_line - 1, write_line, false)[1] or ""
+      local before_cur = line:sub(1, cur[2])
+      local after_cur = line:sub(cur[2] + 1)
+      local input_part = before_cur:sub(prefix_end + 1)
+      local new_input = input_part:gsub("%s*[%w_]+%s*$", "")
+      local new_line = line:sub(1, prefix_end) .. new_input .. after_cur
+      vim.api.nvim_buf_set_lines(b, write_line - 1, write_line, false, { new_line })
+      pcall(vim.api.nvim_win_set_cursor, win, { write_line, prefix_end + #new_input })
     end
     return ""
-  end, { buffer = b, expr = true, silent = true })
+  end, { buffer = b, silent = true })
 
   vim.keymap.set("i", "<C-u>", function()
     local cur = vim.api.nvim_win_get_cursor(win)

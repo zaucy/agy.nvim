@@ -546,15 +546,6 @@ function M._setup_buffer(buf, conversation_id)
           local cur_line = vim.api.nvim_win_get_cursor(win)[1]
           local line_count = vim.api.nvim_buf_line_count(buf)
           local prompt_start = state.prompt_start_line or line_count
-
-          if state.active_question and state.active_question.ui then
-            if state.active_question.ui.is_visible() then
-              state.active_question.ui.update_win_config()
-            else
-              state.active_question.ui.show_over_prompt(win, buf)
-            end
-          end
-
           if state.config and state.config.ui and state.config.ui.auto_scroll == false then
             state.follow_bottom = false
           elseif state.prompt_extmark_id and state.prompt_start_line then

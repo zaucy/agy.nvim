@@ -1228,4 +1228,228 @@ assert(t19_state.stream_info.status == "ready", "Status must become ready")
 protocol.cleanup_buffer(t19_buf)
 print("✓ <CR> tool toggle and <C-c> turn cancellation preserved before, during, and after questions")
 
+-- =========================================================================
+-- TEST 20: Inline Write-in Typing Persistence & Historical Display
+-- =========================================================================
+print("\n[Test 20] Testing inline write-in typing persistence and historical display...")
+
+vim.cmd("edit! agy://test-write-in-persist")
+local t20_buf = vim.api.nvim_get_current_buf()
+local t20_win = vim.api.nvim_get_current_win()
+local t20_state = protocol.buffers[t20_buf]
+
+local submitted_payload = nil
+t20_state.session.turn_active = true
+t20_state.session.stop = function() t20_state.session.turn_active = false end
+t20_state.session.send_prompt = function(_, prompt)
+  submitted_payload = prompt
+  return true
+end
+
+t20_state.session.on_step_update(t20_state.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Select target environment:",
+          options = { "Production", "Staging" },
+          is_multi_select = false,
+        }
+      }
+    }
+  }
+})
+
+local t20_ui = t20_state.active_question.ui
+assert(t20_ui.is_visible() == true)
+
+-- Start inline write-in editing
+t20_ui.start_inline_write_in()
+assert(t20_ui.state.is_editing_write_in == true)
+assert(vim.bo[t20_buf].modifiable == true)
+
+-- Find write-in line
+local opt_start = t20_ui.get_opt_start_line()
+local write_line = opt_start + 2 -- 2 options + 1 write-in
+local line = vim.api.nvim_buf_get_lines(t20_buf, write_line - 1, write_line, false)[1] or ""
+assert(line:find("Write%-in:"), "Must have Write-in: prefix")
+
+-- Simulate user typing "Local development" in insert mode
+local typed_line = line .. "Local development"
+vim.api.nvim_buf_set_lines(t20_buf, write_line - 1, write_line, false, { typed_line })
+vim.api.nvim_win_set_cursor(t20_win, { write_line, #typed_line })
+
+-- Fire TextChanged, TextChangedI, CursorMoved, CursorMovedI autocmds
+vim.api.nvim_exec_autocmds("TextChangedI", { buffer = t20_buf })
+vim.api.nvim_exec_autocmds("CursorMovedI", { buffer = t20_buf })
+vim.api.nvim_exec_autocmds("TextChanged", { buffer = t20_buf })
+vim.api.nvim_exec_autocmds("CursorMoved", { buffer = t20_buf })
+
+-- Verify the typed text was NOT erased
+local line_after_autocmds = vim.api.nvim_buf_get_lines(t20_buf, write_line - 1, write_line, false)[1] or ""
+assert(line_after_autocmds:find("Local development"), "Typed text must persist across TextChanged/CursorMoved events: " .. line_after_autocmds)
+assert(vim.bo[t20_buf].modifiable == true, "Buffer must remain modifiable while editing write-in")
+
+-- Trigger <CR> keymap in insert mode to confirm
+local i_cr = vim.fn.maparg("<CR>", "i", false, true)
+assert(i_cr and i_cr.callback ~= nil, "Insert mode <CR> must be mapped during inline write-in")
+i_cr.callback()
+
+assert(t20_ui.state.is_editing_write_in == false, "Editing write-in must end")
+assert(submitted_payload ~= nil, "Payload must have been submitted")
+assert(submitted_payload:find("Local development"), "Submitted payload must contain 'Local development'")
+
+-- Check historical rendering in buffer
+local buf_lines = vim.api.nvim_buf_get_lines(t20_buf, 0, -1, false)
+local found_write_in_checked = false
+local found_prod_unchecked = false
+for _, l in ipairs(buf_lines) do
+  if l:find("%- %[x%] Write%-in: Local development") then
+    found_write_in_checked = true
+  elseif l:find("%- %[ %] Production") then
+    found_prod_unchecked = true
+  end
+end
+
+assert(found_write_in_checked, "Historical question must render '- [x] Write-in: Local development'")
+assert(found_prod_unchecked, "Historical question options must render unchecked '- [ ] Production'")
+
+protocol.cleanup_buffer(t20_buf)
+print("✓ Inline write-in typing persists across events and renders properly in history")
+
+-- =========================================================================
+-- TEST 21: Transcript Replay (:e reload) Alignment for ask_question
+-- =========================================================================
+print("\n[Test 21] Testing transcript replay (:e reload) for ask_question...")
+
+-- 21a. Option selected
+local buf_replay1 = vim.api.nvim_create_buf(false, true)
+local replay_steps1 = {
+  {
+    type = "USER_INPUT",
+    content = "Configure build tool",
+    created_at = "2026-09-24T10:00:00Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Which build tool would you like?",
+    tool_calls = {
+      {
+        name = "ask_question",
+        args = {
+          questions = {
+            {
+              question = "Select build tool:",
+              options = { "Vite", "Webpack", "Rollup" },
+              is_multi_select = false,
+            }
+          }
+        }
+      }
+    },
+    created_at = "2026-09-24T10:00:05Z",
+  },
+  {
+    type = "USER_INPUT",
+    content = "A: Vite",
+    created_at = "2026-09-24T10:00:10Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Configuring Vite now...",
+    created_at = "2026-09-24T10:00:15Z",
+  }
+}
+
+render.render_transcript(buf_replay1, "test-replay-1", replay_steps1, state.config)
+local lines_r1 = vim.api.nvim_buf_get_lines(buf_replay1, 0, -1, false)
+
+local r1_vite_checked = false
+local r1_webpack_unchecked = false
+local r1_has_stray_a_vite = false
+
+for _, l in ipairs(lines_r1) do
+  if l:find("%- %[x%] Vite") then
+    r1_vite_checked = true
+  elseif l:find("%- %[ %] Webpack") then
+    r1_webpack_unchecked = true
+  elseif l == "A: Vite" then
+    r1_has_stray_a_vite = true
+  end
+end
+
+assert(r1_vite_checked, "Vite must be rendered checked [x] in replay: " .. table.concat(lines_r1, "\n"))
+assert(r1_webpack_unchecked, "Webpack must be rendered unchecked [ ] in replay")
+assert(not r1_has_stray_a_vite, "Transcript replay must NOT render redundant 'A: Vite' prompt line")
+
+protocol.cleanup_buffer(buf_replay1)
+print("✓ Transcript replay for selected option renders [x] option without duplicate user turn")
+
+-- 21b. Write-in only
+local buf_replay2 = vim.api.nvim_create_buf(false, true)
+local replay_steps2 = {
+  {
+    type = "USER_INPUT",
+    content = "Deploy project",
+    created_at = "2026-09-24T10:00:00Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Where to deploy?",
+    tool_calls = {
+      {
+        name = "ask_question",
+        args = {
+          questions = {
+            {
+              question = "Deploy target:",
+              options = { "AWS", "GCP" },
+              is_multi_select = false,
+            }
+          }
+        }
+      }
+    },
+    created_at = "2026-09-24T10:00:05Z",
+  },
+  {
+    type = "USER_INPUT",
+    content = "A: Bare metal Kubernetes",
+    created_at = "2026-09-24T10:00:10Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Deploying to Bare metal Kubernetes...",
+    created_at = "2026-09-24T10:00:15Z",
+  }
+}
+
+render.render_transcript(buf_replay2, "test-replay-2", replay_steps2, state.config)
+local lines_r2 = vim.api.nvim_buf_get_lines(buf_replay2, 0, -1, false)
+
+local r2_write_in_checked = false
+local r2_aws_unchecked = false
+local r2_has_stray_answer = false
+
+for _, l in ipairs(lines_r2) do
+  if l:find("%- %[x%] Write%-in: Bare metal Kubernetes") then
+    r2_write_in_checked = true
+  elseif l:find("%- %[ %] AWS") then
+    r2_aws_unchecked = true
+  elseif l == "A: Bare metal Kubernetes" then
+    r2_has_stray_answer = true
+  end
+end
+
+assert(r2_write_in_checked, "Write-in response must be rendered checked [x] in replay: " .. table.concat(lines_r2, "\n"))
+assert(r2_aws_unchecked, "AWS must be rendered unchecked [ ] in replay")
+assert(not r2_has_stray_answer, "Transcript replay must NOT render redundant 'A: Bare metal Kubernetes' line")
+
+protocol.cleanup_buffer(buf_replay2)
+print("✓ Transcript replay for write-in renders - [x] Write-in: without duplicate user turn")
+
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")
