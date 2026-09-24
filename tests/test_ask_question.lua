@@ -628,4 +628,86 @@ assert(stop_state.stream_info.status == "ready", "Status must return to ready")
 protocol.cleanup_buffer(buf_stop)
 print("✓ stop_turn cleanly clears active_question and restores prompt divider")
 
+-- =========================================================================
+-- TEST 15: Question UI Overlay Geometry & Prompt Modifiable Lock
+-- =========================================================================
+print("\n[Test 15] Testing question UI overlay geometry and unmodifiable prompt lock...")
+
+vim.cmd("edit! agy://new")
+local buf_lock = vim.api.nvim_get_current_buf()
+local win_lock = vim.api.nvim_get_current_win()
+local state_lock = protocol.buffers[buf_lock]
+
+state_lock.session = {
+  turn_active = false,
+  stop = function() end,
+  send_prompt = function() return true end,
+  destroy = function() end,
+}
+
+local q_sample = {
+  {
+    question = "Which cache strategy should we adopt?",
+    options = { "LRU in-memory", "Redis distributed", "Disk-backed mmap" },
+    is_multi_select = false,
+  }
+}
+
+protocol.intercept_ask_question(buf_lock, state_lock, q_sample)
+assert(state_lock.active_question ~= nil)
+local ui_lock = state_lock.active_question.ui
+assert(ui_lock.is_visible() == true)
+
+-- Float window config: focusable must be false, relative to target win
+local win_cfg = vim.api.nvim_win_get_config(ui_lock.state.win)
+assert(win_cfg.focusable == false, "Floating window must be non-focusable so prompt win retains cursor")
+assert(win_cfg.relative == "win", "Floating window must be relative to target window")
+
+-- Target buffer modifiable must be false everywhere while question is active
+protocol.update_modifiable(buf_lock)
+assert(vim.bo[buf_lock].modifiable == false, "Target buffer modifiable must be false while active_question is active")
+
+-- =========================================================================
+-- TEST 16: History Navigation & Seamless Question Hide / Restore
+-- =========================================================================
+print("\n[Test 16] Testing history navigation hides question float and returns seamlessly...")
+
+local prompt_line = state_lock.prompt_start_line or vim.api.nvim_buf_line_count(buf_lock)
+assert(prompt_line > 1, "prompt_line must be > 1 so history lines exist above it")
+
+-- Cursor at prompt line: question UI is visible
+vim.api.nvim_win_set_cursor(win_lock, { prompt_line, 0 })
+vim.cmd("doautocmd CursorMoved")
+assert(ui_lock.is_visible() == true, "Question UI must be visible when cursor is at prompt line")
+
+-- Move cursor up into history (e.g. line 1, well above prompt_start_line)
+vim.api.nvim_win_set_cursor(win_lock, { 1, 0 })
+vim.cmd("doautocmd CursorMoved")
+assert(ui_lock.is_visible() == false, "Question UI must be hidden when cursor is scrolled into history")
+
+-- Move cursor back down to prompt line: question UI automatically re-appears
+vim.api.nvim_win_set_cursor(win_lock, { prompt_line, 0 })
+vim.cmd("doautocmd CursorMoved")
+assert(ui_lock.is_visible() == true, "Question UI must be restored when cursor returns to prompt line")
+
+-- Navigate options and accept via <CR> at prompt
+local submitted_answer = nil
+state_lock.session.send_prompt = function(_, prompt)
+  submitted_answer = prompt
+  return true
+end
+
+-- Keymap <CR> at prompt should accept current option (option 1: LRU in-memory)
+pcall(function()
+  ui_lock.accept()
+end)
+
+assert(submitted_answer ~= nil, "Submitting via accept must send prompt to session")
+assert(submitted_answer:find("LRU in-memory", 1, true) ~= nil, "Answer must contain option 1, got: " .. tostring(submitted_answer))
+assert(state_lock.active_question == nil, "active_question must be nil after submission")
+assert(ui_lock.is_visible() == false, "Question UI must be closed after submission")
+
+protocol.cleanup_buffer(buf_lock)
+print("✓ Question UI hides on history scroll, restores on prompt return, and accepts answer cleanly")
+
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")

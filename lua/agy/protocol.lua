@@ -147,6 +147,9 @@ function M.update_modifiable(buf)
   local is_visual = (mode:find("^[vV\x16]") ~= nil)
 
   local should_be_modifiable = (cur_line >= prompt_start)
+  if state.active_question then
+    should_be_modifiable = false
+  end
 
   if is_visual then
     local v_line = vim.fn.getpos("v")[2]
@@ -232,7 +235,9 @@ function M.update_footer(buf)
       end
 
       if info.status == "question" then
-        parts[#parts + 1] = "❓ [Awaiting answer - press <CR> to select, :w to submit]"
+        assert(state.config and state.config.icons and state.config.icons.question, "agy config: config.icons.question is required")
+        local q_icon = state.config.icons.question
+        parts[#parts + 1] = q_icon .. " [Awaiting answer - navigate with j/k, select with <CR>]"
       elseif info.status and info.status:sub(1, 5) == "tool:" then
         parts[#parts + 1] = "[Running " .. info.status:sub(6) .. "...]"
       elseif info.status == "generating" then
@@ -466,13 +471,14 @@ function M._setup_buffer(buf, conversation_id)
   })
 
   local toggle_key = cfg.keymaps.toggle_tool or "<CR>"
-  vim.keymap.set("n", toggle_key, function()
+  local function handle_toggle_or_accept()
     local state = M.buffers[buf]
     local cur_line = vim.api.nvim_win_get_cursor(0)[1]
 
     if state and state.active_question then
-      if state.active_question.ui and state.active_question.ui.is_visible() then
-        pcall(vim.api.nvim_set_current_win, state.active_question.ui.state.win)
+      local prompt_start = state.prompt_start_line or 1
+      if cur_line >= prompt_start and state.active_question.ui then
+        state.active_question.ui.accept()
         return
       end
       if state.active_question.first_option_line then
@@ -503,11 +509,20 @@ function M._setup_buffer(buf, conversation_id)
         vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "n", false)
       end
     end
-  end, {
+  end
+
+  vim.keymap.set("n", toggle_key, handle_toggle_or_accept, {
     buffer = buf,
     silent = true,
     desc = "Toggle question option, tool output, or execute control command at cursor",
   })
+  if toggle_key ~= "<CR>" then
+    vim.keymap.set("n", "<CR>", handle_toggle_or_accept, {
+      buffer = buf,
+      silent = true,
+      desc = "Toggle question option or tool output at cursor",
+    })
+  end
 
   completion.setup_buffer(buf)
 
@@ -526,6 +541,19 @@ function M._setup_buffer(buf, conversation_id)
         if win ~= -1 then
           local cur_line = vim.api.nvim_win_get_cursor(win)[1]
           local line_count = vim.api.nvim_buf_line_count(buf)
+          local prompt_start = state.prompt_start_line or line_count
+
+          if state.active_question and state.active_question.ui then
+            if cur_line < prompt_start then
+              if state.active_question.ui.is_visible() then
+                state.active_question.ui.hide()
+              end
+            else
+              if not state.active_question.ui.is_visible() then
+                state.active_question.ui.show_over_prompt(win, buf)
+              end
+            end
+          end
 
           if state.config and state.config.ui and state.config.ui.auto_scroll == false then
             state.follow_bottom = false
@@ -870,6 +898,10 @@ function M.intercept_ask_question(buf, state, q_list)
     pcall(function() state.stream_flush_timer:stop() end)
   end
 
+  render.stop_thinking_animation(buf)
+  M.ensure_prompt_line(buf)
+  M.update_prompt_divider(buf)
+
   -- Render thoughts prior to question
   if not state.active_agent_started_output then
     M.check_and_render_pending_thoughts(buf)
@@ -901,6 +933,12 @@ function M.intercept_ask_question(buf, state, q_list)
     ui = question_mod,
     questions = q_list,
   }
+
+  if target_win and vim.api.nvim_win_is_valid(target_win) and vim.api.nvim_win_get_buf(target_win) == buf then
+    local prompt_line = state.prompt_start_line or vim.api.nvim_buf_line_count(buf)
+    pcall(vim.api.nvim_win_set_cursor, target_win, { prompt_line, 0 })
+  end
+  M.update_modifiable(buf)
 end
 
 ---Handler called when user confirms answer in question UI

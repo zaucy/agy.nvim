@@ -15,6 +15,8 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_question")
 ---@field buf? number
 ---@field target_win? number
 ---@field target_buf? number
+---@field mapped_buf? number
+---@field is_hidden boolean
 ---@field questions table[]
 ---@field current_q_idx number
 ---@field selected_idx number
@@ -32,6 +34,8 @@ M.state = {
   buf = nil,
   target_win = nil,
   target_buf = nil,
+  mapped_buf = nil,
+  is_hidden = false,
   questions = {},
   current_q_idx = 1,
   selected_idx = 1,
@@ -42,6 +46,13 @@ M.state = {
   config = nil,
   on_submit = nil,
   on_cancel = nil,
+}
+
+local QUESTION_KEYS = {
+  "j", "k", "<Down>", "<Up>", "<C-n>", "<C-p>",
+  "<Space>", "<C-s>", "w", "i",
+  "1", "2", "3", "4", "5", "6", "7", "8", "9",
+  "q", "<Esc>", "<C-c>",
 }
 
 local function get_icon(name, cfg)
@@ -59,22 +70,40 @@ local function get_horizontal_sep(cfg)
   return c.icons.table.horizontal
 end
 
----Check whether the question floating window is currently visible
+---Check whether the question floating window is currently visible and not hidden
 ---@return boolean
 function M.is_visible()
-  return M.state.win ~= nil and vim.api.nvim_win_is_valid(M.state.win)
+  return M.state.win ~= nil and vim.api.nvim_win_is_valid(M.state.win) and not M.state.is_hidden
 end
 
----Close question floating window and cleanup
-function M.close()
+---Temporarily hide the question floating window (e.g. when scrolling up into history)
+function M.hide()
   if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
     pcall(vim.api.nvim_win_close, M.state.win, true)
   end
+  M.state.win = nil
+  M.state.is_hidden = true
+end
+
+---Remove question keymaps from mapped buffer
+function M.clear_keymaps()
+  local b = M.state.mapped_buf or M.state.target_buf
+  if b and vim.api.nvim_buf_is_valid(b) then
+    for _, key in ipairs(QUESTION_KEYS) do
+      pcall(vim.keymap.del, "n", key, { buffer = b })
+    end
+  end
+  M.state.mapped_buf = nil
+end
+
+---Close question floating window, delete keymaps, and reset state
+function M.close()
+  M.hide()
+  M.clear_keymaps()
   if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
     pcall(vim.api.nvim_buf_delete, M.state.buf, { force = true })
   end
 
-  local target_win = M.state.target_win
   M.state.win = nil
   M.state.buf = nil
   M.state.questions = {}
@@ -86,10 +115,7 @@ function M.close()
   M.state.items = {}
   M.state.on_submit = nil
   M.state.on_cancel = nil
-
-  if target_win and vim.api.nvim_win_is_valid(target_win) then
-    pcall(vim.api.nvim_set_current_win, target_win)
-  end
+  M.state.is_hidden = false
 end
 
 ---Cancel active question and invoke on_cancel callback
@@ -345,7 +371,7 @@ function M.update_win_config()
     height = height,
     style = "minimal",
     border = "none",
-    focusable = true,
+    focusable = false,
     zindex = 200,
   }
   vim.api.nvim_win_set_config(M.state.win, win_cfg)
@@ -353,14 +379,14 @@ end
 
 ---Select next item
 function M.select_next()
-  if not M.is_visible() or #M.state.items == 0 then return end
+  if #M.state.items == 0 then return end
   M.state.selected_idx = (M.state.selected_idx % #M.state.items) + 1
   M.render_buffer()
 end
 
 ---Select previous item
 function M.select_prev()
-  if not M.is_visible() or #M.state.items == 0 then return end
+  if #M.state.items == 0 then return end
   M.state.selected_idx = (M.state.selected_idx - 2 + #M.state.items) % #M.state.items + 1
   M.render_buffer()
 end
@@ -368,7 +394,7 @@ end
 ---Jump directly to a numbered option (1-9)
 ---@param idx number
 function M.jump_to(idx)
-  if not M.is_visible() or #M.state.items == 0 then return end
+  if #M.state.items == 0 then return end
   if idx >= 1 and idx <= #M.state.items then
     M.state.selected_idx = idx
     local it = M.state.items[idx]
@@ -387,7 +413,7 @@ end
 
 ---Toggle selection for current item (primarily for multi-select)
 function M.toggle()
-  if not M.is_visible() or #M.state.items == 0 then return end
+  if #M.state.items == 0 then return end
   local it = M.state.items[M.state.selected_idx]
   if not it then return end
   local q = M.state.questions[M.state.current_q_idx]
@@ -412,7 +438,7 @@ end
 
 ---Accept current item
 function M.accept()
-  if not M.is_visible() or #M.state.items == 0 then return end
+  if #M.state.items == 0 then return end
   local it = M.state.items[M.state.selected_idx]
   if not it then return end
   local q = M.state.questions[M.state.current_q_idx]
@@ -553,38 +579,181 @@ function M.confirm_current_question()
   end
 end
 
----Setup buffer-local keymaps for the question menu
----@param buf number
-function M.setup_keymaps(buf)
-  local opts = { buffer = buf, silent = true, nowait = true }
+---Setup buffer-local keymaps on the target session buffer
+---@param target_buf number
+function M.setup_keymaps(target_buf)
+  if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then return end
+  M.state.mapped_buf = target_buf
+  local opts = { buffer = target_buf, silent = true, nowait = true }
 
-  -- Navigation
+  local function is_at_prompt()
+    local cur_win = vim.fn.bufwinid(target_buf)
+    if cur_win == -1 or not vim.api.nvim_win_is_valid(cur_win) then
+      cur_win = 0
+    end
+    local cur_line = vim.api.nvim_win_get_cursor(cur_win)[1]
+    local protocol = package.loaded["agy.protocol"]
+    local state = protocol and protocol.buffers[target_buf]
+    local prompt_start = (state and state.prompt_start_line) or 1
+    return cur_line >= prompt_start
+  end
+
+  -- Down navigation: j, <Down>, <C-n>
+  local function handle_down()
+    if is_at_prompt() and M.is_visible() then
+      M.select_next()
+    else
+      local win = vim.api.nvim_get_current_win()
+      local cur = vim.api.nvim_win_get_cursor(win)
+      local line_count = vim.api.nvim_buf_line_count(target_buf)
+      if cur[1] < line_count then
+        local next_l = vim.api.nvim_buf_get_lines(target_buf, cur[1], cur[1] + 1, false)[1] or ""
+        vim.api.nvim_win_set_cursor(win, { cur[1] + 1, math.min(cur[2], #next_l) })
+      end
+    end
+  end
+
+  -- Up navigation: k, <Up>, <C-p>
+  local function handle_up()
+    local win = vim.api.nvim_get_current_win()
+    local cur = vim.api.nvim_win_get_cursor(win)
+    local protocol = package.loaded["agy.protocol"]
+    local state = protocol and protocol.buffers[target_buf]
+    local prompt_start = (state and state.prompt_start_line) or 1
+
+    if cur[1] >= prompt_start and M.is_visible() then
+      if M.state.selected_idx > 1 then
+        M.select_prev()
+      else
+        local target_line = math.max(1, prompt_start - 1)
+        local line_text = vim.api.nvim_buf_get_lines(target_buf, target_line - 1, target_line, false)[1] or ""
+        vim.api.nvim_win_set_cursor(win, { target_line, math.min(cur[2], #line_text) })
+      end
+    else
+      if cur[1] > 1 then
+        local prev_l = vim.api.nvim_buf_get_lines(target_buf, cur[1] - 2, cur[1] - 1, false)[1] or ""
+        vim.api.nvim_win_set_cursor(win, { cur[1] - 1, math.min(cur[2], #prev_l) })
+      end
+    end
+  end
+
   for _, k in ipairs({ "j", "<Down>", "<C-n>" }) do
-    vim.keymap.set("n", k, function() M.select_next() end, opts)
+    vim.keymap.set("n", k, handle_down, opts)
   end
   for _, k in ipairs({ "k", "<Up>", "<C-p>" }) do
-    vim.keymap.set("n", k, function() M.select_prev() end, opts)
+    vim.keymap.set("n", k, handle_up, opts)
   end
 
-  -- Selection & Toggle
-  vim.keymap.set("n", "<CR>", function() M.accept() end, opts)
-  vim.keymap.set("n", "<Space>", function() M.toggle() end, opts)
-  vim.keymap.set("n", "<C-s>", function() M.confirm_current_question() end, opts)
+  -- Space toggle
+  vim.keymap.set("n", "<Space>", function()
+    if is_at_prompt() and M.is_visible() then
+      M.toggle()
+    else
+      local win = vim.api.nvim_get_current_win()
+      local cur = vim.api.nvim_win_get_cursor(win)
+      local line = vim.api.nvim_buf_get_lines(target_buf, cur[1] - 1, cur[1], false)[1] or ""
+      if cur[2] < #line - 1 then
+        vim.api.nvim_win_set_cursor(win, { cur[1], cur[2] + 1 })
+      end
+    end
+  end, opts)
 
-  -- Write-in
+  -- Submit with <C-s>
+  vim.keymap.set("n", "<C-s>", function()
+    if is_at_prompt() and M.is_visible() then
+      M.confirm_current_question()
+    end
+  end, opts)
+
+  -- Write-in response: w, i
   for _, k in ipairs({ "w", "i" }) do
-    vim.keymap.set("n", k, function() M.prompt_write_in() end, opts)
+    vim.keymap.set("n", k, function()
+      if is_at_prompt() and M.is_visible() then
+        M.prompt_write_in()
+      else
+        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "n", false)
+      end
+    end, opts)
   end
 
-  -- Number jumps (1-9)
+  -- Number jumps: 1 through 9
   for num = 1, 9 do
-    vim.keymap.set("n", tostring(num), function() M.jump_to(num) end, opts)
+    vim.keymap.set("n", tostring(num), function()
+      if is_at_prompt() and M.is_visible() then
+        M.jump_to(num)
+      else
+        vim.api.nvim_feedkeys(tostring(num), "n", false)
+      end
+    end, opts)
   end
 
-  -- Cancel
+  -- Cancel: q, <Esc>, <C-c>
   for _, k in ipairs({ "q", "<Esc>", "<C-c>" }) do
-    vim.keymap.set("n", k, function() M.cancel() end, opts)
+    vim.keymap.set("n", k, function()
+      if is_at_prompt() and M.is_visible() then
+        M.cancel()
+      else
+        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "n", false)
+      end
+    end, opts)
   end
+end
+
+---Display or update the interactive question popup window over top of the prompt
+---@param target_win number
+---@param target_buf number
+function M.show_over_prompt(target_win, target_buf)
+  if not M.state.questions or #M.state.questions == 0 then return end
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
+    target_win = M.state.target_win or vim.api.nvim_get_current_win()
+  end
+  if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then
+    target_buf = M.state.target_buf or vim.api.nvim_get_current_buf()
+  end
+
+  M.state.target_win = target_win
+  M.state.target_buf = target_buf
+  M.state.is_hidden = false
+
+  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then
+    M.state.buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[M.state.buf].buftype = "nofile"
+    vim.bo[M.state.buf].bufhidden = "wipe"
+    vim.bo[M.state.buf].swapfile = false
+    vim.bo[M.state.buf].filetype = "agy_question"
+  end
+
+  M.render_buffer()
+
+  local win_width = vim.api.nvim_win_get_width(target_win)
+  local win_height = vim.api.nvim_win_get_height(target_win)
+  local line_count = vim.api.nvim_buf_line_count(M.state.buf)
+  local height = math.min(line_count, win_height)
+  local row = math.max(0, win_height - height)
+
+  local win_cfg = {
+    relative = "win",
+    win = target_win,
+    row = row,
+    col = 0,
+    width = win_width,
+    height = height,
+    style = "minimal",
+    border = "none",
+    focusable = false,
+    zindex = 200,
+  }
+
+  if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
+    vim.api.nvim_win_set_config(M.state.win, win_cfg)
+  else
+    M.state.win = vim.api.nvim_open_win(M.state.buf, false, win_cfg)
+    vim.wo[M.state.win].wrap = false
+    vim.wo[M.state.win].cursorline = false
+    vim.wo[M.state.win].winhighlight = "Normal:Normal,NormalFloat:Normal"
+  end
+
+  M.setup_keymaps(target_buf)
 end
 
 ---Display or update the interactive question popup window
@@ -614,55 +783,13 @@ function M.show(target_win, target_buf, questions, opts)
   M.state.config = opts.config or config_mod.get()
   M.state.on_submit = opts.on_submit
   M.state.on_cancel = opts.on_cancel
+  M.state.is_hidden = false
 
   M.build_items()
-
-  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then
-    M.state.buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[M.state.buf].buftype = "nofile"
-    vim.bo[M.state.buf].bufhidden = "wipe"
-    vim.bo[M.state.buf].swapfile = false
-    vim.bo[M.state.buf].filetype = "agy_question"
-  end
-
-  M.render_buffer()
-
-  local win_width = vim.api.nvim_win_get_width(target_win)
-  local win_height = vim.api.nvim_win_get_height(target_win)
-  local line_count = vim.api.nvim_buf_line_count(M.state.buf)
-  local height = math.min(line_count, win_height)
-  local row = math.max(0, win_height - height)
-
-  local win_cfg = {
-    relative = "win",
-    win = target_win,
-    row = row,
-    col = 0,
-    width = win_width,
-    height = height,
-    style = "minimal",
-    border = "none",
-    focusable = true,
-    zindex = 200,
-  }
-
-  if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
-    vim.api.nvim_win_set_config(M.state.win, win_cfg)
-  else
-    M.state.win = vim.api.nvim_open_win(M.state.buf, true, win_cfg)
-    vim.wo[M.state.win].wrap = false
-    vim.wo[M.state.win].cursorline = false
-    vim.wo[M.state.win].winhighlight = "Normal:Normal,NormalFloat:Normal"
-  end
-
-  vim.cmd("stopinsert")
-  pcall(vim.api.nvim_set_current_win, M.state.win)
-  pcall(vim.api.nvim_win_set_cursor, M.state.win, { 1, 0 })
-
-  M.setup_keymaps(M.state.buf)
+  M.show_over_prompt(target_win, target_buf)
 end
 
--- Resize listener to keep question menu docked cleanly
+-- Resize listener to keep question menu docked cleanly over prompt
 local resize_group = vim.api.nvim_create_augroup("AgyQuestionResize", { clear = true })
 vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
   group = resize_group,
