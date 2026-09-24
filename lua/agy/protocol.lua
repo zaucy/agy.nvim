@@ -171,7 +171,11 @@ function M.update_prompt_divider(buf)
     return
   end
 
-  state.prompt_extmark_id = render.set_divider(buf, state.prompt_start_line - 1, "user", nil, nil, true, state.prompt_extmark_id, state.config)
+  local badge = (render.thinking_timers and render.thinking_timers[buf])
+    and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
+    or nil
+
+  state.prompt_extmark_id = render.set_divider(buf, state.prompt_start_line - 1, "user", badge, "AgyBadgeActive", true, state.prompt_extmark_id, state.config)
   render.apply_prompt_highlights(buf, state.prompt_start_line)
 end
 
@@ -228,8 +232,6 @@ function M.update_footer(buf)
 
       if info.status == "question" then
         parts[#parts + 1] = "❓ [Awaiting answer - press <CR> to select, :w to submit]"
-      elseif info.status == "thinking" then
-        parts[#parts + 1] = "[Thinking...]"
       elseif info.status and info.status:sub(1, 5) == "tool:" then
         parts[#parts + 1] = "[Running " .. info.status:sub(6) .. "...]"
       elseif info.status == "generating" then
@@ -1397,6 +1399,7 @@ function M.handle_write(buf)
 
   state.stream_info.status = "thinking"
   M.update_footer(buf)
+  render.start_thinking_animation(buf, nil, nil, state.config)
 
   -- Send prompt to agy session with resolved file mentions metadata
   local workspaces = (state.session and state.session.workspaces and #state.session.workspaces > 0)
@@ -1471,13 +1474,21 @@ function M.restore_prompt_area(buf)
 
     vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, to_add)
     local new_count = vim.api.nvim_buf_line_count(buf)
-    state.prompt_start_line = new_count
-    state.prompt_extmark_id = render.set_divider(buf, new_count - 1, "user", nil, nil, true, nil, state.config)
+    local is_thinking = (state.stream_info and state.stream_info.status == "thinking")
+      or (state.session and state.session.turn_active)
+    local badge = (is_thinking or (render.thinking_timers and render.thinking_timers[buf]))
+      and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
+      or nil
+    state.prompt_extmark_id = render.set_divider(buf, new_count - 1, "user", badge, "AgyBadgeActive", true, nil, state.config)
 
     if state.prompt_queue and #state.prompt_queue > 0 then
       local new_prompt_line = render.render_queue(buf, state.prompt_queue, state.prompt_start_line, state.config)
       state.prompt_start_line = new_prompt_line
-      state.prompt_extmark_id = render.set_divider(buf, new_prompt_line - 1, "user", nil, nil, true, state.prompt_extmark_id, state.config)
+      state.prompt_extmark_id = render.set_divider(buf, new_prompt_line - 1, "user", badge, "AgyBadgeActive", true, state.prompt_extmark_id, state.config)
+    end
+
+    if is_thinking and not (render.thinking_timers and render.thinking_timers[buf]) then
+      render.start_thinking_animation(buf, nil, state.prompt_extmark_id, state.config)
     end
 
     render.apply_prompt_highlights(buf, state.prompt_start_line)
@@ -1528,7 +1539,10 @@ function M.queue_prompt(buf, prompt_text)
     -- Render queue above the prompt divider
     local new_prompt_line = render.render_queue(buf, state.prompt_queue, state.prompt_start_line, state.config)
     state.prompt_start_line = new_prompt_line
-    state.prompt_extmark_id = render.set_divider(buf, new_prompt_line - 1, "user", nil, nil, true, state.prompt_extmark_id, state.config)
+    local badge = (render.thinking_timers and render.thinking_timers[buf])
+      and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
+      or nil
+    state.prompt_extmark_id = render.set_divider(buf, new_prompt_line - 1, "user", badge, "AgyBadgeActive", true, state.prompt_extmark_id, state.config)
     render.apply_prompt_highlights(buf, state.prompt_start_line)
   end)
 
@@ -1606,7 +1620,10 @@ function M.unqueue_prompt_at_cursor(buf, cur_line)
   M.with_modifiable(buf, function()
     local new_prompt_line = render.render_queue(buf, state.prompt_queue, state.prompt_start_line, state.config)
     state.prompt_start_line = new_prompt_line
-    state.prompt_extmark_id = render.set_divider(buf, new_prompt_line - 1, "user", nil, nil, true, state.prompt_extmark_id, state.config)
+    local badge = (render.thinking_timers and render.thinking_timers[buf])
+      and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
+      or nil
+    state.prompt_extmark_id = render.set_divider(buf, new_prompt_line - 1, "user", badge, "AgyBadgeActive", true, state.prompt_extmark_id, state.config)
     render.apply_prompt_highlights(buf, state.prompt_start_line)
 
     local p_lines = utils.split_lines(unqueued_item.text)
