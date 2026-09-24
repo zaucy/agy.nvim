@@ -54,6 +54,13 @@ function M.get_history_file(app_data_dir)
   return M.get_app_data_dir(app_data_dir) .. "/history.jsonl"
 end
 
+---Get the conversation_summaries.db file path
+---@param app_data_dir? string
+---@return string
+function M.get_conversation_summaries_file(app_data_dir)
+  return M.get_app_data_dir(app_data_dir) .. "/conversation_summaries.db"
+end
+
 ---Get the transcript file path for a conversation ID, preferring transcript_full.jsonl
 ---@param conversation_id string
 ---@param app_data_dir? string
