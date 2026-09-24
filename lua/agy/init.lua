@@ -202,4 +202,7 @@ function M.get_mentions()
   return require("agy.mention").list()
 end
 
+---Database abstraction API
+M.db = require("agy.db")
+
 return M

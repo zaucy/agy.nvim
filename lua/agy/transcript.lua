@@ -178,6 +178,9 @@ function M.read_history(app_data_dir)
     return {}
   end
 
+  local db = require("agy.db")
+  local db_titles = db.get_all_titles(app_data_dir)
+
   local map = {}
   for line in f:lines() do
     if line ~= "" then
@@ -187,9 +190,13 @@ function M.read_history(app_data_dir)
         local prev = map[id]
         local ts = entry.timestamp or 0
         if not prev or (ts > prev.timestamp) then
+          local title = db_titles[id]
+          if not title or title == "" then
+            title = entry.display or ("Conversation " .. id:sub(1, 8))
+          end
           map[id] = {
             conversation_id = id,
-            title = entry.display or "Conversation " .. id:sub(1, 8),
+            title = title,
             last_prompt = entry.display or "",
             timestamp = ts,
             workspace = entry.workspace or "",
@@ -212,6 +219,15 @@ function M.read_history(app_data_dir)
   end)
 
   return list
+end
+
+---Get the generated title for a conversation ID from the database
+---@param conversation_id string
+---@param app_data_dir? string
+---@return string?
+function M.get_conversation_title(conversation_id, app_data_dir)
+  local db = require("agy.db")
+  return db.get_conversation_title(conversation_id, app_data_dir)
 end
 
 ---Get the workspace directory recorded for a conversation from history.jsonl

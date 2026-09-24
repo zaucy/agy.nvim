@@ -379,4 +379,32 @@ task log watchers, model prefetching, and git diff inspection) run
 asynchronously on `vim.async` tasks without UI hitching or timer leaks.
 
 ==============================================================================
+15. DATABASE ABSTRACTION & TITLES                                     *agy-db*
+
+agy.nvim provides a zero-dependency LuaJIT FFI database abstraction module via
+`require("agy.db")` (or `require("agy").db`) to inspect Antigravity's local
+SQLite databases (`conversation_summaries.db` and `conversations/<id>.db`).
+
+It requires no Python, no CLI utilities, and no external plugins by dynamically
+binding system SQLite (`winsqlite3.dll` on Windows, `libsqlite3.dylib` on macOS,
+and `libsqlite3.so` on Linux).
+
+API Functions:
+- `db.is_available()`:
+  Returns true if the native SQLite library is loaded and accessible.
+- `db.get_conversation_title(conversation_id, app_data_dir)`:
+  Retrieves the AI-generated or renamed conversation title, returning nil if
+  empty or ungenerated.
+- `db.get_all_titles(app_data_dir)`:
+  Returns a table mapping `conversation_id -> title` for all conversations.
+- `db.get_conversation_summary(conversation_id, app_data_dir)`:
+  Retrieves structured conversation metadata (ID, title, preview, step count,
+  last modified timestamp, workspace URIs, status).
+- `db.get_conversation_trajectory_meta(conversation_id, app_data_dir)`:
+  Retrieves trajectory metadata from `conversations/<id>.db`.
+
+Conversation titles are automatically used across `agy://` home and `:AgyResume`
+picker buffers when available.
+
+==============================================================================
 vim:tw=78:ts=8:ft=help:norl:
