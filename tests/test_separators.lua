@@ -285,18 +285,23 @@ local anim_cfg = config.setup({
 		animate_thinking = true,
 	},
 })
-local ext_anim = render.set_divider(anim_buf, 0, "agent", " [Thinking...]", "AgyBadgeActive", false, nil, anim_cfg)
+local ext_anim = render.set_divider(anim_buf, 0, "user", nil, nil, true, nil, anim_cfg)
 render.start_thinking_animation(anim_buf, 0, ext_anim, anim_cfg)
 assert(render.thinking_timers[anim_buf] ~= nil, "Thinking timer must be running")
 
 -- Wait for at least one animation frame update
 local updated = vim.wait(300, function()
 	local vl = get_mark_virt_lines(anim_buf, ext_anim)
-	local badge = vl[1] and vl[1][2] and vl[1][2][1] or ""
+	local badge = (vl[1] and vl[1][1] and vl[1][1][1]) or ""
 	-- Check if badge contains one of the braille spinner frames
-	return badge:find("Thinking") ~= nil and badge ~= " [Thinking...]"
+	return badge:find("Thinking") ~= nil
 end, 20)
-assert(updated, "Thinking spinner must update divider with animation frames")
+assert(updated, "Thinking spinner must update prompt divider with animation frames")
+
+-- Also verify that agent divider does not contain thinking badge
+local agent_ext = render.set_divider(anim_buf, 0, "agent", nil, nil, false, nil, anim_cfg)
+local agent_vl = get_mark_virt_lines(anim_buf, agent_ext)
+assert(not agent_vl[1][1][1]:find("Thinking"), "Agent divider must not contain Thinking badge")
 
 render.stop_thinking_animation(anim_buf)
 assert(render.thinking_timers[anim_buf] == nil, "Timer must be cleaned up on stop")

@@ -60,7 +60,7 @@ assert(foot_mark_2 ~= nil and foot_mark_2[3] ~= nil, "Footer extmark must exist 
 local virt_lines_2 = foot_mark_2[3].virt_lines
 assert(#virt_lines_2 == 1, "Before prompt is restored, footer must only have 1 virt_line (footer status only)")
 assert(virt_lines_2[1][1][2] == "AgyPromptFooter", "virt_line must be AgyPromptFooter")
-assert(virt_lines_2[1][1][1]:find("%[Thinking%.%.%.%]"), "Footer must display [Thinking...]")
+assert(not virt_lines_2[1][1][1]:find("%[Thinking%.%.%.%]"), "Footer must not display [Thinking...]")
 
 print("✓ When prompt area is not present, bottom border is omitted cleanly")
 
@@ -83,7 +83,14 @@ assert(#virt_lines_3 >= 2, "Active turn with restored prompt must contain at lea
 assert(virt_lines_3[1][1][2] == "AgyPromptBorder", "First virt_line must be AgyPromptBorder (bottom border of input)")
 assert(virt_lines_3[1][1][1]:find("^───"), "Bottom border must be a horizontal line")
 assert(virt_lines_3[2][1][2] == "AgyPromptFooter", "Second virt_line must be AgyPromptFooter")
-assert(virt_lines_3[2][1][1]:find("%[Thinking%.%.%.%]"), "Footer must still display active turn status")
+assert(not virt_lines_3[2][1][1]:find("%[Thinking%.%.%.%]"), "Footer must not display [Thinking...]")
+
+-- Verify prompt divider contains the animating thinking indicator above the prompt border
+local p_mark_3 = vim.api.nvim_buf_get_extmark_by_id(buf1, render.NS_UI, state1.prompt_extmark_id, { details = true })
+assert(p_mark_3 ~= nil and p_mark_3[3] ~= nil, "Prompt divider extmark must exist")
+assert(#p_mark_3[3].virt_lines >= 2, "Prompt divider must have thinking line and border line")
+assert(p_mark_3[3].virt_lines[1][1][1]:find("Thinking%.%.%."), "Prompt divider virt_line 1 must display Thinking...")
+assert(p_mark_3[3].virt_lines[2][1][2] == "AgyPromptBorder", "Prompt divider virt_line 2 must be AgyPromptBorder")
 
 -- Verify footer extmark row is on the last line of the buffer (the prompt line)
 local line_count_3 = vim.api.nvim_buf_line_count(buf1)

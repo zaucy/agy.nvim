@@ -46,7 +46,8 @@ def main [
             "tests/test_async.lua",
             "tests/test_stream_throttle.lua",
             "tests/test_thoughts_lifecycle.lua",
-            "tests/test_history_logging.lua"
+            "tests/test_history_logging.lua",
+            "tests/test_thinking_prompt_relocation.lua"
         ]
 
         for t in $tests {
