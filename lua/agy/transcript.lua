@@ -168,6 +168,48 @@ end
 ---@field workspace string
 ---@field relative_time string
 
+---Get a set of all conversation IDs that physically exist in local storage (conversations/ or brain/)
+---@param app_data_dir? string
+---@return table<string, boolean>|nil existing_ids Nil if neither storage directory exists on disk
+function M.get_existing_conversation_ids(app_data_dir)
+  local app_dir = utils.get_app_data_dir(app_data_dir)
+  local conv_dir = app_dir .. "/conversations"
+  local brain_dir = utils.get_brain_dir(app_data_dir)
+
+  local handle = vim.uv.fs_scandir(conv_dir)
+  local b_handle = vim.uv.fs_scandir(brain_dir)
+  if not handle and not b_handle then
+    return nil
+  end
+
+  local existing = {}
+  if handle then
+    while true do
+      local name = vim.uv.fs_scandir_next(handle)
+      if not name then break end
+      local id = name:match("^(.+)%.db$")
+      if id then
+        existing[id] = true
+      end
+    end
+  end
+
+  if b_handle then
+    while true do
+      local name = vim.uv.fs_scandir_next(b_handle)
+      if not name then break end
+      if not existing[name] then
+        local tf = utils.get_transcript_file(name, app_data_dir)
+        if vim.fn.filereadable(tf) == 1 then
+          existing[name] = true
+        end
+      end
+    end
+  end
+
+  return existing
+end
+
 ---Read recent conversation history from history.jsonl
 ---@param app_data_dir? string
 ---@return AgyConversationSummary[]
@@ -178,23 +220,37 @@ function M.read_history(app_data_dir)
     return {}
   end
 
+  local existing_ids = M.get_existing_conversation_ids(app_data_dir)
+  local db = require("agy.db")
+  local db_titles = db.get_all_titles(app_data_dir)
+
   local map = {}
   for line in f:lines() do
     if line ~= "" then
       local entry = utils.json_decode(line)
       if entry and entry.conversationId and entry.conversationId ~= "" then
         local id = entry.conversationId
-        local prev = map[id]
-        local ts = entry.timestamp or 0
-        if not prev or (ts > prev.timestamp) then
-          map[id] = {
-            conversation_id = id,
-            title = entry.display or "Conversation " .. id:sub(1, 8),
-            last_prompt = entry.display or "",
-            timestamp = ts,
-            workspace = entry.workspace or "",
-            relative_time = utils.format_relative_time(ts),
-          }
+        if not existing_ids or existing_ids[id] then
+          local prev = map[id]
+          local ts = entry.timestamp or 0
+          if not prev or (ts > prev.timestamp) then
+            local title = db_titles[id]
+            if not title or title == "" then
+              if entry.display and entry.display:match("%S") then
+                title = entry.display
+              else
+                title = "Conversation " .. id:sub(1, 8)
+              end
+            end
+            map[id] = {
+              conversation_id = id,
+              title = title,
+              last_prompt = entry.display or "",
+              timestamp = ts,
+              workspace = entry.workspace or "",
+              relative_time = utils.format_relative_time(ts),
+            }
+          end
         end
       end
     end
@@ -212,6 +268,15 @@ function M.read_history(app_data_dir)
   end)
 
   return list
+end
+
+---Get the generated title for a conversation ID from the database
+---@param conversation_id string
+---@param app_data_dir? string
+---@return string?
+function M.get_conversation_title(conversation_id, app_data_dir)
+  local db = require("agy.db")
+  return db.get_conversation_title(conversation_id, app_data_dir)
 end
 
 ---Get the workspace directory recorded for a conversation from history.jsonl
