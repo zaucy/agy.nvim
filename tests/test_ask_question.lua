@@ -728,4 +728,130 @@ assert(ui_lock.is_visible() == false, "Question UI must be closed after submissi
 protocol.cleanup_buffer(buf_lock)
 print("✓ Question UI stays visible on history scroll, persists on prompt return, and accepts answer cleanly")
 
+-- =========================================================================
+-- TEST 17: Multi-Question Navigation (prev/next/go_to_question)
+-- =========================================================================
+print("\n[Test 17] Testing navigation between multiple questions...")
+
+vim.cmd("edit! agy://new")
+local buf_multi_q = vim.api.nvim_get_current_buf()
+local state_multi_q = protocol.buffers[buf_multi_q]
+local multi_q_submitted_prompt = nil
+
+state_multi_q.session.turn_active = true
+state_multi_q.session.stop = function() state_multi_q.session.turn_active = false end
+state_multi_q.session.send_prompt = function(_, prompt)
+  multi_q_submitted_prompt = prompt
+  return true
+end
+
+state_multi_q.session.on_step_update(state_multi_q.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Choose primary database:",
+          options = { "PostgreSQL", "SQLite", "MongoDB" },
+          is_multi_select = false,
+        },
+        {
+          question = "Select required addons:",
+          options = { "Auth", "Logging", "Metrics" },
+          is_multi_select = true,
+        },
+        {
+          question = "Target deployment:",
+          options = { "Kubernetes", "Bare metal", "Docker Compose" },
+          is_multi_select = false,
+        },
+      }
+    }
+  }
+})
+
+local mq_ui = state_multi_q.active_question.ui
+assert(mq_ui.is_visible() == true)
+assert(#mq_ui.state.questions == 3, "Must have 3 questions loaded")
+assert(mq_ui.state.current_q_idx == 1, "Starts on question 1")
+
+-- Verify header shows (1/3) and footer mentions question navigation
+local q_buf = mq_ui.state.buf
+local lines_q1 = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
+local found_count_1 = false
+local found_footer_q_nav = false
+for _, l in ipairs(lines_q1) do
+  if l:find("%(1/3%)") then found_count_1 = true end
+  if l:find("tab/h/l Questions") then found_footer_q_nav = true end
+end
+assert(found_count_1 == true, "Header must show (1/3) for question 1")
+assert(found_footer_q_nav == true, "Footer must display tab/h/l question navigation hint")
+
+-- Navigate to Question 2 via next_question()
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 2, "Must advance to question 2")
+local lines_q2 = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
+local found_next_q_button = false
+for _, l in ipairs(lines_q2) do
+  if l:find("Next Question") then found_next_q_button = true end
+end
+assert(found_next_q_button == true, "Multi-select question prior to last question must display Next Question button")
+
+-- Navigate to Question 3 via next_question()
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 3, "Must advance to question 3")
+
+-- Wrap-around navigation: next from 3 goes to 1
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 1, "Next from question 3 must wrap to question 1")
+
+-- Wrap-around navigation: prev from 1 goes to 3
+mq_ui.prev_question()
+assert(mq_ui.state.current_q_idx == 3, "Prev from question 1 must wrap to question 3")
+
+-- Navigate back to question 2
+mq_ui.prev_question()
+assert(mq_ui.state.current_q_idx == 2, "Prev from question 3 must go to question 2")
+
+-- Answer Question 2 (multi-select): toggle Auth (opt 1) and Metrics (opt 3)
+mq_ui.jump_to(1)
+mq_ui.toggle()
+mq_ui.jump_to(3)
+mq_ui.toggle()
+assert(mq_ui.state.selected_answers[2][1] == true, "Option 1 (Auth) must be selected")
+assert(mq_ui.state.selected_answers[2][3] == true, "Option 3 (Metrics) must be selected")
+
+-- Navigate to Question 1 and answer with option 2 (SQLite)
+mq_ui.go_to_question(1)
+assert(mq_ui.state.current_q_idx == 1)
+mq_ui.jump_to(2)
+-- Since Question 1 is single-select, selecting an option advances to Question 2
+assert(mq_ui.state.current_q_idx == 2, "Answering single-select question 1 must advance to question 2")
+-- Question 2's previous selections are still intact
+assert(mq_ui.state.selected_answers[2][1] == true, "Question 2 selections must be preserved")
+
+-- Advance Question 2 via confirm_current_question() to go to Question 3
+mq_ui.confirm_current_question()
+assert(mq_ui.state.current_q_idx == 3, "Confirming question 2 advances to question 3")
+
+-- Answer Question 3 with option 1 (Kubernetes)
+mq_ui.jump_to(1)
+
+-- Now all 3 questions have been answered, submitting finishes all questions!
+assert(multi_q_submitted_prompt ~= nil, "All questions answered must trigger prompt submission")
+assert(multi_q_submitted_prompt:find("A1: SQLite"), "Must contain A1 answer SQLite: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("A2:"), "Must contain A2 prefix: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("Auth"), "Must contain A2 option Auth: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("Metrics"), "Must contain A2 option Metrics: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("A3: Kubernetes"), "Must contain A3 answer Kubernetes: " .. tostring(multi_q_submitted_prompt))
+
+assert(state_multi_q.active_question == nil, "active_question must be cleared after all questions submitted")
+assert(mq_ui.is_visible() == false, "Question UI must close after all questions submitted")
+
+protocol.cleanup_buffer(buf_multi_q)
+print("✓ Navigation and answering across multiple questions verified")
+
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")

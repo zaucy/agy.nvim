@@ -50,6 +50,8 @@ M.state = {
 
 local QUESTION_KEYS = {
   "j", "k", "<Down>", "<Up>", "<C-n>", "<C-p>",
+  "h", "l", "<Left>", "<Right>", "<Tab>", "<S-Tab>",
+  "[", "]",
   "<Space>", "<CR>", "<C-s>", "w", "i",
   "1", "2", "3", "4", "5", "6", "7", "8", "9",
   "q", "<Esc>", "<C-c>",
@@ -159,10 +161,14 @@ function M.build_items()
   })
 
   if q.is_multi_select then
+    local submit_label = "Submit Answers"
+    if #M.state.questions > 1 and M.state.current_q_idx < #M.state.questions then
+      submit_label = "Next Question"
+    end
     table.insert(items, {
       type = "submit",
       opt_idx = #q.options + 2,
-      text = "Submit Answers",
+      text = submit_label,
     })
   end
 
@@ -258,7 +264,7 @@ function M.render_buffer()
       end
       line_str = pointer .. mark .. string.format("%d. ", #q.options + 1) .. ((custom and custom ~= "") and ('Write-in: "' .. custom .. '"') or "Write-in response...")
     elseif it.type == "submit" then
-      line_str = pointer .. "[ Submit Answers ]"
+      line_str = pointer .. "[ " .. it.text .. " ]"
     end
 
     table.insert(lines, line_str)
@@ -292,10 +298,11 @@ function M.render_buffer()
 
   -- Footer
   local footer_text
+  local nav_hint = (#M.state.questions > 1) and "tab/h/l Questions · " or ""
   if q.is_multi_select then
-    footer_text = "  ↑/↓/j/k Navigate · space Toggle · enter Submit · w Write-in · esc Cancel"
+    footer_text = "  " .. nav_hint .. "↑/↓/j/k Navigate · space Toggle · enter Confirm · w Write-in · esc Cancel"
   else
-    footer_text = "  ↑/↓/j/k Navigate · enter Select · 1-" .. tostring(#items) .. " Jump · w Write-in · esc Cancel"
+    footer_text = "  " .. nav_hint .. "↑/↓/j/k Navigate · enter Select · 1-" .. tostring(#items) .. " Jump · w Write-in · esc Cancel"
   end
   table.insert(lines, footer_text)
 
@@ -359,7 +366,7 @@ function M.render_buffer()
   vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, footer_row, 0, {
     hl_group = "AgyCompletionFooter",
   })
-  local key_tokens = { "↑/↓/j/k", "enter", "space", "w", "esc" }
+  local key_tokens = { "tab/h/l", "↑/↓/j/k", "enter", "space", "w", "esc" }
   for _, tok in ipairs(key_tokens) do
     local s, e = footer_text:find(tok, 1, true)
     if s and e then
@@ -489,6 +496,50 @@ function M.select_prev()
   M.state.selected_idx = (M.state.selected_idx - 2 + #M.state.items) % #M.state.items + 1
   M.render_buffer()
   M.sync_cursor()
+end
+
+---Navigate to a specific question by index (1-based)
+---@param idx number
+function M.go_to_question(idx)
+  assert(type(idx) == "number", "agy question: idx must be a number")
+  assert(idx >= 1 and idx <= #M.state.questions, "agy question: question index out of range: " .. tostring(idx))
+
+  M.state.current_q_idx = idx
+  local q = M.state.questions[idx]
+
+  if q and not q.is_multi_select then
+    local prev_ans = M.state.selected_answers[idx]
+    if type(prev_ans) == "number" and prev_ans >= 1 and prev_ans <= #q.options then
+      M.state.selected_idx = prev_ans
+    elseif prev_ans == "write_in" then
+      M.state.selected_idx = #q.options + 1
+    else
+      M.state.selected_idx = 1
+    end
+  else
+    M.state.selected_idx = 1
+  end
+
+  M.state.scroll_offset = 1
+  M.build_items()
+  M.render_buffer()
+  M.update_win_config()
+  M.sync_cursor()
+  M.focus()
+end
+
+---Navigate to next question (wraps around)
+function M.next_question()
+  if #M.state.questions <= 1 then return end
+  local next_idx = (M.state.current_q_idx % #M.state.questions) + 1
+  M.go_to_question(next_idx)
+end
+
+---Navigate to previous question (wraps around)
+function M.prev_question()
+  if #M.state.questions <= 1 then return end
+  local prev_idx = (M.state.current_q_idx - 2 + #M.state.questions) % #M.state.questions + 1
+  M.go_to_question(prev_idx)
 end
 
 ---Jump directly to a numbered option (1-9)
@@ -636,47 +687,63 @@ function M.format_answers()
   return payload, answered_questions
 end
 
+---Check if a question has at least one selected answer or write-in text
+---@param q_idx number
+---@return boolean
+function M.has_question_answer(q_idx)
+  local q = M.state.questions[q_idx]
+  if not q then return false end
+
+  if q.is_multi_select then
+    local sel_map = M.state.selected_answers[q_idx]
+    if sel_map then
+      for _, v in pairs(sel_map) do
+        if v then return true end
+      end
+    end
+  else
+    if M.state.selected_answers[q_idx] ~= nil then
+      return true
+    end
+  end
+  if M.state.write_in_text[q_idx] and M.state.write_in_text[q_idx] ~= "" then
+    return true
+  end
+  return false
+end
+
+---Validate and submit all answers across questions
+function M.submit_all()
+  for q_idx = 1, #M.state.questions do
+    if not M.has_question_answer(q_idx) then
+      M.go_to_question(q_idx)
+      vim.notify(string.format("[agy.nvim] Please answer question %d of %d.", q_idx, #M.state.questions), vim.log.levels.WARN)
+      return
+    end
+  end
+
+  local answer_payload, answered_questions = M.format_answers()
+  local on_sub = M.state.on_submit
+  M.close()
+  if on_sub then
+    on_sub(answer_payload, answered_questions)
+  end
+end
+
 ---Confirm current question answer and advance or complete
 function M.confirm_current_question()
   local q = M.state.questions[M.state.current_q_idx]
   if not q then return end
 
-  local has_selection = false
-  if q.is_multi_select then
-    local sel_map = M.state.selected_answers[M.state.current_q_idx]
-    if sel_map then
-      for _, v in pairs(sel_map) do
-        if v then has_selection = true; break end
-      end
-    end
-  else
-    if M.state.selected_answers[M.state.current_q_idx] ~= nil then
-      has_selection = true
-    end
-  end
-  if M.state.write_in_text[M.state.current_q_idx] and M.state.write_in_text[M.state.current_q_idx] ~= "" then
-    has_selection = true
-  end
-
-  if not has_selection then
+  if not M.has_question_answer(M.state.current_q_idx) then
     vim.notify("[agy.nvim] Please select an option or provide a write-in response.", vim.log.levels.WARN)
     return
   end
 
   if M.state.current_q_idx < #M.state.questions then
-    M.state.current_q_idx = M.state.current_q_idx + 1
-    M.state.selected_idx = 1
-    M.state.scroll_offset = 1
-    M.build_items()
-    M.render_buffer()
-    M.update_win_config()
+    M.next_question()
   else
-    local answer_payload, answered_questions = M.format_answers()
-    local on_sub = M.state.on_submit
-    M.close()
-    if on_sub then
-      on_sub(answer_payload, answered_questions)
-    end
+    M.submit_all()
   end
 end
 
@@ -763,6 +830,81 @@ function M.setup_keymaps(target_buf)
     end
   end
 
+  -- Next question navigation: l, <Right>
+  local function handle_next_q()
+    local win = vim.api.nvim_get_current_win()
+    if win == M.state.win or is_at_prompt() then
+      if #M.state.questions > 1 then
+        M.next_question()
+      end
+    else
+      local cur = vim.api.nvim_win_get_cursor(win)
+      local line = vim.api.nvim_buf_get_lines(target_buf, cur[1] - 1, cur[1], false)[1] or ""
+      if cur[2] < #line - 1 then
+        vim.api.nvim_win_set_cursor(win, { cur[1], cur[2] + 1 })
+      end
+    end
+  end
+
+  -- Previous question navigation: h, <Left>
+  local function handle_prev_q()
+    local win = vim.api.nvim_get_current_win()
+    if win == M.state.win or is_at_prompt() then
+      if #M.state.questions > 1 then
+        M.prev_question()
+      end
+    else
+      local cur = vim.api.nvim_win_get_cursor(win)
+      if cur[2] > 0 then
+        vim.api.nvim_win_set_cursor(win, { cur[1], cur[2] - 1 })
+      end
+    end
+  end
+
+  local function handle_tab()
+    local win = vim.api.nvim_get_current_win()
+    if win == M.state.win or is_at_prompt() then
+      if #M.state.questions > 1 then
+        M.next_question()
+      end
+    else
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Tab>", true, false, true), "n", false)
+    end
+  end
+
+  local function handle_s_tab()
+    local win = vim.api.nvim_get_current_win()
+    if win == M.state.win or is_at_prompt() then
+      if #M.state.questions > 1 then
+        M.prev_question()
+      end
+    else
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true), "n", false)
+    end
+  end
+
+  local function handle_bracket_prev()
+    local win = vim.api.nvim_get_current_win()
+    if win == M.state.win or is_at_prompt() then
+      if #M.state.questions > 1 then
+        M.prev_question()
+      end
+    else
+      vim.api.nvim_feedkeys("[", "n", false)
+    end
+  end
+
+  local function handle_bracket_next()
+    local win = vim.api.nvim_get_current_win()
+    if win == M.state.win or is_at_prompt() then
+      if #M.state.questions > 1 then
+        M.next_question()
+      end
+    else
+      vim.api.nvim_feedkeys("]", "n", false)
+    end
+  end
+
   local buffers_to_map = { target_buf }
   if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) and M.state.buf ~= target_buf then
     table.insert(buffers_to_map, M.state.buf)
@@ -777,6 +919,16 @@ function M.setup_keymaps(target_buf)
     for _, k in ipairs({ "k", "<Up>", "<C-p>" }) do
       vim.keymap.set("n", k, handle_up, opts)
     end
+    for _, k in ipairs({ "h", "<Left>" }) do
+      vim.keymap.set("n", k, handle_prev_q, opts)
+    end
+    for _, k in ipairs({ "l", "<Right>" }) do
+      vim.keymap.set("n", k, handle_next_q, opts)
+    end
+    vim.keymap.set("n", "<Tab>", handle_tab, opts)
+    vim.keymap.set("n", "<S-Tab>", handle_s_tab, opts)
+    vim.keymap.set("n", "[", handle_bracket_prev, opts)
+    vim.keymap.set("n", "]", handle_bracket_next, opts)
 
     -- Space toggle
     vim.keymap.set("n", "<Space>", function()
@@ -804,7 +956,7 @@ function M.setup_keymaps(target_buf)
     -- Submit with <C-s>
     vim.keymap.set("n", "<C-s>", function()
       if is_at_prompt() and M.is_visible() then
-        M.confirm_current_question()
+        M.submit_all()
       end
     end, opts)
 

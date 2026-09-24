@@ -180,6 +180,32 @@ Inside an `agy://<id>/artifacts/<filename>` artifact review buffer:
   Submit all review comments formatted as `L<num>: <comment>` to the agent and
   automatically return to `agy://<id>`. Silent no-op if no comments exist.
 
+Inside an interactive question popup (when the agent invokes `ask_question`):
+
+- `j` / `k`, `<Down>` / `<Up>` (Normal mode):
+  Navigate between options within the active question.
+
+- `h` / `l`, `<Left>` / `<Right>`, `<Tab>` / `<S-Tab>`, `[` / `]` (Normal mode):
+  Navigate between questions when multiple questions are asked.
+
+- `<CR>` (Normal mode):
+  Select option (single-select advances to the next question) or confirm.
+
+- `<Space>` (Normal mode):
+  Toggle checkbox for multi-select options.
+
+- `1`-`9` (Normal mode):
+  Jump directly to a numbered option.
+
+- `w` (Normal mode):
+  Input a custom write-in response.
+
+- `<C-s>` (Normal mode):
+  Submit all answers across questions.
+
+- `q` / `<Esc>` / `<C-c>` (Normal mode):
+  Cancel question.
+
 ==============================================================================
 7. CONFIGURATION                                           *agy-configuration*
 
