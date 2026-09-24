@@ -25,6 +25,7 @@ local cfg = config_mod.setup({
 		auto_scroll = false,
 		fold_tool_output = false,
 		protect_history = true,
+		collapse_work = false,
 	},
 })
 protocol.setup()

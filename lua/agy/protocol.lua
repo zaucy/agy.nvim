@@ -476,6 +476,9 @@ function M._setup_buffer(buf, conversation_id)
       if queue_handled then return end
     end
 
+    local wg_handled = M.toggle_work_group_at_cursor(buf)
+    if wg_handled then return end
+
     local handled = M.toggle_tool_at_cursor(buf, vim.api.nvim_get_current_win())
     if not handled then
       local prompt_start = state and state.prompt_start_line or 1
@@ -785,6 +788,7 @@ function M.check_and_render_pending_thoughts(buf)
           local tc_rec = render.append_thought_block(buf, step.thinking, dur, state.config)
           tc_rec.id = #state.tool_calls + 1
           table.insert(state.tool_calls, tc_rec)
+          M.add_item_to_current_work_group(buf, tc_rec)
           M.ensure_prompt_line(buf)
           if state.follow_bottom then
             render.scroll_to_bottom(buf, true)
@@ -1379,6 +1383,8 @@ function M.handle_write(buf)
   state.last_thought_start_time = vim.uv.hrtime()
   state.had_background_task = false
   state.reengage_follow_bottom = nil
+  state.current_work_group = nil
+  state.work_groups = state.work_groups or {}
 
   M.with_modifiable(buf, function()
     -- Prepare buffer: append agent response placeholder and active thinking divider
@@ -1665,6 +1671,99 @@ function M.stop_turn(buf)
   end
 end
 
+---Add a tool or thought item to the active working group for the current execution phase
+---@param buf number
+---@param item table
+function M.add_item_to_current_work_group(buf, item)
+  local state = M.buffers[buf]
+  if not state then return end
+  state.work_groups = state.work_groups or {}
+  if not state.current_work_group then
+    state.current_work_group = {
+      id = #state.work_groups + 1,
+      is_open = true,
+      start_time = vim.uv.hrtime(),
+      duration_seconds = 0,
+      items = {},
+    }
+  end
+  table.insert(state.current_work_group.items, item)
+  if item.duration_seconds and item.duration_seconds > 0 then
+    state.current_work_group.duration_seconds = state.current_work_group.duration_seconds + item.duration_seconds
+  end
+end
+
+---Collapse the currently active work group in-place into a summary header
+---@param buf number
+function M.collapse_active_work_group(buf)
+  local state = M.buffers[buf]
+  if not state or not state.current_work_group then return end
+  local group = state.current_work_group
+  if not group.items or #group.items == 0 then
+    state.current_work_group = nil
+    return
+  end
+  if state.config and state.config.ui and state.config.ui.collapse_work == false then
+    table.insert(state.work_groups, group)
+    state.current_work_group = nil
+    return
+  end
+
+  if not group.duration_seconds or group.duration_seconds <= 0 then
+    if group.start_time then
+      group.duration_seconds = math.max(0.1, (vim.uv.hrtime() - group.start_time) / 1e9)
+    end
+  end
+
+  M.with_modifiable(buf, function()
+    render.collapse_work_group_in_place(buf, group, state.config)
+    M.ensure_prompt_line(buf)
+    if state.follow_bottom then
+      render.scroll_to_bottom(buf, true)
+    end
+    M.update_footer(buf)
+  end)
+  table.insert(state.work_groups, group)
+  state.current_work_group = nil
+end
+
+---Toggle collapsible work group at current cursor position
+---@param buf number
+---@return boolean handled
+function M.toggle_work_group_at_cursor(buf)
+  local state = M.buffers[buf]
+  if not state or not state.work_groups or #state.work_groups == 0 then return false end
+
+  local cur_win = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(cur_win) ~= buf then
+    cur_win = vim.fn.bufwinid(buf)
+  end
+  if cur_win == -1 or not vim.api.nvim_win_is_valid(cur_win) then return false end
+
+  local cur_row = vim.api.nvim_win_get_cursor(cur_win)[1] - 1 -- 0-indexed
+
+  for _, group in ipairs(state.work_groups) do
+    if group.header_extmark_id then
+      local pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, group.header_extmark_id, {})
+      if pos and #pos >= 1 then
+        local h_row = pos[1]
+        if cur_row == h_row then
+          M.with_modifiable(buf, function()
+            render.toggle_work_group(buf, state, group)
+            M.ensure_prompt_line(buf)
+            M.update_prompt_divider(buf)
+            M.update_footer(buf)
+          end)
+          M.update_modifiable(buf)
+          return true
+        end
+      end
+    end
+  end
+
+  return false
+end
+
 ---Toggle tool output block at current cursor position
 ---@param buf number
 ---@param target_win? number Specific window where cursor triggered the action
@@ -1850,23 +1949,26 @@ function M.handle_buf_read(args)
     vim.bo[buf].swapfile = false
     vim.bo[buf].bufhidden = "hide"
 
-    local prompt_line, prompt_ext_id, tool_calls
+    local prompt_line, prompt_ext_id, tool_calls, work_groups
     M.with_modifiable(buf, function()
       if target_id == "" or target_id == "new" then
         prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
         tool_calls = {}
+        work_groups = {}
       else
         local steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
         local ws = existing_state.workspaces
           or (existing_state.session and (existing_state.session.workspaces or existing_state.session.cwd))
           or vim.fn.getcwd()
-        prompt_line, prompt_ext_id, tool_calls = render.render_transcript(buf, target_id, steps, cfg, ws)
+        prompt_line, prompt_ext_id, tool_calls, work_groups = render.render_transcript(buf, target_id, steps, cfg, ws)
       end
     end)
 
     existing_state.prompt_start_line = prompt_line
     existing_state.prompt_extmark_id = prompt_ext_id
     existing_state.tool_calls = tool_calls or {}
+    existing_state.work_groups = work_groups or {}
+    existing_state.current_work_group = nil
     existing_state.active_tool_record = nil
     existing_state.footer_extmark_id = nil
     existing_state.agent_extmark_id = nil
@@ -1946,7 +2048,7 @@ function M.handle_buf_read(args)
   M._setup_buffer(buf, conv_id)
 
   local is_new = (conv_id == "new")
-  local prompt_line, prompt_ext_id, initial_tool_calls
+  local prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups
   local rendered_thinking = {}
 
   local workspaces = nil
@@ -1987,6 +2089,7 @@ function M.handle_buf_read(args)
     if is_new then
       prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
       initial_tool_calls = {}
+      initial_work_groups = {}
     else
       for idx, s in ipairs(steps) do
         if s.type == "PLANNER_RESPONSE" and s.thinking and s.thinking ~= "" then
@@ -1994,7 +2097,7 @@ function M.handle_buf_read(args)
           rendered_thinking[key] = true
         end
       end
-      prompt_line, prompt_ext_id, initial_tool_calls = render.render_transcript(buf, conv_id, steps, cfg, render_workspaces)
+      prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups = render.render_transcript(buf, conv_id, steps, cfg, render_workspaces)
     end
   end)
 
@@ -2032,6 +2135,8 @@ function M.handle_buf_read(args)
     footer_extmark_id = nil,
     workspaces = render_workspaces,
     tool_calls = initial_tool_calls or {},
+    work_groups = initial_work_groups or {},
+    current_work_group = nil,
     active_tool_record = nil,
     rendered_thinking = rendered_thinking,
     stream_info = {
@@ -2109,6 +2214,7 @@ function M.handle_buf_read(args)
           M.reconcile_background_tasks(buf, state, state.conversation_id)
           M.check_and_render_pending_thoughts(buf)
           state.active_agent_started_output = true
+          M.collapse_active_work_group(buf)
         end
         M.handle_post_task_bottom_visibility(buf, state)
         if step.text_delta and step.text_delta ~= "" then
@@ -2117,10 +2223,14 @@ function M.handle_buf_read(args)
 
       elseif stype == "tool" then
         M.flush_stream_delta(buf, false)
+        if state.active_agent_started_output then
+          state.active_agent_started_output = false
+        end
         if step.tool_name == "ask_question" then
           if step.state == "ACTIVE" then
             local q_list = render.parse_question_params(step.tool_info and step.tool_info.parameters)
             if #q_list > 0 then
+              M.collapse_active_work_group(buf)
               state.stream_info.status = "question"
               M.update_footer(buf)
               M.with_modifiable(buf, function()
@@ -2175,6 +2285,7 @@ function M.handle_buf_read(args)
             }
             table.insert(state.tool_calls, tool_rec)
             state.active_tool_record = tool_rec
+            M.add_item_to_current_work_group(buf, tool_rec)
             M.ensure_prompt_line(buf)
             if state.follow_bottom then
               render.scroll_to_bottom(buf, true)
@@ -2190,6 +2301,9 @@ function M.handle_buf_read(args)
               render.complete_tool_call(buf, state.active_tool_record, step.duration_seconds, step.tool_info and step.tool_info.output, state.config)
               if state.active_tool_record and state.active_tool_record.is_background_task then
                 state.had_background_task = true
+              end
+              if state.current_work_group and step.duration_seconds and step.duration_seconds > 0 then
+                state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + step.duration_seconds
               end
               M.ensure_prompt_line(buf)
               if state.follow_bottom then
@@ -2257,6 +2371,7 @@ function M.handle_buf_read(args)
         M.mark_transcript_thoughts_rendered(buf, state)
       end
       state.active_agent_started_output = false
+      M.collapse_active_work_group(buf)
       if result.usage and result.usage.total_tokens then
         state.stream_info.total_tokens = result.usage.total_tokens
       end

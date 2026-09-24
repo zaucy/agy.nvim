@@ -13,6 +13,7 @@ local M = {}
 ---@field virtual_text? boolean Show virtual text badges for turn status & tools (default: true)
 ---@field auto_scroll? boolean Automatically scroll to bottom as streaming responses arrive (default: true)
 ---@field fold_tool_output? boolean Automatically fold verbose tool output blocks (deprecated, default: false)
+---@field collapse_work? boolean Automatically collapse tool & thought groups into summary headers (default: true)
 ---@field wrap? boolean Enable line wrapping in agy buffers (default: true)
 ---@field linebreak? boolean Enable linebreak in agy buffers (default: true)
 ---@field conceallevel? number Markdown conceallevel in agy buffers (default: 2)
@@ -73,6 +74,8 @@ local M = {}
 ---@field review_comment? string Icon for review comments (default: "💬")
 ---@field new_session? string Icon for new session entry in home buffer (default: "󰐕 ")
 ---@field conversation? string Icon for conversation entries in home buffer (default: "󰭹 ")
+---@field work_collapsed? string Icon for collapsed work group (default: "▶")
+---@field work_expanded? string Icon for expanded work group (default: "▼")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -110,6 +113,8 @@ M.defaults = {
 		queue = "⏳",
 		replace_file_content = " ",
 		write_to_file = " ",
+		work_collapsed = "▶",
+		work_expanded = "▼",
 		spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
 		table = {
 			top_left = "╭",
@@ -151,6 +156,7 @@ M.defaults = {
 		virtual_text = true,
 		auto_scroll = true,
 		fold_tool_output = false,
+		collapse_work = true,
 		wrap = true,
 		linebreak = true,
 		conceallevel = 0,
@@ -193,6 +199,12 @@ function M.setup(opts)
 			assert(
 				type(opts.ui.render_markdown) == "function",
 				"agy config: 'ui.render_markdown' must be a function"
+			)
+		end
+		if opts.ui and opts.ui.collapse_work ~= nil then
+			assert(
+				type(opts.ui.collapse_work) == "boolean",
+				"agy config: 'ui.collapse_work' must be a boolean"
 			)
 		end
 		M.values = vim.tbl_deep_extend("force", M.defaults, opts)

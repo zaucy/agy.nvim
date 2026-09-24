@@ -149,7 +149,8 @@ Inside an `agy://<id>` or `agy://new` conversation buffer:
 
 - `<CR>` (Normal mode):
   Context-sensitive toggle: unqueue a queued message back to prompt input,
-  toggle question option checkbox, or toggle tool output block.
+  toggle question option checkbox, toggle 'Worked for X seconds' collapsible
+  work group, or toggle tool output preview window.
 
 - `K` (Normal mode):
   Inspect markdown link under cursor in a floating hover window. If not on a
@@ -223,6 +224,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             review_comment = "💬",
             new_session = "󰐕 ",      -- Icon for agy://new in home buffer
             conversation = "󰭹 ",     -- Icon for conversation entries in home buffer
+            work_collapsed = "▶",    -- Icon for collapsed work group
+            work_expanded = "▼",     -- Icon for expanded work group
             spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
             table = {
                 top_left = "╭",
@@ -255,6 +258,7 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
         ui = {
             virtual_text = true,     -- Show live badges for status & tools
             auto_scroll = true,      -- Follow streaming response
+            collapse_work = true,    -- Auto-collapse tools and thoughts into 'Worked for X seconds' groups
             wrap = true,             -- Line wrapping
             linebreak = true,        -- Break lines at word boundaries
             conceallevel = 2,        -- Conceal markdown syntax characters
@@ -276,6 +280,7 @@ Highlight Groups:                                              *agy-highlights*
 The following highlight groups are used for styling and can be customized:
 - `AgyHeaderTitle`: Bold title on header banner line 1 (e.g. "Antigravity CLI 1.2.8").
 - `AgyHeaderSub`: Secondary text on header banner line 2 (e.g. "agy://<conversation_id>").
+- `AgyWorkHeader`: Header title for 'Worked for X seconds' collapsible work groups.
 - `AgyPromptArea`: Background for active prompt input area.
 - `AgyUserSign`: User sign column icon highlight.
 - `AgyToolInline`: Subtle background for inline tool details and virtual lines.

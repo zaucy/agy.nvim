@@ -5,7 +5,10 @@ print("--- Testing Real Conversation Tool Calls & Path Shortening ---")
 
 local test_helpers = require("tests.test_helpers")
 local tmp_dir, conv_id = test_helpers.create_mock_environment()
-require("agy").setup({ app_data_dir = tmp_dir })
+require("agy").setup({
+	app_data_dir = tmp_dir,
+	ui = { collapse_work = false },
+})
 
 print("Loading test conversation with tool calls: " .. conv_id)
 
