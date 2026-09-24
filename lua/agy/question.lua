@@ -73,6 +73,31 @@ local function get_horizontal_sep(cfg)
   return c.icons.table.horizontal
 end
 
+---Clean redundant "Question N/M:" prefixes from question text to avoid duplication
+---@param text string
+---@return string
+local function clean_question_text(text)
+  if not text then return "" end
+  local cleaned = utils.trim(text)
+  cleaned = cleaned:gsub("^[Qq]uestion%s*%(?%d+[%s/of%-]*%d*%)?%s*[:.-]?%s*", "")
+  cleaned = cleaned:gsub("^%d+[%s/of%-]+%d+%s*[:.-]?%s*", "")
+  cleaned = utils.trim(cleaned)
+  return cleaned
+end
+
+---Ensure button highlight groups are registered
+local function ensure_highlights()
+  vim.api.nvim_set_hl(0, "AgyQuestionSubmit", { link = "DiagnosticOk", default = true, bold = true })
+  vim.api.nvim_set_hl(0, "AgyQuestionSubmitSel", {
+    bg = (vim.o.background == "light") and "#2da44e" or "#238636",
+    fg = "#ffffff",
+    ctermbg = 10,
+    ctermfg = 0,
+    bold = true,
+    default = true,
+  })
+end
+
 ---Check whether the question floating window is currently visible and not hidden
 ---@return boolean
 function M.is_visible()
@@ -224,6 +249,8 @@ end
 function M.render_buffer()
   if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
 
+  ensure_highlights()
+
   local cfg = M.state.config or config_mod.get()
   local q_icon = get_icon("question", cfg)
   local horiz_char = get_horizontal_sep(cfg)
@@ -262,7 +289,8 @@ function M.render_buffer()
 
     -- Summary of each question
     for q_idx, quest in ipairs(M.state.questions) do
-      local q_title = string.format("  %d. %s", q_idx, quest.question)
+      local title = clean_question_text(quest.question)
+      local q_title = string.format("  %d. %s", q_idx, title ~= "" and title or quest.question)
       table.insert(lines, q_title)
       table.insert(highlights, {
         row = #lines - 1,
@@ -320,7 +348,7 @@ function M.render_buffer()
       local pointer = is_sel and "> " or "  "
       local line_str = ""
       if it.type == "submit_all" then
-        line_str = pointer .. "[ " .. it.text .. " ]"
+        line_str = pointer .. "  Submit All Answers  "
       end
       table.insert(lines, line_str)
       table.insert(highlights, {
@@ -362,23 +390,37 @@ function M.render_buffer()
           priority = 100,
         })
       elseif hl.is_sel ~= nil then
-        if hl.is_sel then
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
-            line_hl_group = "AgyCompletionSel",
-            priority = 100,
-          })
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
-            end_col = 2,
-            hl_group = "AgyCompletionPointer",
-            priority = 101,
-          })
-        end
         if hl.item and hl.item.type == "submit_all" then
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
-            end_col = #hl.line_str,
-            hl_group = "AgyCompletionKey",
-            priority = 100,
-          })
+          if hl.is_sel then
+            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+              end_col = 2,
+              hl_group = "AgyCompletionPointer",
+              priority = 101,
+            })
+            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+              end_col = #hl.line_str,
+              hl_group = "AgyQuestionSubmitSel",
+              priority = 102,
+            })
+          else
+            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+              end_col = #hl.line_str,
+              hl_group = "AgyQuestionSubmit",
+              priority = 100,
+            })
+          end
+        else
+          if hl.is_sel then
+            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+              line_hl_group = "AgyCompletionSel",
+              priority = 100,
+            })
+            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+              end_col = 2,
+              hl_group = "AgyCompletionPointer",
+              priority = 101,
+            })
+          end
         end
       end
     end
@@ -436,7 +478,15 @@ function M.render_buffer()
 
   -- Question header line
   local count_str = #M.state.questions > 1 and string.format(" (%d/%d)", M.state.current_q_idx, #M.state.questions) or ""
-  local header_text = string.format("  %s Question%s: %s", q_icon, count_str, q.question)
+  local title = clean_question_text(q.question)
+  local header_text
+  if title ~= "" then
+    header_text = string.format("  %s Question%s: %s", q_icon, count_str, title)
+  elseif count_str ~= "" then
+    header_text = string.format("  %s Question%s", q_icon, count_str)
+  else
+    header_text = string.format("  %s Question: %s", q_icon, q.question)
+  end
   table.insert(lines, header_text)
   table.insert(highlights, {
     row = #lines - 1,
@@ -483,7 +533,7 @@ function M.render_buffer()
         end
       end
     elseif it.type == "submit" then
-      line_str = pointer .. "[ " .. it.text .. " ]"
+      line_str = pointer .. "  " .. it.text .. "  "
     end
 
     table.insert(lines, line_str)
@@ -553,34 +603,48 @@ function M.render_buffer()
         priority = 100,
       })
     elseif hl.is_sel ~= nil then
-      if hl.is_sel then
-        vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
-          line_hl_group = "AgyCompletionSel",
-          priority = 100,
-        })
-        vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
-          end_col = 2,
-          hl_group = "AgyCompletionPointer",
-          priority = 101,
-        })
-      end
-      if hl.line_str:find("%[x%]") or hl.line_str:find("%(•%)") then
-        local s, e = hl.line_str:find("%[x%]")
-        if not s then s, e = hl.line_str:find("%(•%)") end
-        if s and e then
-          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, s - 1, {
-            end_col = e,
-            hl_group = "AgyQuestionChecked",
+      if hl.item and hl.item.type == "submit" then
+        if hl.is_sel then
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            end_col = 2,
+            hl_group = "AgyCompletionPointer",
+            priority = 101,
+          })
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+            end_col = #hl.line_str,
+            hl_group = "AgyQuestionSubmitSel",
+            priority = 102,
+          })
+        else
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 2, {
+            end_col = #hl.line_str,
+            hl_group = "AgyQuestionSubmit",
+            priority = 100,
+          })
+        end
+      else
+        if hl.is_sel then
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            line_hl_group = "AgyCompletionSel",
+            priority = 100,
+          })
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            end_col = 2,
+            hl_group = "AgyCompletionPointer",
             priority = 101,
           })
         end
-      end
-      if hl.item and hl.item.type == "submit" then
-        vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
-          end_col = #hl.line_str,
-          hl_group = "AgyCompletionKey",
-          priority = 100,
-        })
+        if hl.line_str:find("%[x%]") or hl.line_str:find("%(•%)") then
+          local s, e = hl.line_str:find("%[x%]")
+          if not s then s, e = hl.line_str:find("%(•%)") end
+          if s and e then
+            vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, s - 1, {
+              end_col = e,
+              hl_group = "AgyQuestionChecked",
+              priority = 101,
+            })
+          end
+        end
       end
     end
   end

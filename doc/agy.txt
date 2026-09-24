@@ -323,6 +323,11 @@ The following highlight groups are used for styling and can be customized:
 - `AgyItalic`: Italic text (*italic* / _italic_).
 - `AgyInlineCode`: Inline code snippets (`code`).
 - `AgyStrike`: Strikethrough text (~~strike~~).
+- `AgyQuestionHeader`: Question prompt header title.
+- `AgyQuestionOption`: Selectable question option text.
+- `AgyQuestionChecked`: Checked option marks and icons.
+- `AgyQuestionSubmit`: Unhovered submission button text.
+- `AgyQuestionSubmitSel`: Hovered block submission button with solid background.
 
 ==============================================================================
 8. MENTIONS & EXTENSION API                                     *agy-mentions*

@@ -917,4 +917,155 @@ assert(mq_ui.is_visible() == false, "Question UI must close after all questions 
 protocol.cleanup_buffer(buf_multi_q)
 print("✓ Navigation and answering across multiple questions verified")
 
+-- =========================================================================
+-- TEST 18: Testing Question Title Deduplication and Block Submit Button Styling
+-- =========================================================================
+print("\n[Test 18] Testing question title deduplication and block submit button styling...")
+
+local question_mod = require("agy.question")
+
+local dup_questions = {
+  {
+    question = "Question 1/4: What database backend should we deploy?",
+    options = { "PostgreSQL", "SQLite" },
+    is_multi_select = true,
+  },
+  {
+    question = "Question 2 of 4: Which cache layer?",
+    options = { "Redis", "Memcached" },
+    is_multi_select = false,
+  },
+  {
+    question = "Question 3/4",
+    options = { "Option A", "Option B" },
+    is_multi_select = false,
+  },
+  {
+    question = "4/4: Final verification step?",
+    options = { "Run CI", "Skip CI" },
+    is_multi_select = false,
+  },
+}
+
+vim.cmd("edit agy://new")
+local test18_buf = vim.api.nvim_get_current_buf()
+local test18_win = vim.api.nvim_get_current_win()
+local test18_state = protocol.buffers[test18_buf]
+
+local submitted_18 = nil
+question_mod.show(test18_win, test18_buf, dup_questions, {
+  config = test18_state.config,
+  on_submit = function(payload)
+    submitted_18 = payload
+  end,
+})
+
+-- 1. Check Question 1 header: should be "Question (1/4): What database backend should we deploy?"
+local q1_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+local q1_header = q1_lines[2]
+assert(q1_header:find("Question %(1/4%): What database backend should we deploy%?"), "Q1 header must not double Question prefix: " .. tostring(q1_header))
+assert(not q1_header:find("Question %(1/4%): Question"), "Q1 header must deduplicate Question prefix: " .. tostring(q1_header))
+
+-- 2. Multi-select submit item on Question 1: "Next Question" without brackets
+local next_btn_line = nil
+local next_btn_row = nil
+for idx, l in ipairs(q1_lines) do
+  if l:find("Next Question") then
+    next_btn_line = l
+    next_btn_row = idx - 1
+    break
+  end
+end
+assert(next_btn_line ~= nil, "Question 1 must have Next Question button")
+assert(not next_btn_line:find("%["), "Next Question button must not contain brackets: " .. next_btn_line)
+assert(not next_btn_line:find("%]"), "Next Question button must not contain brackets: " .. next_btn_line)
+
+-- Navigate selection down to Next Question button
+question_mod.jump_to(#question_mod.state.items) -- submit is the last item
+local extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { next_btn_row, 0 }, { next_btn_row, -1 }, { details = true })
+local has_sel_hl = false
+local has_line_sel = false
+for _, em in ipairs(extmarks) do
+  local details = em[4] or {}
+  if details.hl_group == "AgyQuestionSubmitSel" then
+    has_sel_hl = true
+    assert(em[3] == 2, "Submit block highlight must start at col 2")
+  end
+  if details.line_hl_group == "AgyCompletionSel" then
+    has_line_sel = true
+  end
+end
+assert(has_sel_hl == true, "Hovered submit button must have AgyQuestionSubmitSel highlight")
+assert(has_line_sel == false, "Submit button should not apply line-wide AgyCompletionSel")
+
+-- Unselect Next Question button (jump back to option 1)
+question_mod.jump_to(1)
+extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { next_btn_row, 0 }, { next_btn_row, -1 }, { details = true })
+local has_unsel_hl = false
+for _, em in ipairs(extmarks) do
+  local details = em[4] or {}
+  if details.hl_group == "AgyQuestionSubmit" then
+    has_unsel_hl = true
+    assert(em[3] == 2, "Unselected submit highlight must start at col 2")
+  end
+end
+assert(has_unsel_hl == true, "Unselected submit button must have AgyQuestionSubmit highlight")
+
+-- 3. Check Question 2 header: "Question 2 of 4: Which cache layer?" -> deduplicated to "Question (2/4): Which cache layer?"
+question_mod.next_question()
+local q2_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+local q2_header = q2_lines[2]
+assert(q2_header:find("Question %(2/4%): Which cache layer%?"), "Q2 header must deduplicate 'Question 2 of 4': " .. tostring(q2_header))
+
+-- 4. Check Question 3 header: "Question 3/4" alone -> header is "Question (3/4)" without trailing colon
+question_mod.next_question()
+local q3_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+local q3_header = q3_lines[2]
+assert(q3_header:find("Question %(3/4%)"), "Q3 header must have Question (3/4): " .. tostring(q3_header))
+assert(not q3_header:find("Question %(3/4%):"), "Q3 header with empty title must not have trailing colon: " .. tostring(q3_header))
+
+-- 5. Check Question 4 header: "4/4: Final verification step?" -> deduplicated to "Question (4/4): Final verification step?"
+question_mod.next_question()
+local q4_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+local q4_header = q4_lines[2]
+assert(q4_header:find("Question %(4/4%): Final verification step%?"), "Q4 header must deduplicate '4/4:': " .. tostring(q4_header))
+
+-- 6. Check Summary Page (Page 5)
+question_mod.next_question()
+assert(question_mod.is_summary_page() == true, "Must be on summary page")
+local sum_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+local submit_all_line = nil
+local submit_all_row = nil
+for idx, l in ipairs(sum_lines) do
+  if l:find("Submit All Answers") then
+    submit_all_line = l
+    submit_all_row = idx - 1
+    break
+  end
+end
+assert(submit_all_line ~= nil, "Summary page must have Submit All Answers item")
+assert(not submit_all_line:find("%["), "Submit All Answers button must not contain brackets: " .. submit_all_line)
+assert(not submit_all_line:find("%]"), "Submit All Answers button must not contain brackets: " .. submit_all_line)
+
+-- Extmarks on Summary Page for Submit All Answers
+local sum_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { submit_all_row, 0 }, { submit_all_row, -1 }, { details = true })
+local has_sum_sel = false
+local has_sum_line_sel = false
+for _, em in ipairs(sum_extmarks) do
+  local details = em[4] or {}
+  if details.hl_group == "AgyQuestionSubmitSel" then
+    has_sum_sel = true
+    assert(em[3] == 2, "Submit All block highlight must start at col 2")
+  end
+  if details.line_hl_group == "AgyCompletionSel" then
+    has_sum_line_sel = true
+  end
+end
+assert(has_sum_sel == true, "Hovered Submit All Answers button must have AgyQuestionSubmitSel")
+assert(has_sum_line_sel == false, "Submit All button should not apply line-wide AgyCompletionSel")
+
+question_mod.close()
+protocol.cleanup_buffer(test18_buf)
+print("✓ Question title deduplication and block submit button styling verified")
+
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")

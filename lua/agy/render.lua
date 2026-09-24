@@ -93,6 +93,17 @@ local function shift_color_hue(hex, deg)
 	return string.format("#%02x%02x%02x", nr, ng, nb)
 end
 
+local function clean_question_text(text)
+	if not text then
+		return ""
+	end
+	local cleaned = utils.trim(text)
+	cleaned = cleaned:gsub("^[Qq]uestion%s*%(?%d+[%s/of%-]*%d*%)?%s*[:.-]?%s*", "")
+	cleaned = cleaned:gsub("^%d+[%s/of%-]+%d+%s*[:.-]?%s*", "")
+	cleaned = utils.trim(cleaned)
+	return cleaned
+end
+
 local function get_config(cfg)
 	return cfg or require("agy.config").get()
 end
@@ -220,6 +231,15 @@ function M.setup_highlights()
 		AgyQuestionHeader = { link = "Title", default = true, bold = true },
 		AgyQuestionOption = { link = "Normal", default = true },
 		AgyQuestionChecked = { link = "DiagnosticOk", default = true, bold = true },
+		AgyQuestionSubmit = { link = "DiagnosticOk", default = true, bold = true },
+		AgyQuestionSubmitSel = {
+			bg = (vim.o.background == "light") and "#2da44e" or "#238636",
+			fg = "#ffffff",
+			ctermbg = 10,
+			ctermfg = 0,
+			bold = true,
+			default = true,
+		},
 		AgyThought = { link = "Comment", default = true, italic = true },
 		AgyCompletionSel = { link = "PmenuSel", default = true },
 		AgyCompletionPointer = { link = "Special", default = true, bold = true },
@@ -1514,8 +1534,15 @@ function M.render_historical_question(buf, params, output, config, cwd)
 	local header_indices = {}
 
 	for q_idx, q in ipairs(q_list) do
-		local header_text = (#q_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q.question)
-			or string.format("%s Question: %s", q_icon, q.question)
+		local q_text = clean_question_text(q.question)
+		local header_text
+		if q_text ~= "" then
+			header_text = (#q_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q_text)
+				or string.format("%s Question: %s", q_icon, q_text)
+		else
+			header_text = (#q_list > 1) and string.format("%s Question %d", q_icon, q_idx)
+				or string.format("%s Question", q_icon)
+		end
 
 		table.insert(to_append, header_text)
 		table.insert(header_indices, #to_append)
@@ -3021,8 +3048,15 @@ function M.render_question_block(buf, question_list, config)
 
 	local q_icon = get_icon("question", config)
 	for q_idx, q in ipairs(question_list) do
-		local header_text = (#question_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q.question)
-			or string.format("%s Question: %s", q_icon, q.question)
+		local q_text = clean_question_text(q.question)
+		local header_text
+		if q_text ~= "" then
+			header_text = (#question_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q_text)
+				or string.format("%s Question: %s", q_icon, q_text)
+		else
+			header_text = (#question_list > 1) and string.format("%s Question %d", q_icon, q_idx)
+				or string.format("%s Question", q_icon)
+		end
 
 		table.insert(to_append, header_text)
 		table.insert(header_lines, line_count + #to_append)
