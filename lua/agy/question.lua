@@ -537,16 +537,6 @@ function M.render_buffer()
     local footer_text = "  ←/h Previous · enter Submit · 1-" .. tostring(#M.state.questions) .. " Jump · esc Cancel"
     table.insert(lines, footer_text)
 
-    -- Bottom border divider
-    local bot_divider = string.rep(horiz_char, win_width)
-    table.insert(lines, bot_divider)
-    table.insert(highlights, {
-      row = #lines - 1,
-      start_col = 0,
-      end_col = #bot_divider,
-      hl_group = "AgyDividerLine",
-    })
-
     local start_line = M.get_start_line()
     local start_row = start_line - 1
 
@@ -608,7 +598,7 @@ function M.render_buffer()
       end
     end
 
-    local footer_row = start_row + #lines - 2
+    local footer_row = start_row + #lines - 1
     vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, 0, {
       hl_group = "AgyCompletionFooter",
     })
@@ -622,6 +612,20 @@ function M.render_buffer()
         })
       end
     end
+
+    -- Bottom border divider (virtual line extending across the gutter, exactly like top line)
+    local render = require("agy.render")
+    local border_width = render.get_max_window_width(b)
+    if border_width == 0 then
+      border_width = win_width
+    end
+    vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, 0, {
+      virt_lines = { { { string.rep(horiz_char, border_width), "AgyPromptBorder" } } },
+      virt_lines_leftcol = true,
+      virt_lines_above = false,
+      right_gravity = true,
+      priority = 200,
+    })
     return
   end
 
@@ -764,16 +768,6 @@ function M.render_buffer()
   end
   table.insert(lines, footer_text)
 
-  -- Bottom border divider (full width line under footer)
-  local bot_divider = string.rep(horiz_char, win_width)
-  table.insert(lines, bot_divider)
-  table.insert(highlights, {
-    row = #lines - 1,
-    start_col = 0,
-    end_col = #bot_divider,
-    hl_group = "AgyDividerLine",
-  })
-
   local start_line = M.get_start_line()
   local start_row = start_line - 1
 
@@ -846,7 +840,7 @@ function M.render_buffer()
     end
   end
 
-  local footer_row = start_row + #lines - 2
+  local footer_row = start_row + #lines - 1
   vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, 0, {
     hl_group = "AgyCompletionFooter",
   })
@@ -863,6 +857,20 @@ function M.render_buffer()
       })
     end
   end
+
+  -- Bottom border divider (virtual line extending across the gutter, exactly like top line)
+  local render = require("agy.render")
+  local border_width = render.get_max_window_width(b)
+  if border_width == 0 then
+    border_width = win_width
+  end
+  vim.api.nvim_buf_set_extmark(b, M.NS_HL, footer_row, 0, {
+    virt_lines = { { { string.rep(horiz_char, border_width), "AgyPromptBorder" } } },
+    virt_lines_leftcol = true,
+    virt_lines_above = false,
+    right_gravity = true,
+    priority = 200,
+  })
 end
 
 ---Synchronize cursor position in the conversation window to the selected option line

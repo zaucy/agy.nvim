@@ -694,10 +694,22 @@ local cur_pos = vim.api.nvim_win_get_cursor(win_lock)
 local opt_start = ui_lock.get_opt_start_line()
 assert(cur_pos[1] == opt_start, string.format("Cursor must be on option 1 line (expected %d, got %d)", opt_start, cur_pos[1]))
 
--- Verify bottom border full width line exists under footer
+-- Verify bottom border virtual line exists under footer extending across gutter (virt_lines_leftcol = true)
 local q_buf_lines = ui_lock.get_question_lines()
-local last_line = q_buf_lines[#q_buf_lines]
-assert(#last_line >= 10 and last_line:find("^[─%-]+$"), "Bottom line under footer must be a full width divider line")
+local last_row = ui_lock.get_start_line() - 1 + #q_buf_lines - 1
+local bot_extmarks = vim.api.nvim_buf_get_extmarks(ui_lock.state.buf, ui_lock.NS_HL, { last_row, 0 }, { last_row, -1 }, { details = true })
+local has_bot_border = false
+for _, em in ipairs(bot_extmarks) do
+  local d = em[4] or {}
+  if d.virt_lines and #d.virt_lines > 0 then
+    local vl = d.virt_lines[1]
+    if vl and vl[1] and vl[1][2] == "AgyPromptBorder" and d.virt_lines_leftcol == true and d.virt_lines_above == false then
+      has_bot_border = true
+      assert(#vl[1][1] >= 10 and vl[1][1]:find("^[─%-]+$"), "Virtual line must be divider characters")
+    end
+  end
+end
+assert(has_bot_border == true, "Bottom border must be rendered as a virtual line with virt_lines_leftcol = true")
 
 -- Target buffer modifiable must be false everywhere while question is active
 protocol.update_modifiable(buf_lock)
