@@ -585,19 +585,35 @@ state_write.session.on_step_update(state_write.session, {
 })
 
 local write_ui = state_write.active_question.ui
--- Prompt write-in with mocked vim.ui.input, verifying temporary hide to avoid obscuring input
+assert(write_ui.is_visible() == true)
+
+-- Mock vim.ui.input to ensure no popup is spawned
 local orig_input = vim.ui.input
-local was_hidden_during_input = false
-vim.ui.input = function(opts, on_confirm)
-  was_hidden_during_input = write_ui.state.is_hidden
-  on_confirm("Build with ASAN enabled")
+local input_called = false
+vim.ui.input = function()
+  input_called = true
+  error("vim.ui.input popup should not be called for inline write-in")
 end
 
-write_ui.prompt_write_in()
+-- Start inline write-in editing
+write_ui.start_inline_write_in()
+assert(input_called == false, "vim.ui.input popup must not be used")
+assert(write_ui.is_visible() == true, "Question UI must remain visible inline")
+assert(write_ui.state.is_editing_write_in == true, "is_editing_write_in must be true")
+assert(vim.bo[write_ui.state.buf].modifiable == true, "Buffer must be modifiable during inline editing")
+
+-- Verify write-in line is rendered inline in buffer
+local opt_start = 4
+local write_line = opt_start + (#state_write.active_question.questions[1].options + 1 - 1)
+local line = vim.api.nvim_buf_get_lines(write_ui.state.buf, write_line - 1, write_line, false)[1] or ""
+assert(line:find("Write%-in:"), "Buffer line must display inline Write-in: " .. line)
+
+-- Simulate confirming inline input
+write_ui.finish_inline_write_in(true, "Build with ASAN enabled")
 vim.ui.input = orig_input
 
-assert(was_hidden_during_input == true, "Question UI must hide during write-in to prevent covering vim.ui.input")
-assert(write_in_prompt ~= nil)
+assert(write_ui.state.is_editing_write_in == false, "is_editing_write_in must be reset to false")
+assert(write_in_prompt ~= nil, "Submitting write-in must trigger send_prompt")
 assert(write_in_prompt:find("Build with ASAN enabled"), "Prompt must contain write-in notes")
 
 protocol.cleanup_buffer(buf_write)
@@ -874,6 +890,7 @@ assert(summary_text:find("SQLite"), "Summary must list Q1 answer SQLite")
 assert(summary_text:find("Auth, Metrics"), "Summary must list Q2 answers Auth, Metrics")
 assert(summary_text:find("Kubernetes"), "Summary must list Q3 answer Kubernetes")
 assert(summary_text:find("Submit All Answers"), "Summary must have Submit All Answers item")
+assert(not summary_text:find("Edit Question"), "Summary page must NOT have 'Edit Question' lines")
 
 -- Verify jump_to on summary page to edit a question
 mq_ui.jump_to(2)

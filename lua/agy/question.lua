@@ -43,6 +43,7 @@ M.state = {
   selected_answers = {},
   write_in_text = {},
   items = {},
+  is_editing_write_in = false,
   config = nil,
   on_submit = nil,
   on_cancel = nil,
@@ -52,7 +53,7 @@ local QUESTION_KEYS = {
   "j", "k", "<Down>", "<Up>", "<C-n>", "<C-p>",
   "h", "l", "<Left>", "<Right>", "<Tab>", "<S-Tab>",
   "[", "]",
-  "<Space>", "<CR>", "<C-s>", "w", "i",
+  "<Space>", "<CR>", "<C-s>", "w", "i", "a",
   "1", "2", "3", "4", "5", "6", "7", "8", "9",
   "q", "<Esc>", "<C-c>",
 }
@@ -103,12 +104,18 @@ function M.clear_keymaps()
     for _, key in ipairs(QUESTION_KEYS) do
       pcall(vim.keymap.del, "n", key, { buffer = M.state.buf })
     end
+    local insert_keys = { "<CR>", "<Esc>", "<C-c>", "<BS>", "<C-h>", "<C-w>", "<C-u>", "<Left>", "<Home>", "<Up>", "<Down>" }
+    for _, key in ipairs(insert_keys) do
+      pcall(vim.keymap.del, "i", key, { buffer = M.state.buf })
+    end
   end
   M.state.mapped_buf = nil
 end
 
 ---Close question floating window, delete keymaps, and reset state
 function M.close()
+  pcall(vim.cmd, "stopinsert")
+  M.state.is_editing_write_in = false
   M.hide()
   M.clear_keymaps()
   if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
@@ -126,6 +133,7 @@ function M.close()
   M.state.selected_answers = {}
   M.state.write_in_text = {}
   M.state.items = {}
+  M.state.is_editing_write_in = false
   M.state.on_submit = nil
   M.state.on_cancel = nil
   M.state.is_hidden = false
@@ -158,25 +166,16 @@ end
 ---Build items list for the current question or summary page
 function M.build_items()
   if M.is_summary_page() then
-    local items = {}
-    table.insert(items, {
-      type = "submit_all",
-      opt_idx = 1,
-      text = "Submit All Answers",
-    })
-    for q_idx = 1, #M.state.questions do
-      table.insert(items, {
-        type = "edit_question",
-        target_q_idx = q_idx,
-        opt_idx = 1 + q_idx,
-        text = string.format("Edit Question %d", q_idx),
-      })
-    end
+    local items = {
+      {
+        type = "submit_all",
+        opt_idx = 1,
+        text = "Submit All Answers",
+      }
+    }
     M.state.items = items
-    if M.state.selected_idx > #items or M.state.selected_idx < 1 then
-      M.state.selected_idx = 1
-      M.state.scroll_offset = 1
-    end
+    M.state.selected_idx = 1
+    M.state.scroll_offset = 1
     return
   end
 
@@ -315,15 +314,13 @@ function M.render_buffer()
     -- Spacer
     table.insert(lines, "")
 
-    -- Summary items (Submit All Answers, Edit Question 1..N)
+    -- Summary items (Submit All Answers)
     for i, it in ipairs(M.state.items) do
       local is_sel = (i == M.state.selected_idx)
       local pointer = is_sel and "> " or "  "
       local line_str = ""
       if it.type == "submit_all" then
         line_str = pointer .. "[ " .. it.text .. " ]"
-      elseif it.type == "edit_question" then
-        line_str = pointer .. string.format("%d. %s", it.target_q_idx, it.text)
       end
       table.insert(lines, line_str)
       table.insert(highlights, {
@@ -338,7 +335,7 @@ function M.render_buffer()
     table.insert(lines, "")
 
     -- Footer
-    local footer_text = "  ←/h Previous · enter Select · 1-" .. tostring(#M.state.questions) .. " Edit · esc Cancel"
+    local footer_text = "  ←/h Previous · enter Submit · 1-" .. tostring(#M.state.questions) .. " Jump · esc Cancel"
     table.insert(lines, footer_text)
 
     -- Bottom border divider
@@ -470,12 +467,21 @@ function M.render_buffer()
         line_str = pointer .. mark .. string.format("%d. ", it.opt_idx) .. it.text
       end
     elseif it.type == "write_in" then
-      local custom = M.state.write_in_text[M.state.current_q_idx]
+      local custom = M.state.write_in_text[M.state.current_q_idx] or ""
       local mark = (M.state.selected_answers[M.state.current_q_idx] == "write_in") and "(•) " or "( ) "
       if q.is_multi_select then
-        mark = (custom and custom ~= "") and "[x] " or "[ ] "
+        mark = (custom ~= "") and "[x] " or "[ ] "
       end
-      line_str = pointer .. mark .. string.format("%d. ", #q.options + 1) .. ((custom and custom ~= "") and ('Write-in: "' .. custom .. '"') or "Write-in response...")
+      if M.state.is_editing_write_in then
+        mark = q.is_multi_select and "[x] " or "(•) "
+        line_str = pointer .. mark .. string.format("%d. Write-in: ", #q.options + 1) .. custom
+      else
+        if custom ~= "" then
+          line_str = pointer .. mark .. string.format("%d. Write-in: %s", #q.options + 1, custom)
+        else
+          line_str = pointer .. mark .. string.format("%d. Write-in response...", #q.options + 1)
+        end
+      end
     elseif it.type == "submit" then
       line_str = pointer .. "[ " .. it.text .. " ]"
     end
@@ -511,11 +517,15 @@ function M.render_buffer()
 
   -- Footer
   local footer_text
-  local nav_hint = (#M.state.questions > 1) and "tab/h/l Questions · " or ""
-  if q.is_multi_select then
-    footer_text = "  " .. nav_hint .. "↑/↓/j/k Navigate · space Toggle · enter Confirm · w Write-in · esc Cancel"
+  if M.state.is_editing_write_in then
+    footer_text = "  enter Confirm · esc Finish editing · ↑/↓ Navigate"
   else
-    footer_text = "  " .. nav_hint .. "↑/↓/j/k Navigate · enter Select · 1-" .. tostring(#items) .. " Jump · w Write-in · esc Cancel"
+    local nav_hint = (#M.state.questions > 1) and "tab/h/l Questions · " or ""
+    if q.is_multi_select then
+      footer_text = "  " .. nav_hint .. "↑/↓/j/k Navigate · space Toggle · enter Confirm · w Write-in · esc Cancel"
+    else
+      footer_text = "  " .. nav_hint .. "↑/↓/j/k Navigate · enter Select · 1-" .. tostring(#items) .. " Jump · w Write-in · esc Cancel"
+    end
   end
   table.insert(lines, footer_text)
 
@@ -580,6 +590,9 @@ function M.render_buffer()
     hl_group = "AgyCompletionFooter",
   })
   local key_tokens = { "tab/h/l", "↑/↓/j/k", "enter", "space", "w", "esc" }
+  if M.state.is_editing_write_in then
+    key_tokens = { "enter", "esc", "↑/↓" }
+  end
   for _, tok in ipairs(key_tokens) do
     local s, e = footer_text:find(tok, 1, true)
     if s and e then
@@ -680,9 +693,10 @@ end
 function M.sync_cursor()
   if not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
   if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+  if M.state.is_editing_write_in then return end
   local opt_start = 4
   if M.is_summary_page() then
-    opt_start = 4 + (#M.state.questions * 2) + 1
+    opt_start = 5 + (#M.state.questions * 2)
   end
   local cursor_line = opt_start + (M.state.selected_idx - (M.state.scroll_offset or 1))
   local line_count = vim.api.nvim_buf_line_count(M.state.buf)
@@ -779,17 +793,14 @@ function M.jump_to(idx)
     if it.type == "submit_all" then
       M.submit_all()
       return
-    elseif it.type == "edit_question" then
-      M.go_to_question(it.target_q_idx)
+    elseif it.type == "write_in" then
+      M.prompt_write_in()
       return
     end
     local q = M.state.questions[M.state.current_q_idx]
     if q and not q.is_multi_select and it.type == "option" then
       M.state.selected_answers[M.state.current_q_idx] = it.opt_idx
       M.confirm_current_question()
-      return
-    elseif q and not q.is_multi_select and it.type == "write_in" then
-      M.prompt_write_in()
       return
     end
     M.render_buffer()
@@ -806,8 +817,8 @@ function M.toggle()
   if it.type == "submit_all" then
     M.submit_all()
     return
-  elseif it.type == "edit_question" then
-    M.go_to_question(it.target_q_idx)
+  elseif it.type == "write_in" then
+    M.prompt_write_in()
     return
   end
 
@@ -824,8 +835,6 @@ function M.toggle()
       M.state.selected_answers[M.state.current_q_idx] = it.opt_idx
       M.render_buffer()
     end
-  elseif it.type == "write_in" then
-    M.prompt_write_in()
   elseif it.type == "submit" then
     M.confirm_current_question()
   end
@@ -840,8 +849,8 @@ function M.accept()
   if it.type == "submit_all" then
     M.submit_all()
     return
-  elseif it.type == "edit_question" then
-    M.go_to_question(it.target_q_idx)
+  elseif it.type == "write_in" then
+    M.prompt_write_in()
     return
   end
 
@@ -858,39 +867,244 @@ function M.accept()
       M.state.selected_answers[M.state.current_q_idx] = it.opt_idx
       M.confirm_current_question()
     end
-  elseif it.type == "write_in" then
-    M.prompt_write_in()
   elseif it.type == "submit" then
     M.confirm_current_question()
   end
 end
 
----Prompt user for write-in response
-function M.prompt_write_in()
-  if M.is_summary_page() then return end
-  local target_win = M.state.target_win
-  local target_buf = M.state.target_buf
-  -- Temporarily hide the question window so the floating input modal / cmdline
-  -- is not obscured behind zindex 200
-  M.hide()
+local function clear_inline_insert_keymaps()
+  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+  local keys = { "<CR>", "<Esc>", "<C-c>", "<BS>", "<C-h>", "<C-w>", "<C-u>", "<Left>", "<Home>", "<Up>", "<Down>" }
+  for _, k in ipairs(keys) do
+    pcall(vim.keymap.del, "i", k, { buffer = M.state.buf })
+  end
+end
 
-  vim.ui.input({
-    prompt = "Custom response: ",
-    default = M.state.write_in_text[M.state.current_q_idx] or "",
-  }, function(input)
-    if input and utils.trim(input) ~= "" then
-      local trimmed = utils.trim(input)
-      M.state.write_in_text[M.state.current_q_idx] = trimmed
-      local q = M.state.questions[M.state.current_q_idx]
-      if q and not q.is_multi_select then
+---Finish inline editing mode for write-in response
+---@param confirmed boolean Whether user pressed enter to confirm
+---@param text string Typed write-in text
+function M.finish_inline_write_in(confirmed, text)
+  pcall(vim.cmd, "stopinsert")
+  M.state.is_editing_write_in = false
+  clear_inline_insert_keymaps()
+  pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn")
+
+  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
+    vim.bo[M.state.buf].modifiable = false
+  end
+
+  local trimmed = utils.trim(text or "")
+  M.state.write_in_text[M.state.current_q_idx] = trimmed
+
+  local q = M.state.questions[M.state.current_q_idx]
+  if not q then return end
+
+  if confirmed then
+    if trimmed ~= "" then
+      if not q.is_multi_select then
         M.state.selected_answers[M.state.current_q_idx] = "write_in"
-        M.show_over_prompt(target_win, target_buf)
         M.confirm_current_question()
         return
+      else
+        M.build_items()
+        M.render_buffer()
+        M.sync_cursor()
+      end
+    else
+      if not q.is_multi_select and M.state.selected_answers[M.state.current_q_idx] == "write_in" then
+        M.state.selected_answers[M.state.current_q_idx] = nil
+      end
+      M.build_items()
+      M.render_buffer()
+      M.sync_cursor()
+    end
+  else
+    if trimmed ~= "" and not q.is_multi_select then
+      M.state.selected_answers[M.state.current_q_idx] = "write_in"
+    end
+    M.build_items()
+    M.render_buffer()
+    M.sync_cursor()
+  end
+end
+
+---Setup buffer-local insert mode keymaps during inline write-in editing
+---@param write_line number
+---@param prefix_end number
+function M.setup_inline_insert_keymaps(write_line, prefix_end)
+  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+  local b = M.state.buf
+
+  local function get_input_text()
+    if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return "" end
+    local line = vim.api.nvim_buf_get_lines(M.state.buf, write_line - 1, write_line, false)[1] or ""
+    if #line >= prefix_end then
+      return line:sub(prefix_end + 1)
+    end
+    return ""
+  end
+
+  local function handle_esc()
+    local text = get_input_text()
+    M.finish_inline_write_in(false, text)
+  end
+
+  vim.keymap.set("i", "<CR>", function()
+    local text = get_input_text()
+    M.finish_inline_write_in(true, text)
+  end, { buffer = b, silent = true, nowait = true })
+
+  vim.keymap.set("i", "<Esc>", handle_esc, { buffer = b, silent = true, nowait = true })
+  vim.keymap.set("i", "<C-c>", handle_esc, { buffer = b, silent = true, nowait = true })
+
+  vim.keymap.set("i", "<Up>", function()
+    handle_esc()
+    M.select_prev()
+  end, { buffer = b, silent = true, nowait = true })
+
+  vim.keymap.set("i", "<Down>", function()
+    handle_esc()
+    M.select_next()
+  end, { buffer = b, silent = true, nowait = true })
+
+  vim.keymap.set("i", "<BS>", function()
+    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    if cur[1] == write_line and cur[2] > prefix_end then
+      return "<BS>"
+    end
+    return ""
+  end, { buffer = b, expr = true, silent = true })
+
+  vim.keymap.set("i", "<C-h>", function()
+    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    if cur[1] == write_line and cur[2] > prefix_end then
+      return "<BS>"
+    end
+    return ""
+  end, { buffer = b, expr = true, silent = true })
+
+  vim.keymap.set("i", "<C-w>", function()
+    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    if cur[1] == write_line and cur[2] > prefix_end then
+      return "<C-w>"
+    end
+    return ""
+  end, { buffer = b, expr = true, silent = true })
+
+  vim.keymap.set("i", "<C-u>", function()
+    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    if cur[1] == write_line then
+      local line = vim.api.nvim_buf_get_lines(M.state.buf, write_line - 1, write_line, false)[1] or ""
+      local prefix = line:sub(1, prefix_end)
+      vim.api.nvim_buf_set_lines(M.state.buf, write_line - 1, write_line, false, { prefix })
+      pcall(vim.api.nvim_win_set_cursor, M.state.win, { write_line, prefix_end })
+    end
+    return ""
+  end, { buffer = b, silent = true })
+
+  vim.keymap.set("i", "<Left>", function()
+    local cur = vim.api.nvim_win_get_cursor(M.state.win)
+    if cur[1] == write_line and cur[2] > prefix_end then
+      return "<Left>"
+    end
+    return ""
+  end, { buffer = b, expr = true, silent = true })
+
+  vim.keymap.set("i", "<Home>", function()
+    pcall(vim.api.nvim_win_set_cursor, M.state.win, { write_line, prefix_end })
+    return ""
+  end, { buffer = b, silent = true })
+
+  local group = vim.api.nvim_create_augroup("AgyQuestionInlineWriteIn", { clear = true })
+  vim.api.nvim_create_autocmd("InsertLeave", {
+    group = group,
+    buffer = b,
+    once = true,
+    callback = function()
+      if M.state.is_editing_write_in then
+        handle_esc()
+      end
+    end,
+  })
+end
+
+---Start inline editing for the write-in response on the current question
+function M.start_inline_write_in()
+  if M.is_summary_page() then return end
+  local q = M.state.questions[M.state.current_q_idx]
+  if not q then return end
+
+  local write_in_idx = nil
+  for i, it in ipairs(M.state.items) do
+    if it.type == "write_in" then
+      write_in_idx = i
+      break
+    end
+  end
+  if not write_in_idx then return end
+
+  M.state.selected_idx = write_in_idx
+  M.state.is_editing_write_in = true
+
+  M.render_buffer()
+
+  if not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
+  if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
+
+  local opt_start = 4
+  local write_line = opt_start + (write_in_idx - (M.state.scroll_offset or 1))
+
+  vim.bo[M.state.buf].modifiable = true
+
+  if vim.api.nvim_get_current_win() ~= M.state.win then
+    pcall(vim.api.nvim_set_current_win, M.state.win)
+  end
+
+  local line = vim.api.nvim_buf_get_lines(M.state.buf, write_line - 1, write_line, false)[1] or ""
+  local prefix_end = #line
+  local s, e = line:find("Write%-in:%s*")
+  if e then
+    prefix_end = e
+  end
+
+  pcall(vim.api.nvim_win_set_cursor, M.state.win, { write_line, #line })
+
+  M.setup_inline_insert_keymaps(write_line, prefix_end)
+
+  pcall(vim.cmd, "startinsert!")
+end
+
+---Programmatically set write-in response text or start inline editing
+---@param text? string If provided, sets write-in text directly; otherwise starts inline editing
+function M.prompt_write_in(text)
+  if text ~= nil then
+    M.set_write_in(text)
+  else
+    M.start_inline_write_in()
+  end
+end
+
+---Programmatically set write-in response text for the current question
+---@param text string
+function M.set_write_in(text)
+  if M.is_summary_page() then return end
+  local trimmed = utils.trim(text or "")
+  M.state.write_in_text[M.state.current_q_idx] = trimmed
+  local q = M.state.questions[M.state.current_q_idx]
+  if q and not q.is_multi_select then
+    if trimmed ~= "" then
+      M.state.selected_answers[M.state.current_q_idx] = "write_in"
+      M.confirm_current_question()
+      return
+    else
+      if M.state.selected_answers[M.state.current_q_idx] == "write_in" then
+        M.state.selected_answers[M.state.current_q_idx] = nil
       end
     end
-    M.show_over_prompt(target_win, target_buf)
-  end)
+  end
+  M.build_items()
+  M.render_buffer()
+  M.sync_cursor()
 end
 
 ---Format answers across all questions
@@ -1222,8 +1436,8 @@ function M.setup_keymaps(target_buf)
       end
     end, opts)
 
-    -- Write-in response: w, i
-    for _, k in ipairs({ "w", "i" }) do
+    -- Write-in response: w, i, a
+    for _, k in ipairs({ "w", "i", "a" }) do
       vim.keymap.set("n", k, function()
         if is_at_prompt() and M.is_visible() then
           M.prompt_write_in()
@@ -1265,11 +1479,12 @@ function M.setup_keymaps(target_buf)
       callback = function()
         if not M.is_visible() or not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
         if vim.api.nvim_get_current_win() ~= M.state.win then return end
+        if M.state.is_editing_write_in then return end
         local cur = vim.api.nvim_win_get_cursor(M.state.win)
         local cur_line = cur[1]
         local opt_start = 4
         if M.is_summary_page() then
-          opt_start = 4 + (#M.state.questions * 2) + 1
+          opt_start = 5 + (#M.state.questions * 2)
         end
         local max_visible = 6
         local start_idx = M.state.scroll_offset or 1
