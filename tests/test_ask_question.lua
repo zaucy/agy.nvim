@@ -385,39 +385,224 @@ assert(session_stopped == true, "Turn must be cancelled immediately when ask_que
 assert(pstate.active_question ~= nil, "active_question state must be set")
 assert(pstate.stream_info.status == "question", "Stream status must be set to 'question'")
 
+-- Active question floating UI is visible
+local q_ui = pstate.active_question.ui
+assert(q_ui ~= nil, "question UI must be initialized")
+assert(q_ui.is_visible() == true, "question floating window must be visible")
+
+local float_buf = q_ui.state.buf
+local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
+local found_float_q_title = false
+for _, l in ipairs(float_lines) do
+  if l:find("Choose deployment strategy:") then
+    found_float_q_title = true
+  end
+end
+assert(found_float_q_title == true, "Question title must be displayed in floating UI")
+
+-- Buffer prompt area must NOT be polluted with question input text while floating UI is active
 local buf_lines = vim.api.nvim_buf_get_lines(buf_cancel, 0, -1, false)
 local found_cancelled_banner = false
-local found_q_title = false
 for _, l in ipairs(buf_lines) do
   if l:find("Turn cancelled") then
     found_cancelled_banner = true
   end
-  if l:find("Choose deployment strategy:") then
-    found_q_title = true
-  end
 end
-
 assert(found_cancelled_banner == false, "Turn cancelled banner must NOT be rendered for ask_question")
-assert(found_q_title == true, "Question title must be rendered in buffer")
 
--- Toggle option 2 (Canary)
-local opt2_line = pstate.active_question.questions[1].options_start_line + 1
-render.toggle_question_option(buf_cancel, opt2_line, pstate.active_question)
+-- Navigate options in floating UI
+assert(q_ui.state.selected_idx == 1, "Default selection is item 1")
+q_ui.select_next()
+assert(q_ui.state.selected_idx == 2, "Selection moved to item 2 (Canary)")
 
--- Submit answer via :write
-vim.cmd("write")
+-- Accept option 2
+q_ui.accept()
 
 assert(session_next_prompt ~= nil, "Answer must be sent to session as next turn")
 assert(session_next_prompt:find("A: Canary"), "Payload must contain selected option Canary, got: " .. tostring(session_next_prompt))
 assert(pstate.active_question == nil, "active_question must be cleared after submission")
+assert(q_ui.is_visible() == false, "Floating window must be closed after submission")
+
+-- Verify historical question is recorded in conversation history buffer
+local post_lines = vim.api.nvim_buf_get_lines(buf_cancel, 0, -1, false)
+local found_history_q = false
+local found_canary_checked = false
+for _, l in ipairs(post_lines) do
+  if l:find("Choose deployment strategy:") then
+    found_history_q = true
+  end
+  if l:find("%[x%] Canary") then
+    found_canary_checked = true
+  end
+end
+assert(found_history_q == true, "Historical question must be recorded in buffer after submission")
+assert(found_canary_checked == true, "Chosen option Canary must be recorded with [x] in buffer")
 
 protocol.cleanup_buffer(buf_cancel)
-print("✓ ask_question cleanly cancels turn, displays question UI without banner, and submits response as next turn")
+print("✓ ask_question cleanly cancels turn, displays floating selectable UI, and submits response as next turn")
 
 -- =========================================================================
--- TEST 11: Cancel Active Question with <C-c>
+-- TEST 11: Multi-select Question in Floating UI
 -- =========================================================================
-print("\n[Test 11] Testing manual cancellation of active question with stop_turn...")
+print("\n[Test 11] Testing multi-select in question floating UI...")
+
+vim.cmd("edit! agy://new")
+local buf_multi = vim.api.nvim_get_current_buf()
+local state_multi = protocol.buffers[buf_multi]
+local multi_submitted_prompt = nil
+
+state_multi.session.turn_active = true
+state_multi.session.stop = function() state_multi.session.turn_active = false end
+state_multi.session.send_prompt = function(_, prompt)
+  multi_submitted_prompt = prompt
+  return true
+end
+
+state_multi.session.on_step_update(state_multi.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Select target platforms:",
+          options = { "Linux", "macOS", "Windows" },
+          is_multi_select = true,
+        }
+      }
+    }
+  }
+})
+
+local multi_ui = state_multi.active_question.ui
+assert(multi_ui.is_visible() == true)
+
+-- Toggle item 1 (Linux)
+assert(multi_ui.state.selected_idx == 1)
+multi_ui.toggle()
+
+-- Toggle item 2 (macOS)
+multi_ui.select_next()
+assert(multi_ui.state.selected_idx == 2)
+multi_ui.toggle()
+
+-- Confirm multi-select answers
+multi_ui.confirm_current_question()
+
+assert(multi_submitted_prompt ~= nil, "Multi-select answers must be submitted")
+assert(multi_submitted_prompt:find("Linux"), "Payload must contain Linux")
+assert(multi_submitted_prompt:find("macOS"), "Payload must contain macOS")
+assert(not multi_submitted_prompt:find("Windows"), "Payload must not contain Windows")
+assert(state_multi.active_question == nil)
+assert(multi_ui.is_visible() == false)
+
+protocol.cleanup_buffer(buf_multi)
+print("✓ Multi-select question UI successfully toggles and submits multiple choices")
+
+-- =========================================================================
+-- TEST 12: Direct Number Jump in Floating UI
+-- =========================================================================
+print("\n[Test 12] Testing direct number jump in question floating UI...")
+
+vim.cmd("edit! agy://new")
+local buf_jump = vim.api.nvim_get_current_buf()
+local state_jump = protocol.buffers[buf_jump]
+local jump_prompt = nil
+
+state_jump.session.turn_active = true
+state_jump.session.stop = function() state_jump.session.turn_active = false end
+state_jump.session.send_prompt = function(_, prompt)
+  jump_prompt = prompt
+  return true
+end
+
+state_jump.session.on_step_update(state_jump.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Pick an environment:",
+          options = { "Development", "Staging", "Production" },
+          is_multi_select = false,
+        }
+      }
+    }
+  }
+})
+
+local jump_ui = state_jump.active_question.ui
+assert(jump_ui.is_visible() == true)
+
+-- Press '3' to immediately select Production
+jump_ui.jump_to(3)
+
+assert(jump_prompt ~= nil, "Direct number jump must immediately select and submit in single-select mode")
+assert(jump_prompt:find("Production"), "Payload must contain Production: " .. tostring(jump_prompt))
+assert(state_jump.active_question == nil)
+
+protocol.cleanup_buffer(buf_jump)
+print("✓ Direct number jump (1-9) selects and submits single-select option immediately")
+
+-- =========================================================================
+-- TEST 13: Write-in Response in Floating UI
+-- =========================================================================
+print("\n[Test 13] Testing write-in response in question floating UI...")
+
+vim.cmd("edit! agy://new")
+local buf_write = vim.api.nvim_get_current_buf()
+local state_write = protocol.buffers[buf_write]
+local write_in_prompt = nil
+
+state_write.session.turn_active = true
+state_write.session.stop = function() state_write.session.turn_active = false end
+state_write.session.send_prompt = function(_, prompt)
+  write_in_prompt = prompt
+  return true
+end
+
+state_write.session.on_step_update(state_write.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Any special instructions?",
+          options = { "Default build", "Debug build" },
+          is_multi_select = false,
+        }
+      }
+    }
+  }
+})
+
+local write_ui = state_write.active_question.ui
+assert(write_ui.is_visible() == true)
+
+-- Set write-in text and confirm
+write_ui.state.write_in_text[1] = "Build with ASAN enabled"
+write_ui.state.selected_answers[1] = 2 -- Debug build
+write_ui.confirm_current_question()
+
+assert(write_in_prompt ~= nil)
+assert(write_in_prompt:find("Debug build"), "Prompt must contain chosen option Debug build")
+assert(write_in_prompt:find("Build with ASAN enabled"), "Prompt must contain write-in notes")
+
+protocol.cleanup_buffer(buf_write)
+print("✓ Write-in custom response in floating UI properly formatted and submitted")
+
+-- =========================================================================
+-- TEST 14: Cancel Active Question with stop_turn
+-- =========================================================================
+print("\n[Test 14] Testing manual cancellation of active question with stop_turn...")
 
 vim.cmd("edit! agy://new")
 local buf_stop = vim.api.nvim_get_current_buf()
@@ -431,8 +616,9 @@ stop_state.session = {
 }
 
 local dummy_q = { { question = "Proceed?", options = { "Yes", "No" }, is_multi_select = false } }
-stop_state.active_question = render.render_question_block(buf_stop, dummy_q, stop_state.config)
+protocol.intercept_ask_question(buf_stop, stop_state, dummy_q)
 assert(stop_state.active_question ~= nil)
+assert(stop_state.active_question.ui.is_visible() == true)
 
 protocol.stop_turn(buf_stop)
 

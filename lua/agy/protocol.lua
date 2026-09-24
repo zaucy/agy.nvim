@@ -4,6 +4,7 @@ local render = require("agy.render")
 local transcript_mod = require("agy.transcript")
 local config_mod = require("agy.config")
 local completion = require("agy.completion")
+local question_mod = require("agy.question")
 
 local M = {}
 
@@ -470,8 +471,14 @@ function M._setup_buffer(buf, conversation_id)
     local cur_line = vim.api.nvim_win_get_cursor(0)[1]
 
     if state and state.active_question then
-      local q_handled = render.toggle_question_option(buf, cur_line, state.active_question)
-      if q_handled then return end
+      if state.active_question.ui and state.active_question.ui.is_visible() then
+        pcall(vim.api.nvim_set_current_win, state.active_question.ui.state.win)
+        return
+      end
+      if state.active_question.first_option_line then
+        local q_handled = render.toggle_question_option(buf, cur_line, state.active_question)
+        if q_handled then return end
+      end
     end
 
     if state and state.prompt_queue and #state.prompt_queue > 0 then
@@ -873,19 +880,135 @@ function M.intercept_ask_question(buf, state, q_list)
   state.stream_info.status = "question"
   M.update_footer(buf)
 
-  M.with_modifiable(buf, function()
-    local q_state = render.render_question_block(buf, q_list, state.config)
-    state.active_question = q_state
-    state.prompt_start_line = q_state.first_option_line
+  local target_win = vim.fn.bufwinid(buf)
+  if target_win == -1 or not vim.api.nvim_win_is_valid(target_win) then
+    target_win = vim.api.nvim_get_current_win()
+  end
 
-    local win = vim.fn.bufwinid(buf)
-    if win ~= -1 and vim.api.nvim_win_is_valid(win) then
-      pcall(vim.api.nvim_win_set_cursor, win, { q_state.first_option_line, 2 })
-    end
+  question_mod.show(target_win, buf, q_list, {
+    config = state.config,
+    on_submit = function(answer_payload, answered_questions)
+      state.active_question = nil
+      M.on_question_submitted(buf, state, answer_payload, answered_questions)
+    end,
+    on_cancel = function()
+      state.active_question = nil
+      M.on_question_cancelled(buf, state)
+    end,
+  })
+
+  state.active_question = {
+    ui = question_mod,
+    questions = q_list,
+  }
+end
+
+---Handler called when user confirms answer in question UI
+---@param buf number
+---@param state table
+---@param answer_payload string
+---@param answered_questions table[]
+function M.on_question_submitted(buf, state, answer_payload, answered_questions)
+  M.with_modifiable(buf, function()
+    render.render_historical_question(buf, { questions = answered_questions }, answer_payload, state.config)
   end)
 
-  vim.bo[buf].modifiable = true
+  M.submit_question_answer(buf, state, answer_payload)
+end
+
+---Submit question answer as the subsequent prompt turn
+---@param buf number
+---@param state table
+---@param answer_payload string
+function M.submit_question_answer(buf, state, answer_payload)
+  state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
+  state.active_agent_started_output = false
+  state.last_thought_start_time = vim.uv.hrtime()
+  state.had_background_task = false
+  state.reengage_follow_bottom = nil
+
+  M.with_modifiable(buf, function()
+    local line_count = vim.api.nvim_buf_line_count(buf)
+    local extmark_id, agent_line = render.prepare_turn_submission(buf, line_count, state.prompt_extmark_id)
+    state.agent_extmark_id = extmark_id
+    state.agent_line = agent_line
+    state.prompt_extmark_id = nil
+  end)
+
+  local win = vim.fn.bufwinid(buf)
+  if win ~= -1 and vim.api.nvim_win_is_valid(win) then
+    local line_count = vim.api.nvim_buf_line_count(buf)
+    pcall(vim.api.nvim_win_set_cursor, win, { line_count, 0 })
+  end
+
+  state.stream_info.status = "thinking"
+  M.update_footer(buf)
+  render.start_thinking_animation(buf, nil, nil, state.config)
+
+  local workspaces = (state.session and state.session.workspaces and #state.session.workspaces > 0)
+      and state.session.workspaces
+      or { (state.session and state.session.cwd) or vim.fn.getcwd() }
+  local payload = M.resolve_prompt_mentions(answer_payload, workspaces)
+
+  local sent = state.session:send_prompt(payload)
+  if not sent then
+    state.stream_info.status = "ready"
+    M.with_modifiable(buf, function()
+      if state.agent_extmark_id and state.agent_line then
+        pcall(function()
+          render.set_divider(buf, state.agent_line, "agent", " [Failed]", "AgyBadgeError", false, state.agent_extmark_id, state.config)
+        end)
+      end
+      local next_line, prompt_extmark_id = render.render_error(buf, "Failed to send response: agy session process is not active", state.config)
+      state.prompt_start_line = next_line
+      state.prompt_extmark_id = prompt_extmark_id
+      state.agent_extmark_id = nil
+      state.agent_line = nil
+    end)
+    M.update_modifiable(buf)
+    return
+  end
+  M.update_modifiable(buf)
+
   vim.bo[buf].modified = false
+
+  local clean_disp = utils.clean_user_content(answer_payload)
+  if clean_disp == "" then
+    clean_disp = answer_payload:match("^[^\r\n]+") or answer_payload
+  end
+  local target_ws = (workspaces and workspaces[1]) or vim.fn.getcwd()
+
+  if state.conversation_id and state.conversation_id ~= "" and state.conversation_id ~= "new" then
+    transcript_mod.append_history({
+      conversation_id = state.conversation_id,
+      display = clean_disp,
+      workspace = target_ws,
+    }, state.config and state.config.app_data_dir)
+  else
+    state.pending_history_display = clean_disp
+  end
+
+  vim.schedule(function()
+    if vim.api.nvim_buf_is_valid(buf) and M.buffers[buf] == state then
+      M.restore_prompt_area(buf)
+    end
+  end)
+end
+
+---Handler called when user cancels question UI
+---@param buf number
+---@param state table
+function M.on_question_cancelled(buf, state)
+  state.active_question = nil
+  state.stream_info.status = "ready"
+  M.with_modifiable(buf, function()
+    local next_line, prompt_extmark_id = render.render_cancelled(buf, state.config)
+    state.prompt_start_line = next_line
+    state.prompt_extmark_id = prompt_extmark_id
+  end)
+  M.update_footer(buf)
+  M.update_modifiable(buf)
+  vim.notify("[agy.nvim] Question cancelled.", vim.log.levels.INFO)
 end
 
 ---Check if recent transcript contains an ask_question tool call to intercept
@@ -1090,41 +1213,22 @@ function M.handle_write(buf)
   end
 
   if state.active_question then
-    local payload, has_answer = render.extract_question_answer(buf, state.active_question)
-    if not has_answer then
-      vim.notify("[agy.nvim] Please select an option with <CR> or enter a write-in response before saving.", vim.log.levels.WARN)
-      vim.bo[buf].modified = false
+    if state.active_question.ui and state.active_question.ui.is_visible() then
+      state.active_question.ui.accept()
       return
     end
-
-    state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
-    state.active_agent_started_output = false
-    state.agent_extmark_id = nil
-    state.agent_start_line = nil
-    state.last_thought_start_time = vim.uv.hrtime()
-    render.finalize_question_block(buf, state.active_question, state.config)
-    state.active_question = nil
-
-    state.stream_info.status = "thinking"
-    local workspaces = (state.session and state.session.workspaces and #state.session.workspaces > 0)
-        and state.session.workspaces
-        or { (state.session and state.session.cwd) or vim.fn.getcwd() }
-    local resolved_payload = M.resolve_prompt_mentions(payload, workspaces)
-
-    local sent = state.session:send_prompt(resolved_payload)
-    if not sent then
-      state.stream_info.status = "ready"
-      M.with_modifiable(buf, function()
-        local next_line, prompt_extmark_id = render.render_error(buf, "Failed to send response: agy session process is not active", state.config)
-        state.prompt_start_line = next_line
-        state.prompt_extmark_id = prompt_extmark_id
-      end)
-      M.update_footer(buf)
+    if state.active_question.questions and state.active_question.first_option_line then
+      local payload, has_answer = render.extract_question_answer(buf, state.active_question)
+      if not has_answer then
+        vim.notify("[agy.nvim] Please select an option with <CR> or enter a write-in response before saving.", vim.log.levels.WARN)
+        vim.bo[buf].modified = false
+        return
+      end
+      render.finalize_question_block(buf, state.active_question, state.config)
+      state.active_question = nil
+      M.submit_question_answer(buf, state, payload)
       return
     end
-    M.update_modifiable(buf)
-    vim.bo[buf].modified = false
-    return
   end
 
   if state.session and state.session.turn_active then
@@ -1758,7 +1862,11 @@ function M.stop_turn(buf)
   if not state or not state.session then return end
 
   if state.active_question then
-    render.finalize_question_block(buf, state.active_question, state.config)
+    if state.active_question.ui and state.active_question.ui.is_visible() then
+      state.active_question.ui.close()
+    elseif state.active_question.first_option_line then
+      render.finalize_question_block(buf, state.active_question, state.config)
+    end
     state.active_question = nil
     state.stream_info.status = "ready"
     M.with_modifiable(buf, function()
@@ -1865,6 +1973,10 @@ function M.cleanup_buffer(buf)
       pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.artifacts").NS_FOOTER, 0, -1)
       M.buffers[buf] = nil
       return
+    end
+    if state.active_question and state.active_question.ui then
+      state.active_question.ui.close()
+      state.active_question = nil
     end
     if state.active_tool_call then
       render.close_tool_window(state, state.active_tool_call)
