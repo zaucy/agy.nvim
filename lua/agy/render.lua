@@ -93,6 +93,17 @@ local function shift_color_hue(hex, deg)
 	return string.format("#%02x%02x%02x", nr, ng, nb)
 end
 
+local function clean_question_text(text)
+	if not text then
+		return ""
+	end
+	local cleaned = utils.trim(text)
+	cleaned = cleaned:gsub("^[Qq]uestion%s*%(?%d+[%s/of%-]*%d*%)?%s*[:.-]?%s*", "")
+	cleaned = cleaned:gsub("^%d+[%s/of%-]+%d+%s*[:.-]?%s*", "")
+	cleaned = utils.trim(cleaned)
+	return cleaned
+end
+
 local function get_config(cfg)
 	return cfg or require("agy.config").get()
 end
@@ -220,6 +231,19 @@ function M.setup_highlights()
 		AgyQuestionHeader = { link = "Title", default = true, bold = true },
 		AgyQuestionOption = { link = "Normal", default = true },
 		AgyQuestionChecked = { link = "DiagnosticOk", default = true, bold = true },
+		AgyQuestionSubmit = { link = "DiagnosticOk", default = true, bold = true },
+		AgyQuestionSubmitSel = {
+			bg = (vim.o.background == "light") and "#2da44e" or "#238636",
+			fg = "#ffffff",
+			ctermbg = 10,
+			ctermfg = 0,
+			bold = true,
+			default = true,
+		},
+		AgyQuestionStepDone = { link = "DiagnosticOk", default = true, bold = true },
+		AgyQuestionStepTodo = { link = "Comment", default = true },
+		AgyQuestionStepCurrent = { link = "Special", default = true, bold = true },
+		AgyQuestionStepLine = { link = "Comment", default = true },
 		AgyThought = { link = "Comment", default = true, italic = true },
 		AgyCompletionSel = { link = "PmenuSel", default = true },
 		AgyCompletionPointer = { link = "Special", default = true, bold = true },
@@ -789,18 +813,50 @@ function M.get_agent_boundary(buf, from_agent_row)
 		return nil, nil
 	end
 
+	if M._in_transcript_replay then
+		return nil, from_agent_row or M._transcript_agent_line
+	end
+
 	local agent_row = from_agent_row
-	if not agent_row then
-		local protocol = package.loaded["agy.protocol"]
-		local state = protocol and protocol.buffers and protocol.buffers[buf]
-		if state and state.agent_extmark_id then
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+	if not agent_row and state then
+		if state.agent_extmark_id then
 			local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.agent_extmark_id, {})
 			if pos and #pos >= 1 then
 				agent_row = pos[1]
 			end
 		end
-		if not agent_row and state and state.agent_line then
+		if not agent_row and state.agent_line then
 			agent_row = state.agent_line
+		end
+	end
+
+	-- Fast path: if state exists, query prompt extmark and queue directly without scanning all extmarks
+	if state and state.prompt_extmark_id then
+		local boundary_row = nil
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.prompt_extmark_id, {})
+		if pos and #pos >= 1 then
+			local p_row = pos[1]
+			if not agent_row or p_row > agent_row then
+				boundary_row = p_row
+			end
+		end
+
+		if state.queued_prompts and #state.queued_prompts > 0 then
+			local q_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_QUEUE, 0, -1, {})
+			for _, qm in ipairs(q_marks) do
+				local row = qm[2]
+				if not agent_row or row > agent_row then
+					if not boundary_row or row < boundary_row then
+						boundary_row = row
+					end
+				end
+			end
+		end
+
+		if agent_row then
+			return boundary_row, agent_row
 		end
 	end
 
@@ -996,6 +1052,12 @@ end
 function M.start_thinking_animation(buf, line, extmark_id, config)
 	M.stop_thinking_animation(buf)
 
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+	if state and (state.active_question or (state.stream_info and state.stream_info.status == "question")) then
+		return
+	end
+
 	local cfg = get_config(config)
 	if not cfg.ui or cfg.ui.animate_thinking == false then
 		return
@@ -1007,8 +1069,6 @@ function M.start_thinking_animation(buf, line, extmark_id, config)
 	M.current_thinking_badge[buf] = initial_badge
 
 	pcall(function()
-		local protocol = package.loaded["agy.protocol"]
-		local state = protocol and protocol.buffers and protocol.buffers[buf]
 		local target_id = (state and state.prompt_extmark_id) or (not state and extmark_id) or nil
 		if target_id then
 			local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, target_id, { details = true })
@@ -1038,6 +1098,12 @@ function M.start_thinking_animation(buf, line, extmark_id, config)
 				return
 			end
 			if M.thinking_timers[buf] ~= timer then
+				return
+			end
+			local cur_prot = package.loaded["agy.protocol"]
+			local cur_state = cur_prot and cur_prot.buffers and cur_prot.buffers[buf]
+			if cur_state and (cur_state.active_question or (cur_state.stream_info and cur_state.stream_info.status == "question")) then
+				M.stop_thinking_animation(buf)
 				return
 			end
 
@@ -1480,6 +1546,134 @@ function M.render_new_session(buf, config)
 	return M.init_session_buffer(buf, "agy://new", config)
 end
 
+---Parse selected options and write-in notes from answer payload
+---@param answer_text string
+---@param q_list table[]
+---@return table<number, { selected: string[], write_in?: string }>
+function M.parse_answers_from_payload(answer_text, q_list)
+	local results = {}
+	if not answer_text or answer_text == "" or not q_list or #q_list == 0 then
+		return results
+	end
+
+	-- Clean tool output wrapper headers if present
+	if answer_text:find("Output:%s*") then
+		local after = answer_text:match("Output:%s*(.*)$")
+		if after then
+			answer_text = after
+		end
+	end
+	answer_text = answer_text:gsub("Created At:%s*[^\r\n]+[\r\n]*", "")
+	answer_text = answer_text:gsub("Completed At:%s*[^\r\n]+[\r\n]*", "")
+	answer_text = answer_text:gsub("The command exited[^\r\n]+[\r\n]*", "")
+	answer_text = utils.trim(answer_text)
+
+	local is_multi_q = (#q_list > 1)
+
+	if not is_multi_q then
+		local text = answer_text
+		local notes = text:match("Notes:%s*(.*)$")
+		if notes then
+			text = text:gsub("%s*Notes:%s*.*$", "")
+		end
+		text = text:gsub("^A%d*:%s*", "")
+		text = utils.trim(text)
+
+		local is_skipped = text:match("^[Uu]ser%s+[Ss]kipped") ~= nil
+
+		local q = q_list[1]
+		local selected = {}
+		if not is_skipped then
+			if q.is_multi_select then
+				for _, opt in ipairs(q.options) do
+					if text:find("%-%s*" .. vim.pesc(opt)) or text:find(opt, 1, true) then
+						table.insert(selected, opt)
+					end
+				end
+			else
+				for _, opt in ipairs(q.options) do
+					if text == opt or text:find(opt, 1, true) then
+						table.insert(selected, opt)
+						break
+					end
+				end
+			end
+		end
+
+		local write_in = nil
+		if not is_skipped then
+			if #selected == 0 and text ~= "" then
+				write_in = text
+			elseif notes and notes ~= "" then
+				write_in = utils.trim(notes)
+			end
+		end
+
+		results[1] = {
+			selected = selected,
+			write_in = write_in,
+		}
+		return results
+	end
+
+	for q_idx, q in ipairs(q_list) do
+		local section = nil
+		local s_pos = answer_text:find(string.format("A%d:", q_idx), 1, true)
+		if s_pos then
+			local content_start = s_pos + #string.format("A%d:", q_idx)
+			local next_pos = answer_text:find(string.format("\n\nA%d:", q_idx + 1), content_start, true)
+			if next_pos then
+				section = answer_text:sub(content_start, next_pos - 1)
+			else
+				section = answer_text:sub(content_start)
+			end
+		end
+
+		if section then
+			local notes = section:match("Notes:%s*(.*)$")
+			if notes then
+				section = section:gsub("%s*Notes:%s*.*$", "")
+			end
+			local text = utils.trim(section)
+			local is_skipped = text:match("^[Uu]ser%s+[Ss]kipped") ~= nil
+
+			local selected = {}
+			if not is_skipped then
+				if q.is_multi_select then
+					for _, opt in ipairs(q.options) do
+						if text:find("%-%s*" .. vim.pesc(opt)) or text:find(opt, 1, true) then
+							table.insert(selected, opt)
+						end
+					end
+				else
+					for _, opt in ipairs(q.options) do
+						if text == opt or text:find(opt, 1, true) then
+							table.insert(selected, opt)
+							break
+						end
+					end
+				end
+			end
+
+			local write_in = nil
+			if not is_skipped then
+				if #selected == 0 and text ~= "" then
+					write_in = text
+				elseif notes and notes ~= "" then
+					write_in = utils.trim(notes)
+				end
+			end
+
+			results[q_idx] = {
+				selected = selected,
+				write_in = write_in,
+			}
+		end
+	end
+
+	return results
+end
+
 ---Render a historical question block (from ask_question) into the buffer
 ---@param buf number
 ---@param params? table
@@ -1512,18 +1706,62 @@ function M.render_historical_question(buf, params, output, config, cwd)
 	local answer_text = output or ""
 	local q_icon = get_icon("question", config)
 	local header_indices = {}
+	local parsed_answers = M.parse_answers_from_payload(answer_text, q_list)
 
 	for q_idx, q in ipairs(q_list) do
-		local header_text = (#q_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q.question)
-			or string.format("%s Question: %s", q_icon, q.question)
+		local q_text = clean_question_text(q.question)
+		local header_text
+		if q_text ~= "" then
+			header_text = (#q_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q_text)
+				or string.format("%s Question: %s", q_icon, q_text)
+		else
+			header_text = (#q_list > 1) and string.format("%s Question %d", q_icon, q_idx)
+				or string.format("%s Question", q_icon)
+		end
 
-		table.insert(to_append, header_text)
+		local h_lines = utils.split_lines(header_text)
+		table.insert(to_append, h_lines[1])
 		table.insert(header_indices, #to_append)
+		for h_i = 2, #h_lines do
+			table.insert(to_append, "  " .. h_lines[h_i])
+		end
 		table.insert(to_append, "")
 
+		local sel_list = q.selected
+		local write_in = q.write_in
+		if sel_list == nil and write_in == nil and parsed_answers[q_idx] then
+			sel_list = parsed_answers[q_idx].selected
+			write_in = parsed_answers[q_idx].write_in
+		end
+		sel_list = sel_list or {}
+
+		local sel_map = {}
+		for _, s in ipairs(sel_list) do
+			sel_map[s] = true
+		end
+
 		for _, opt in ipairs(q.options) do
-			local is_checked = (answer_text ~= "" and answer_text:find(opt, 1, true) ~= nil)
-			table.insert(to_append, string.format("- [%s] %s", is_checked and "x" or " ", opt))
+			local is_checked = sel_map[opt] == true
+			local opt_lines = utils.split_lines(tostring(opt))
+			table.insert(to_append, string.format("- [%s] %s", is_checked and "x" or " ", opt_lines[1]))
+			for o_i = 2, #opt_lines do
+				table.insert(to_append, "      " .. opt_lines[o_i])
+			end
+		end
+
+		if write_in and write_in ~= "" then
+			local w_lines = utils.split_lines(tostring(write_in))
+			if #sel_list == 0 then
+				table.insert(to_append, string.format("- [x] Write-in: %s", w_lines[1]))
+				for w_i = 2, #w_lines do
+					table.insert(to_append, "      " .. w_lines[w_i])
+				end
+			else
+				table.insert(to_append, string.format("  Notes: %s", w_lines[1]))
+				for w_i = 2, #w_lines do
+					table.insert(to_append, "         " .. w_lines[w_i])
+				end
+			end
 		end
 
 		if q_idx < #q_list then
@@ -1531,19 +1769,21 @@ function M.render_historical_question(buf, params, output, config, cwd)
 		end
 	end
 
-	local notes = answer_text:match("Notes:%s*(.*)$")
-	if notes and notes ~= "" then
-		table.insert(to_append, "")
-		table.insert(to_append, string.format("Notes: %s", notes))
+	local safe_to_append = {}
+	for _, l in ipairs(to_append) do
+		local sub = utils.split_lines(tostring(l))
+		for _, sl in ipairs(sub) do
+			table.insert(safe_to_append, sl)
+		end
 	end
 
 	local start_line
 	if last_line == "" then
 		start_line = line_count - 1
-		vim.api.nvim_buf_set_lines(buf, start_line, line_count, false, to_append)
+		vim.api.nvim_buf_set_lines(buf, start_line, line_count, false, safe_to_append)
 	else
 		start_line = line_count
-		vim.api.nvim_buf_set_lines(buf, start_line, start_line, false, to_append)
+		vim.api.nvim_buf_set_lines(buf, start_line, start_line, false, safe_to_append)
 	end
 
 	for _, h_idx in ipairs(header_indices) do
@@ -1579,6 +1819,9 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		return prompt_start_line, prompt_extmark_id, {}
 	end
 
+	M._in_transcript_replay = true
+	M._transcript_agent_line = nil
+
 	local tasks_mod = require("agy.tasks")
 	local task_outcomes = tasks_mod.collect_task_outcomes(steps)
 
@@ -1592,6 +1835,25 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 	local current_agent_turn_end_time = nil
 	local last_user_input_time = nil
 	local tool_calls = {}
+	local consumed_steps = {}
+
+	local function find_ask_question_answer(start_idx)
+		for j = start_idx, #steps do
+			local st = steps[j]
+			if st.type == "USER_INPUT" or st.type == "GENERIC" then
+				local content = st.content or st.display_content
+				if content and (content:find("^A%d*:%s*") or content:find("Notes:", 1, true)) then
+					return content, j
+				end
+				if st.type == "USER_INPUT" then
+					return content, j
+				end
+			elseif st.type == "PLANNER_RESPONSE" then
+				break
+			end
+		end
+		return nil, nil
+	end
 
 	local function finish_agent_turn()
 		if not in_agent_turn then
@@ -1621,6 +1883,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		in_agent_turn = false
 		agent_extmark_id = nil
 		agent_line = nil
+		M._transcript_agent_line = nil
 		current_agent_turn_duration = 0
 		current_agent_turn_has_explicit_duration = false
 		current_agent_turn_start_time = nil
@@ -1651,6 +1914,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 				prompt_extmark_id = nil
 			end
 			in_agent_turn = true
+			M._transcript_agent_line = agent_line
 			current_agent_turn_duration = 0
 			current_agent_turn_has_explicit_duration = false
 			current_agent_turn_start_time = last_user_input_time
@@ -1715,17 +1979,21 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 
 	for i, step in ipairs(steps) do
 		if step.type == "USER_INPUT" then
-			if in_agent_turn then
-				finish_agent_turn()
-			elseif has_user_input_for_current_turn then
-				archive_user_input()
-			end
+			if consumed_steps[i] then
+				-- Consumed as an answer to ask_question, skip creating a separate prompt turn
+			else
+				if in_agent_turn then
+					finish_agent_turn()
+				elseif has_user_input_for_current_turn then
+					archive_user_input()
+				end
 
-			last_user_input_time = utils.parse_iso_timestamp(step.created_at)
-			local content = step.display_content or utils.clean_user_content(step.content or "")
-			local content_lines = utils.split_lines(content)
-			vim.api.nvim_buf_set_lines(buf, prompt_start_line - 1, -1, false, content_lines)
-			has_user_input_for_current_turn = true
+				last_user_input_time = utils.parse_iso_timestamp(step.created_at)
+				local content = step.display_content or utils.clean_user_content(step.content or "")
+				local content_lines = utils.split_lines(content)
+				vim.api.nvim_buf_set_lines(buf, prompt_start_line - 1, -1, false, content_lines)
+				has_user_input_for_current_turn = true
+			end
 
 		elseif step.type == "PLANNER_RESPONSE" then
 			ensure_agent_turn(step.duration_seconds, step.created_at)
@@ -1742,22 +2010,35 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 			end
 
 			if step.tool_calls and #step.tool_calls > 0 then
+				local has_ask_question = false
 				for tc_idx, tc in ipairs(step.tool_calls) do
 					local output = tc.output
 					if not output then
-						local candidate_step = (#step.tool_calls == 1) and steps[i + 1] or steps[i + tc_idx]
-						if candidate_step then
-							local ntype = candidate_step.type
-							if ntype == "TOOL_OUTPUT" or ntype == "tool_result" or ntype == "GENERIC" then
-								local candidate = candidate_step.content or candidate_step.output
-								if not (candidate and type(candidate) == "string" and candidate:find("finished with result:", 1, true)) then
-									output = candidate
+						if tc.name == "ask_question" then
+							local ans, ans_idx = find_ask_question_answer(i + 1)
+							if ans then
+								output = ans
+								consumed_steps[ans_idx] = true
+								has_ask_question = true
+							end
+						else
+							local candidate_step = (#step.tool_calls == 1) and steps[i + 1] or steps[i + tc_idx]
+							if candidate_step then
+								local ntype = candidate_step.type
+								if ntype == "TOOL_OUTPUT" or ntype == "tool_result" or ntype == "GENERIC" then
+									local candidate = candidate_step.content or candidate_step.output
+									if not (candidate and type(candidate) == "string" and candidate:find("finished with result:", 1, true)) then
+										output = candidate
+									end
 								end
 							end
 						end
 					end
 					local dur = tc.duration_seconds or step.duration_seconds
 					replay_tool_call(tc.name, tc.args, output, dur)
+				end
+				if has_ask_question and in_agent_turn then
+					finish_agent_turn()
 				end
 			end
 
@@ -1768,14 +2049,27 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 			assert(name, "agy render: tool step missing tool name")
 			local args = step.args or (step.tool_info and step.tool_info.parameters) or {}
 			local output = step.output or (step.tool_info and step.tool_info.output)
-			local next_step = steps[i + 1]
-			if not output and next_step and (next_step.type == "GENERIC" or next_step.type == "TOOL_OUTPUT" or next_step.type == "tool_result") then
-				local candidate = next_step.content or next_step.output
-				if not (candidate and type(candidate) == "string" and candidate:find("finished with result:", 1, true)) then
-					output = candidate
+			local has_ask_question = false
+			if not output and name == "ask_question" then
+				local ans, ans_idx = find_ask_question_answer(i + 1)
+				if ans then
+					output = ans
+					consumed_steps[ans_idx] = true
+					has_ask_question = true
+				end
+			elseif not output then
+				local next_step = steps[i + 1]
+				if next_step and (next_step.type == "GENERIC" or next_step.type == "TOOL_OUTPUT" or next_step.type == "tool_result") then
+					local candidate = next_step.content or next_step.output
+					if not (candidate and type(candidate) == "string" and candidate:find("finished with result:", 1, true)) then
+						output = candidate
+					end
 				end
 			end
 			replay_tool_call(name, args, output, step.duration_seconds)
+			if has_ask_question and in_agent_turn then
+				finish_agent_turn()
+			end
 
 		else
 			if in_agent_turn then
@@ -1792,6 +2086,8 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 
 	M.stop_thinking_animation(buf)
 	vim.bo[buf].modified = false
+	M._in_transcript_replay = nil
+	M._transcript_agent_line = nil
 
 	return prompt_start_line, prompt_extmark_id, tool_calls
 end
@@ -2990,10 +3286,21 @@ function M.parse_question_params(params)
 					table.insert(opts, tostring(opt))
 				end
 			end
+			local sel = nil
+			if type(item.selected) == "table" then
+				sel = {}
+				for _, s in ipairs(item.selected) do
+					table.insert(sel, tostring(s))
+				end
+			end
+			local write_in = (item.write_in and type(item.write_in) == "string" and item.write_in ~= "") and item.write_in or nil
+
 			table.insert(questions, {
 				question = tostring(item.question),
 				options = opts,
 				is_multi_select = (item.is_multi_select == true or item.IsMultiSelect == true),
+				selected = sel,
+				write_in = write_in,
 			})
 		end
 	end
@@ -3021,16 +3328,31 @@ function M.render_question_block(buf, question_list, config)
 
 	local q_icon = get_icon("question", config)
 	for q_idx, q in ipairs(question_list) do
-		local header_text = (#question_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q.question)
-			or string.format("%s Question: %s", q_icon, q.question)
+		local q_text = clean_question_text(q.question)
+		local header_text
+		if q_text ~= "" then
+			header_text = (#question_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q_text)
+				or string.format("%s Question: %s", q_icon, q_text)
+		else
+			header_text = (#question_list > 1) and string.format("%s Question %d", q_icon, q_idx)
+				or string.format("%s Question", q_icon)
+		end
 
-		table.insert(to_append, header_text)
+		local h_lines = utils.split_lines(header_text)
+		table.insert(to_append, h_lines[1])
 		table.insert(header_lines, line_count + #to_append)
+		for h_i = 2, #h_lines do
+			table.insert(to_append, "  " .. h_lines[h_i])
+		end
 		table.insert(to_append, "")
 
 		local opt_start = line_count + #to_append + 1
 		for _, opt in ipairs(q.options) do
-			table.insert(to_append, string.format("- [ ] %s", opt))
+			local opt_lines = utils.split_lines(tostring(opt))
+			table.insert(to_append, string.format("- [ ] %s", opt_lines[1]))
+			for o_i = 2, #opt_lines do
+				table.insert(to_append, "      " .. opt_lines[o_i])
+			end
 		end
 		local opt_end = line_count + #to_append
 
@@ -3053,7 +3375,15 @@ function M.render_question_block(buf, question_list, config)
 	table.insert(to_append, "")
 	local write_in_start_line = line_count + #to_append
 
-	vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, to_append)
+	local safe_to_append = {}
+	for _, l in ipairs(to_append) do
+		local sub = utils.split_lines(tostring(l))
+		for _, sl in ipairs(sub) do
+			table.insert(safe_to_append, sl)
+		end
+	end
+
+	vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, safe_to_append)
 	vim.bo[buf].modified = false
 
 	-- Add highlights for question headers

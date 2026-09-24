@@ -73,6 +73,10 @@ local M = {}
 ---@field review_comment? string Icon for review comments (default: "💬")
 ---@field new_session? string Icon for new session entry in home buffer (default: "󰐕 ")
 ---@field conversation? string Icon for conversation entries in home buffer (default: "󰭹 ")
+---@field step_unanswered? string Icon for unanswered question step in progression (default: "○")
+---@field step_answered? string Icon for answered question step in progression (default: "●")
+---@field step_current? string Icon for current active question step in progression (default: "◉")
+---@field step_line? string Icon for connecting line in question progression (default: "─")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -139,6 +143,10 @@ M.defaults = {
 		review_comment = "💬",
 		new_session = "󰐕 ",
 		conversation = "󰭹 ",
+		step_unanswered = "○",
+		step_answered = "●",
+		step_current = "◉",
+		step_line = "─",
 	},
 	keymaps = {
 		submit = "<C-s>",

@@ -221,118 +221,176 @@ protocol.cleanup_buffer(buf)
 -- =========================================================================
 -- TEST 7: Historical Transcript Rendering of ask_question
 -- =========================================================================
-print("\n[Test 7] Testing transcript rendering of historical ask_question...")
+do
+  print("\n[Test 7] Testing transcript rendering of historical ask_question...")
 
-vim.cmd("edit agy://new")
-local buf_hist = vim.api.nvim_get_current_buf()
+  vim.cmd("edit agy://new")
+  local buf_hist = vim.api.nvim_get_current_buf()
 
-local mock_steps = {
-  {
-    type = "PLANNER_RESPONSE",
-    content = "I need some clarification on how to proceed.",
-    tool_calls = {
-      {
-        name = "ask_question",
-        args = {
-          questions = {
-            {
-              question = "Which database backend should we use?",
-              options = { "SQLite", "PostgreSQL", "In-memory" },
-              is_multi_select = false,
+  local mock_steps = {
+    {
+      type = "PLANNER_RESPONSE",
+      content = "I need some clarification on how to proceed.",
+      tool_calls = {
+        {
+          name = "ask_question",
+          args = {
+            questions = {
+              {
+                question = "Which database backend should we use?",
+                options = { "SQLite", "PostgreSQL", "In-memory" },
+                is_multi_select = false,
+              }
             }
           }
         }
       }
+    },
+    {
+      type = "GENERIC",
+      content = "A: SQLite\n\nNotes: Lightweight for local dev",
+    },
+    {
+      type = "PLANNER_RESPONSE",
+      content = "Understood! Proceeding with SQLite implementation.",
+      tool_calls = {},
     }
-  },
-  {
-    type = "GENERIC",
-    content = "A: SQLite\n\nNotes: Lightweight for local dev",
-  },
-  {
-    type = "PLANNER_RESPONSE",
-    content = "Understood! Proceeding with SQLite implementation.",
-    tool_calls = {},
   }
-}
 
-render.render_transcript(buf_hist, "mock-conv-123", mock_steps, state.config)
-local hist_lines = vim.api.nvim_buf_get_lines(buf_hist, 0, -1, false)
+  render.render_transcript(buf_hist, "mock-conv-123", mock_steps, state.config)
+  local hist_lines = vim.api.nvim_buf_get_lines(buf_hist, 0, -1, false)
 
-local found_q_header = false
-local found_sqlite_checked = false
-local found_postgres_unchecked = false
-local found_notes = false
+  local found_q_header = false
+  local found_sqlite_checked = false
+  local found_postgres_unchecked = false
+  local found_notes = false
 
-for _, l in ipairs(hist_lines) do
-  if l:find("❓ Question: Which database backend should we use%?") then
-    found_q_header = true
-    assert(not l:find(">"), "Question header should not contain '>'")
-    assert(not l:find("%*%*"), "Question header should not contain '**'")
-  elseif l:find("%- %[x%] SQLite") then
-    found_sqlite_checked = true
-    assert(not l:find(">"), "Option should not contain '>'")
-  elseif l:find("%- %[ %] PostgreSQL") then
-    found_postgres_unchecked = true
-    assert(not l:find(">"), "Option should not contain '>'")
-  elseif l:find("Notes: Lightweight for local dev") then
-    found_notes = true
-    assert(not l:find(">"), "Notes should not contain '>'")
-    assert(not l:find("%*%*"), "Notes should not contain '**'")
+  for _, l in ipairs(hist_lines) do
+    if l:find("❓ Question: Which database backend should we use%?") then
+      found_q_header = true
+      assert(not l:find(">"), "Question header should not contain '>'")
+      assert(not l:find("%*%*"), "Question header should not contain '**'")
+    elseif l:find("%- %[x%] SQLite") then
+      found_sqlite_checked = true
+      assert(not l:find(">"), "Option should not contain '>'")
+    elseif l:find("%- %[ %] PostgreSQL") then
+      found_postgres_unchecked = true
+      assert(not l:find(">"), "Option should not contain '>'")
+    elseif l:find("Notes: Lightweight for local dev") then
+      found_notes = true
+      assert(not l:find(">"), "Notes should not contain '>'")
+      assert(not l:find("%*%*"), "Notes should not contain '**'")
+    end
   end
+
+  assert(found_q_header, "Transcript must render question header")
+  assert(found_sqlite_checked, "Answered option SQLite must be rendered checked [x]")
+  assert(found_postgres_unchecked, "Unanswered option PostgreSQL must be rendered unchecked [ ]")
+  assert(found_notes, "User notes must be rendered cleanly without > or **")
+  print("✓ Historical ask_question rendered cleanly with [x] answered option and notes")
+
+  protocol.cleanup_buffer(buf_hist)
 end
 
-assert(found_q_header, "Transcript must render question header")
-assert(found_sqlite_checked, "Answered option SQLite must be rendered checked [x]")
-assert(found_postgres_unchecked, "Unanswered option PostgreSQL must be rendered unchecked [ ]")
-assert(found_notes, "User notes must be rendered cleanly without > or **")
-print("✓ Historical ask_question rendered cleanly with [x] answered option and notes")
-
-protocol.cleanup_buffer(buf_hist)
-
 -- =========================================================================
--- TEST 8: Client Protocol Instructions Injection in Session
+-- TEST 7b: Multi-line Questions and CLI Runner Headers Replay
 -- =========================================================================
-print("\n[Test 8] Testing client protocol instructions injection in session...")
+do
+  print("\n[Test 7b] Testing transcript rendering with multi-line question and runner headers...")
 
-local session_mod = require("agy.session")
-local written_to_proc = nil
+  vim.cmd("edit agy://new")
+  local buf_multi = vim.api.nvim_get_current_buf()
 
-local mock_session = setmetatable({
-  is_active = true,
-  is_initialized = true,
-  turn_active = false,
-  client_instructions = true,
-  proc = {
-    write = function(_, str)
-      written_to_proc = str
-    end
+  local multi_steps = {
+    {
+      type = "PLANNER_RESPONSE",
+      content = "",
+      tool_calls = {
+        {
+          name = "ask_question",
+          id = "call_multiline_123",
+          status = "DONE",
+          args = {
+            questions = vim.json.encode({
+              {
+                question = "Which architecture should we use?\n(Consider long-term performance)",
+                options = { "Monolith\n(Simple deployment)", "Microservices\n(Scalable)" },
+                is_multi_select = false,
+              }
+            })
+          }
+        }
+      }
+    },
+    {
+      type = "GENERIC",
+      status = "DONE",
+      content = "Created At: 2026-09-24T11:29:54-07:00\nCompleted At: 2026-09-24T11:29:54-07:00\nA1: User Skipped",
+    },
+    {
+      type = "PLANNER_RESPONSE",
+      content = "User skipped question. Proceeding with defaults.",
+      tool_calls = {},
+    }
   }
-}, { __index = session_mod })
 
-mock_session:send_prompt("/plan create a rust CLI tool")
-assert(written_to_proc ~= nil, "Session must write payload to proc")
-local decoded_payload = vim.json.decode(written_to_proc)
-assert(decoded_payload.event == "user")
-assert(decoded_payload.message.content:find("/plan create a rust CLI tool", 1, true), "Payload must contain user prompt")
-assert(decoded_payload.message.content:find("<CLIENT_INSTRUCTIONS>", 1, true), "Payload must include CLIENT_INSTRUCTIONS")
-assert(decoded_payload.message.content:find("RequestFeedback: false", 1, true), "Payload must enforce RequestFeedback: false for plans")
-assert(decoded_payload.message.content:find("Do NOT invoke the `ask_question` tool", 1, true), "Payload must prohibit ask_question tool")
-print("✓ Session automatically injects client protocol instructions for planning and questions")
+  local ok_render, err_render = pcall(function()
+    render.render_transcript(buf_multi, "mock-conv-multi", multi_steps, state.config)
+  end)
+  assert(ok_render, "render_transcript should not fail on multi-line questions: " .. tostring(err_render))
 
--- Test opt-out with client_instructions = false
-mock_session.client_instructions = false
-mock_session:send_prompt("regular prompt")
-local decoded_optout = vim.json.decode(written_to_proc)
-assert(decoded_optout.message.content == "regular prompt", "When client_instructions is false, prompt should not be modified")
-print("✓ client_instructions = false cleanly disables instruction injection")
+  local multi_lines = vim.api.nvim_buf_get_lines(buf_multi, 0, -1, false)
+  for _, l in ipairs(multi_lines) do
+    assert(not l:find("\n"), "No buffer line should contain embedded newline")
+    assert(not l:find("\r"), "No buffer line should contain embedded CR")
+  end
+  local text_all = table.concat(multi_lines, "\n")
+  assert(text_all:find("Which architecture should we use%?"), "Question header should be rendered")
+  assert(text_all:find("Consider long%-term performance"), "Second line of question should be rendered")
+  assert(text_all:find("Monolith"), "Option 1 should be rendered")
+  assert(text_all:find("Microservices"), "Option 2 should be rendered")
+  assert(not text_all:find("Created At:"), "Runner metadata headers should be stripped")
+  print("✓ Historical ask_question with newlines and runner metadata rendered cleanly without error")
+
+  protocol.cleanup_buffer(buf_multi)
+end
+
+-- =========================================================================
+-- TEST 8: No CLIENT_INSTRUCTIONS Injection in Session
+-- =========================================================================
+do
+  print("\n[Test 8] Testing session sends prompt directly without CLIENT_INSTRUCTIONS...")
+
+  local session_mod = require("agy.session")
+  local written_to_proc = nil
+
+  local mock_session = setmetatable({
+    is_active = true,
+    is_initialized = true,
+    turn_active = false,
+    proc = {
+      write = function(_, str)
+        written_to_proc = str
+      end
+    }
+  }, { __index = session_mod })
+
+  mock_session:send_prompt("/plan create a rust CLI tool")
+  assert(written_to_proc ~= nil, "Session must write payload to proc")
+  local decoded_payload = vim.json.decode(written_to_proc)
+  assert(decoded_payload.event == "user")
+  assert(decoded_payload.message.content == "/plan create a rust CLI tool", "Payload must contain exact user prompt without injection")
+  assert(not decoded_payload.message.content:find("<CLIENT_INSTRUCTIONS>", 1, true), "Payload must not include CLIENT_INSTRUCTIONS")
+  print("✓ Session cleanly transmits user prompt without prompt injection")
+end
 
 -- =========================================================================
 -- TEST 9: utils.clean_user_content Stripping of CLIENT_INSTRUCTIONS
 -- =========================================================================
-print("\n[Test 9] Testing utils.clean_user_content strips CLIENT_INSTRUCTIONS...")
+do
+  print("\n[Test 9] Testing utils.clean_user_content strips CLIENT_INSTRUCTIONS...")
 
-local sample_raw = [[
+  local sample_raw = [[
 <USER_REQUEST>
 /plan implement user authentication
 
@@ -346,38 +404,1121 @@ The current local time is: 2026-09-19T18:00:00.
 </ADDITIONAL_METADATA>
 ]]
 
-local cleaned = utils.clean_user_content(sample_raw)
-assert(cleaned == "/plan implement user authentication", "Cleaned user content must only contain prompt without CLIENT_INSTRUCTIONS, got: " .. cleaned)
-print("✓ utils.clean_user_content cleanly strips CLIENT_INSTRUCTIONS from conversation history")
+  local cleaned = utils.clean_user_content(sample_raw)
+  assert(cleaned == "/plan implement user authentication", "Cleaned user content must only contain prompt without CLIENT_INSTRUCTIONS, got: " .. cleaned)
+  print("✓ utils.clean_user_content cleanly strips CLIENT_INSTRUCTIONS from conversation history")
+end
 
 -- =========================================================================
--- TEST 10: Safe Handling of Zombie ask_question State on DONE / Result
+-- TEST 10: Turn Cancellation & Question UI on ask_question
 -- =========================================================================
-print("\n[Test 10] Testing zombie active_question cleanup...")
+print("\n[Test 10] Testing turn cancellation and interactive question on ask_question...")
 
 vim.cmd("edit! agy://new")
-local buf_guard = vim.api.nvim_get_current_buf()
-local pstate = protocol.buffers[buf_guard]
+local buf_cancel = vim.api.nvim_get_current_buf()
+local pstate = protocol.buffers[buf_cancel]
 
--- Simulate ACTIVE ask_question
-local dummy_q = { { question = "Proceed?", options = { "Yes", "No" }, is_multi_select = false } }
-pstate.active_question = render.render_question_block(buf_guard, dummy_q, pstate.config)
-assert(pstate.active_question ~= nil)
+local session_stopped = false
+local session_next_prompt = nil
 
--- Simulate DONE with User Skipped (headless agy behavior)
+pstate.session.turn_active = true
+pstate.session.stop = function()
+  session_stopped = true
+  pstate.session.turn_active = false
+end
+pstate.session.send_prompt = function(_, prompt)
+  session_next_prompt = prompt
+  return true
+end
+
+-- Simulate step_update arriving with ask_question
 pstate.session.on_step_update(pstate.session, {
   step_type = "tool",
   tool_name = "ask_question",
-  state = "DONE",
+  state = "ACTIVE",
   tool_info = {
     name = "ask_question",
-    output = "A1: User Skipped"
+    parameters = {
+      questions = {
+        {
+          question = "Choose deployment strategy:",
+          options = { "Blue/Green", "Canary", "Rolling" },
+          is_multi_select = false,
+        }
+      }
+    }
   }
 })
 
-assert(pstate.active_question == nil, "active_question must be cleared when User Skipped arrives")
-print("✓ active_question safely cleared on auto-skipped DONE event")
+assert(session_stopped == true, "Turn must be cancelled immediately when ask_question arrives")
+assert(pstate.active_question ~= nil, "active_question state must be set")
+assert(pstate.stream_info.status == "question", "Stream status must be set to 'question'")
 
-protocol.cleanup_buffer(buf_guard)
+-- Active question floating UI is visible
+local q_ui = pstate.active_question.ui
+assert(q_ui ~= nil, "question UI must be initialized")
+assert(q_ui.is_visible() == true, "question floating window must be visible")
+
+local float_buf = q_ui.state.buf
+local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
+local found_float_q_title = false
+for _, l in ipairs(float_lines) do
+  if l:find("Choose deployment strategy:") then
+    found_float_q_title = true
+  end
+end
+assert(found_float_q_title == true, "Question title must be displayed in floating UI")
+
+-- Buffer prompt area must NOT be polluted with question input text while floating UI is active
+local buf_lines = vim.api.nvim_buf_get_lines(buf_cancel, 0, -1, false)
+local found_cancelled_banner = false
+for _, l in ipairs(buf_lines) do
+  if l:find("Turn cancelled") then
+    found_cancelled_banner = true
+  end
+end
+assert(found_cancelled_banner == false, "Turn cancelled banner must NOT be rendered for ask_question")
+
+-- Navigate options in floating UI
+assert(q_ui.state.selected_idx == 1, "Default selection is item 1")
+q_ui.select_next()
+assert(q_ui.state.selected_idx == 2, "Selection moved to item 2 (Canary)")
+
+-- Accept option 2
+q_ui.accept()
+
+assert(session_next_prompt ~= nil, "Answer must be sent to session as next turn")
+assert(session_next_prompt:find("A: Canary"), "Payload must contain selected option Canary, got: " .. tostring(session_next_prompt))
+assert(pstate.active_question == nil, "active_question must be cleared after submission")
+assert(q_ui.is_visible() == false, "Floating window must be closed after submission")
+
+-- Verify historical question is recorded in conversation history buffer
+local post_lines = vim.api.nvim_buf_get_lines(buf_cancel, 0, -1, false)
+local found_history_q = false
+local found_canary_checked = false
+for _, l in ipairs(post_lines) do
+  if l:find("Choose deployment strategy:") then
+    found_history_q = true
+  end
+  if l:find("%[x%] Canary") then
+    found_canary_checked = true
+  end
+end
+assert(found_history_q == true, "Historical question must be recorded in buffer after submission")
+assert(found_canary_checked == true, "Chosen option Canary must be recorded with [x] in buffer")
+
+protocol.cleanup_buffer(buf_cancel)
+print("✓ ask_question cleanly cancels turn, displays floating selectable UI, and submits response as next turn")
+
+-- =========================================================================
+-- TEST 11: Multi-select Question in Floating UI
+-- =========================================================================
+print("\n[Test 11] Testing multi-select in question floating UI...")
+
+vim.cmd("edit! agy://new")
+local buf_multi = vim.api.nvim_get_current_buf()
+local state_multi = protocol.buffers[buf_multi]
+local multi_submitted_prompt = nil
+
+state_multi.session.turn_active = true
+state_multi.session.stop = function() state_multi.session.turn_active = false end
+state_multi.session.send_prompt = function(_, prompt)
+  multi_submitted_prompt = prompt
+  return true
+end
+
+state_multi.session.on_step_update(state_multi.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Select target platforms:",
+          options = { "Linux", "macOS", "Windows" },
+          is_multi_select = true,
+        }
+      }
+    }
+  }
+})
+
+local multi_ui = state_multi.active_question.ui
+assert(multi_ui.is_visible() == true)
+
+-- Toggle item 1 (Linux)
+assert(multi_ui.state.selected_idx == 1)
+multi_ui.toggle()
+
+-- Toggle item 2 (macOS)
+multi_ui.select_next()
+assert(multi_ui.state.selected_idx == 2)
+multi_ui.toggle()
+
+-- Confirm multi-select answers
+multi_ui.confirm_current_question()
+
+assert(multi_submitted_prompt ~= nil, "Multi-select answers must be submitted")
+assert(multi_submitted_prompt:find("Linux"), "Payload must contain Linux")
+assert(multi_submitted_prompt:find("macOS"), "Payload must contain macOS")
+assert(not multi_submitted_prompt:find("Windows"), "Payload must not contain Windows")
+assert(state_multi.active_question == nil)
+assert(multi_ui.is_visible() == false)
+
+protocol.cleanup_buffer(buf_multi)
+print("✓ Multi-select question UI successfully toggles and submits multiple choices")
+
+-- =========================================================================
+-- TEST 12: Direct Number Jump in Floating UI
+-- =========================================================================
+print("\n[Test 12] Testing direct number jump in question floating UI...")
+
+vim.cmd("edit! agy://new")
+local buf_jump = vim.api.nvim_get_current_buf()
+local state_jump = protocol.buffers[buf_jump]
+local jump_prompt = nil
+
+state_jump.session.turn_active = true
+state_jump.session.stop = function() state_jump.session.turn_active = false end
+state_jump.session.send_prompt = function(_, prompt)
+  jump_prompt = prompt
+  return true
+end
+
+state_jump.session.on_step_update(state_jump.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Pick an environment:",
+          options = { "Development", "Staging", "Production" },
+          is_multi_select = false,
+        }
+      }
+    }
+  }
+})
+
+local jump_ui = state_jump.active_question.ui
+assert(jump_ui.is_visible() == true)
+
+-- Press '3' to immediately select Production
+jump_ui.jump_to(3)
+
+assert(jump_prompt ~= nil, "Direct number jump must immediately select and submit in single-select mode")
+assert(jump_prompt:find("Production"), "Payload must contain Production: " .. tostring(jump_prompt))
+assert(state_jump.active_question == nil)
+
+protocol.cleanup_buffer(buf_jump)
+print("✓ Direct number jump (1-9) selects and submits single-select option immediately")
+
+-- =========================================================================
+-- TEST 13: Write-in Response in Floating UI
+-- =========================================================================
+print("\n[Test 13] Testing write-in response in question floating UI...")
+
+vim.cmd("edit! agy://new")
+local buf_write = vim.api.nvim_get_current_buf()
+local state_write = protocol.buffers[buf_write]
+local write_in_prompt = nil
+
+state_write.session.turn_active = true
+state_write.session.stop = function() state_write.session.turn_active = false end
+state_write.session.send_prompt = function(_, prompt)
+  write_in_prompt = prompt
+  return true
+end
+
+state_write.session.on_step_update(state_write.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Any special instructions?",
+          options = { "Default build", "Debug build" },
+          is_multi_select = false,
+        }
+      }
+    }
+  }
+})
+
+local write_ui = state_write.active_question.ui
+assert(write_ui.is_visible() == true)
+
+-- Mock vim.ui.input to ensure no popup is spawned
+local orig_input = vim.ui.input
+local input_called = false
+vim.ui.input = function()
+  input_called = true
+  error("vim.ui.input popup should not be called for inline write-in")
+end
+
+-- Start inline write-in editing
+write_ui.start_inline_write_in()
+assert(input_called == false, "vim.ui.input popup must not be used")
+assert(write_ui.is_visible() == true, "Question UI must remain visible inline")
+assert(write_ui.state.is_editing_write_in == true, "is_editing_write_in must be true")
+assert(vim.bo[write_ui.state.buf].modifiable == true, "Buffer must be modifiable during inline editing")
+
+-- Verify write-in line is rendered inline in buffer
+local opt_start = write_ui.get_opt_start_line()
+local write_line = opt_start + (#state_write.active_question.questions[1].options + 1 - 1)
+local line = vim.api.nvim_buf_get_lines(write_ui.state.buf, write_line - 1, write_line, false)[1] or ""
+assert(line:find("Write%-in:"), "Buffer line must display inline Write-in: " .. line)
+
+-- Simulate confirming inline input
+write_ui.finish_inline_write_in(true, "Build with ASAN enabled")
+vim.ui.input = orig_input
+
+assert(write_ui.state.is_editing_write_in == false, "is_editing_write_in must be reset to false")
+assert(write_in_prompt ~= nil, "Submitting write-in must trigger send_prompt")
+assert(write_in_prompt:find("Build with ASAN enabled"), "Prompt must contain write-in notes")
+
+protocol.cleanup_buffer(buf_write)
+print("✓ Write-in custom response in floating UI properly formatted and submitted")
+
+-- =========================================================================
+-- TEST 14: Cancel Active Question with stop_turn
+-- =========================================================================
+print("\n[Test 14] Testing manual cancellation of active question with stop_turn...")
+
+vim.cmd("edit! agy://new")
+local buf_stop = vim.api.nvim_get_current_buf()
+local stop_state = protocol.buffers[buf_stop]
+
+stop_state.session = {
+  turn_active = false,
+  stop = function() end,
+  send_prompt = function() return true end,
+  destroy = function() end,
+}
+
+local dummy_q = { { question = "Proceed?", options = { "Yes", "No" }, is_multi_select = false } }
+protocol.intercept_ask_question(buf_stop, stop_state, dummy_q)
+assert(stop_state.active_question ~= nil)
+assert(stop_state.active_question.ui.is_visible() == true)
+
+protocol.stop_turn(buf_stop)
+
+assert(stop_state.active_question == nil, "active_question must be cleared when user cancels with stop_turn")
+assert(stop_state.stream_info.status == "ready", "Status must return to ready")
+
+protocol.cleanup_buffer(buf_stop)
+print("✓ stop_turn cleanly clears active_question and restores prompt divider")
+
+-- =========================================================================
+-- TEST 15: Question UI Overlay Geometry & Prompt Modifiable Lock
+-- =========================================================================
+print("\n[Test 15] Testing question UI overlay geometry and unmodifiable prompt lock...")
+
+vim.cmd("edit! agy://new")
+local buf_lock = vim.api.nvim_get_current_buf()
+local win_lock = vim.api.nvim_get_current_win()
+local state_lock = protocol.buffers[buf_lock]
+
+state_lock.session = {
+  turn_active = false,
+  stop = function() end,
+  send_prompt = function() return true end,
+  destroy = function() end,
+}
+
+local q_sample = {
+  {
+    question = "Which cache strategy should we adopt?",
+    options = { "LRU in-memory", "Redis distributed", "Disk-backed mmap" },
+    is_multi_select = false,
+  }
+}
+
+protocol.intercept_ask_question(buf_lock, state_lock, q_sample)
+assert(state_lock.active_question ~= nil)
+local ui_lock = state_lock.active_question.ui
+assert(ui_lock.is_visible() == true)
+
+-- In-buffer UI config: renders directly in target window and buffer
+assert(ui_lock.state.win == win_lock, "Question UI must render directly in target window")
+assert(ui_lock.state.buf == buf_lock, "Question UI must render directly in target buffer")
+
+-- Overlay sits directly in prompt area starting at prompt_start_line
+local prompt_line_lock = state_lock.prompt_start_line or vim.api.nvim_buf_line_count(buf_lock)
+local start_line = ui_lock.get_start_line()
+assert(start_line == prompt_line_lock, string.format("Question start_line (%d) must match prompt start line (%d)", start_line, prompt_line_lock))
+
+-- Cursor is positioned directly on first option line for selection
+local cur_win = vim.api.nvim_get_current_win()
+assert(cur_win == win_lock, "Target window must be focused for direct cursor selection")
+local cur_pos = vim.api.nvim_win_get_cursor(win_lock)
+local opt_start = ui_lock.get_opt_start_line()
+assert(cur_pos[1] == opt_start, string.format("Cursor must be on option 1 line (expected %d, got %d)", opt_start, cur_pos[1]))
+
+-- Verify bottom border virtual line exists under footer extending across gutter (virt_lines_leftcol = true)
+local q_buf_lines = ui_lock.get_question_lines()
+local last_row = ui_lock.get_start_line() - 1 + #q_buf_lines - 1
+local bot_extmarks = vim.api.nvim_buf_get_extmarks(ui_lock.state.buf, ui_lock.NS_HL, { last_row, 0 }, { last_row, -1 }, { details = true })
+local has_bot_border = false
+for _, em in ipairs(bot_extmarks) do
+  local d = em[4] or {}
+  if d.virt_lines and #d.virt_lines > 0 then
+    local vl = d.virt_lines[1]
+    if vl and vl[1] and vl[1][2] == "AgyPromptBorder" and d.virt_lines_leftcol == true and d.virt_lines_above == false then
+      has_bot_border = true
+      assert(#vl[1][1] >= 10 and vl[1][1]:find("^[─%-]+$"), "Virtual line must be divider characters")
+    end
+  end
+end
+assert(has_bot_border == true, "Bottom border must be rendered as a virtual line with virt_lines_leftcol = true")
+
+-- Target buffer modifiable must be false everywhere while question is active
+protocol.update_modifiable(buf_lock)
+assert(vim.bo[buf_lock].modifiable == false, "Target buffer modifiable must be false while active_question is active")
+
+-- =========================================================================
+-- TEST 16: History Navigation & Question UI Persistence
+-- =========================================================================
+print("\n[Test 16] Testing history navigation keeps question float visible...")
+
+local prompt_line = state_lock.prompt_start_line or vim.api.nvim_buf_line_count(buf_lock)
+assert(prompt_line > 1, "prompt_line must be > 1 so history lines exist above it")
+
+-- Cursor at prompt line: question UI is visible
+vim.api.nvim_win_set_cursor(win_lock, { prompt_line, 0 })
+vim.cmd("doautocmd CursorMoved")
+assert(ui_lock.is_visible() == true, "Question UI must be visible when cursor is at prompt line")
+
+-- Move cursor up into history (e.g. line 1, well above prompt_start_line)
+vim.api.nvim_win_set_cursor(win_lock, { 1, 0 })
+vim.cmd("doautocmd CursorMoved")
+assert(ui_lock.is_visible() == true, "Question UI must NOT disappear when cursor is scrolled into history")
+
+-- Move cursor back down to prompt line: question UI remains visible
+vim.api.nvim_win_set_cursor(win_lock, { prompt_line, 0 })
+vim.cmd("doautocmd CursorMoved")
+assert(ui_lock.is_visible() == true, "Question UI must remain visible when cursor returns to prompt line")
+
+-- Navigate options and accept via <CR> at prompt
+local submitted_answer = nil
+state_lock.session.send_prompt = function(_, prompt)
+  submitted_answer = prompt
+  return true
+end
+
+-- Keymap <CR> at prompt should accept current option (option 1: LRU in-memory)
+pcall(function()
+  ui_lock.accept()
+end)
+
+assert(submitted_answer ~= nil, "Submitting via accept must send prompt to session")
+assert(submitted_answer:find("LRU in-memory", 1, true) ~= nil, "Answer must contain option 1, got: " .. tostring(submitted_answer))
+assert(state_lock.active_question == nil, "active_question must be nil after submission")
+assert(ui_lock.is_visible() == false, "Question UI must be closed after submission")
+
+protocol.cleanup_buffer(buf_lock)
+print("✓ Question UI stays visible on history scroll, persists on prompt return, and accepts answer cleanly")
+
+-- =========================================================================
+-- TEST 17: Multi-Question Navigation (prev/next/go_to_question)
+-- =========================================================================
+print("\n[Test 17] Testing navigation between multiple questions...")
+
+vim.cmd("edit! agy://new")
+local buf_multi_q = vim.api.nvim_get_current_buf()
+local state_multi_q = protocol.buffers[buf_multi_q]
+local multi_q_submitted_prompt = nil
+
+state_multi_q.session.turn_active = true
+state_multi_q.session.stop = function() state_multi_q.session.turn_active = false end
+state_multi_q.session.send_prompt = function(_, prompt)
+  multi_q_submitted_prompt = prompt
+  return true
+end
+
+state_multi_q.session.on_step_update(state_multi_q.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Choose primary database:",
+          options = { "PostgreSQL", "SQLite", "MongoDB" },
+          is_multi_select = false,
+        },
+        {
+          question = "Select required addons:",
+          options = { "Auth", "Logging", "Metrics" },
+          is_multi_select = true,
+        },
+        {
+          question = "Target deployment:",
+          options = { "Kubernetes", "Bare metal", "Docker Compose" },
+          is_multi_select = false,
+        },
+      }
+    }
+  }
+})
+
+local mq_ui = state_multi_q.active_question.ui
+assert(mq_ui.is_visible() == true)
+assert(#mq_ui.state.questions == 3, "Must have 3 questions loaded")
+assert(mq_ui.state.current_q_idx == 1, "Starts on question 1")
+
+-- Verify header shows progression circles and footer mentions question navigation
+local q_buf = mq_ui.state.buf
+local lines_q1 = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
+local found_prog_1 = false
+local found_footer_q_nav = false
+for _, l in ipairs(lines_q1) do
+  if l:find("○ ── ○ ── ○") or l:find("○ ──") then found_prog_1 = true end
+  if l:find("tab/h/l Questions") then found_footer_q_nav = true end
+end
+assert(found_prog_1 == true, "Header must show progression circles for question 1")
+assert(found_footer_q_nav == true, "Footer must display tab/h/l question navigation hint")
+
+-- Navigate to Question 2 via next_question()
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 2, "Must advance to question 2")
+local lines_q2 = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
+local found_next_q_button = false
+for _, l in ipairs(lines_q2) do
+  if l:find("Next Question") then found_next_q_button = true end
+end
+assert(found_next_q_button == true, "Multi-select question prior to last question must display Next Question button")
+
+-- Starts on question 1: prev_question() must stay at question 1 (no wrap-around)
+mq_ui.prev_question()
+assert(mq_ui.state.current_q_idx == 1, "Prev from question 1 must stay at question 1 (no wrap)")
+
+-- Navigate to Question 2 via next_question()
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 2, "Must advance to question 2")
+local lines_q2 = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
+local found_next_q_button = false
+for _, l in ipairs(lines_q2) do
+  if l:find("Next Question") then found_next_q_button = true end
+end
+assert(found_next_q_button == true, "Multi-select question prior to last question must display Next Question button")
+
+-- Navigate to Question 3 via next_question()
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 3, "Must advance to question 3")
+
+-- Advancing past Question 3 lands on Page 4 (Summary Review Page)
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 4, "Next from question 3 must advance to summary page")
+assert(mq_ui.is_summary_page() == true, "Page 4 must be summary page")
+
+-- Clamped navigation at last page: next_question() on summary page stays at Page 4
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 4, "Next from summary page must stay on summary page (no wrap)")
+
+-- Navigate backwards step by step
+mq_ui.prev_question()
+assert(mq_ui.state.current_q_idx == 3, "Prev from summary page must go to question 3")
+
+mq_ui.prev_question()
+assert(mq_ui.state.current_q_idx == 2, "Prev from question 3 must go to question 2")
+
+-- Answer Question 2 (multi-select): toggle Auth (opt 1) and Metrics (opt 3)
+mq_ui.jump_to(1)
+mq_ui.toggle()
+mq_ui.jump_to(3)
+mq_ui.toggle()
+assert(mq_ui.state.selected_answers[2][1] == true, "Option 1 (Auth) must be selected")
+assert(mq_ui.state.selected_answers[2][3] == true, "Option 3 (Metrics) must be selected")
+
+-- Navigate to Question 1 and answer with option 2 (SQLite)
+mq_ui.go_to_question(1)
+assert(mq_ui.state.current_q_idx == 1)
+mq_ui.jump_to(2)
+-- Since Question 1 is single-select, selecting an option advances to Question 2
+assert(mq_ui.state.current_q_idx == 2, "Answering single-select question 1 must advance to question 2")
+-- Question 2's previous selections are still intact
+assert(mq_ui.state.selected_answers[2][1] == true, "Question 2 selections must be preserved")
+
+-- Advance Question 2 via confirm_current_question() to go to Question 3
+mq_ui.confirm_current_question()
+assert(mq_ui.state.current_q_idx == 3, "Confirming question 2 advances to question 3")
+
+-- Answer Question 3 with option 1 (Kubernetes)
+mq_ui.jump_to(1)
+-- Since Question 3 is single-select, selecting an option advances to summary page (Page 4)
+assert(mq_ui.state.current_q_idx == 4, "Answering last question must advance to summary page")
+assert(mq_ui.is_summary_page() == true, "Must be on summary review page")
+assert(multi_q_submitted_prompt == nil, "Submission must wait for confirmation on summary page")
+
+-- Verify summary buffer content displays all answers
+local summary_lines = vim.api.nvim_buf_get_lines(mq_ui.state.buf, 0, -1, false)
+local summary_text = table.concat(summary_lines, "\n")
+assert(summary_text:find("Review Answers"), "Summary header must be present")
+assert(summary_text:find("SQLite"), "Summary must list Q1 answer SQLite")
+assert(summary_text:find("Auth, Metrics"), "Summary must list Q2 answers Auth, Metrics")
+assert(summary_text:find("Kubernetes"), "Summary must list Q3 answer Kubernetes")
+assert(summary_text:find("Submit All Answers"), "Summary must have Submit All Answers item")
+assert(not summary_text:find("Edit Question"), "Summary page must NOT have 'Edit Question' lines")
+
+-- Verify jump_to on summary page to edit a question
+mq_ui.jump_to(2)
+assert(mq_ui.state.current_q_idx == 2, "Direct jump 2 on summary page must edit question 2")
+
+-- Return to summary page
+mq_ui.go_to_question(4)
+assert(mq_ui.is_summary_page() == true)
+
+-- Accept on item 1 [ Submit All Answers ]
+mq_ui.accept()
+
+-- Now all 3 questions have been submitted!
+assert(multi_q_submitted_prompt ~= nil, "Submitting from summary page must trigger prompt submission")
+assert(multi_q_submitted_prompt:find("A1: SQLite"), "Must contain A1 answer SQLite: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("A2:"), "Must contain A2 prefix: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("Auth"), "Must contain A2 option Auth: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("Metrics"), "Must contain A2 option Metrics: " .. tostring(multi_q_submitted_prompt))
+assert(multi_q_submitted_prompt:find("A3: Kubernetes"), "Must contain A3 answer Kubernetes: " .. tostring(multi_q_submitted_prompt))
+
+assert(state_multi_q.active_question == nil, "active_question must be cleared after all questions submitted")
+assert(mq_ui.is_visible() == false, "Question UI must close after all questions submitted")
+
+protocol.cleanup_buffer(buf_multi_q)
+print("✓ Navigation and answering across multiple questions verified")
+
+-- =========================================================================
+-- TEST 18: Testing Question Title Deduplication and Block Submit Button Styling
+-- =========================================================================
+print("\n[Test 18] Testing question title deduplication and block submit button styling...")
+
+local question_mod = require("agy.question")
+
+local dup_questions = {
+  {
+    question = "Question 1/4: What database backend should we deploy?",
+    options = { "PostgreSQL", "SQLite" },
+    is_multi_select = true,
+  },
+  {
+    question = "Question 2 of 4: Which cache layer?",
+    options = { "Redis", "Memcached" },
+    is_multi_select = false,
+  },
+  {
+    question = "Question 3/4",
+    options = { "Option A", "Option B" },
+    is_multi_select = false,
+  },
+  {
+    question = "4/4: Final verification step?",
+    options = { "Run CI", "Skip CI" },
+    is_multi_select = false,
+  },
+}
+
+vim.cmd("edit agy://new")
+local test18_buf = vim.api.nvim_get_current_buf()
+local test18_win = vim.api.nvim_get_current_win()
+local test18_state = protocol.buffers[test18_buf]
+
+local submitted_18 = nil
+question_mod.show(test18_win, test18_buf, dup_questions, {
+  config = test18_state.config,
+  on_submit = function(payload)
+    submitted_18 = payload
+  end,
+})
+
+-- 1. Check Question 1 header: should have progression "○ ── ○ ── ○ ── ○" and title without "Question" prefix
+local q1_lines = question_mod.get_question_lines()
+local q1_header = q1_lines[1]
+assert(q1_header:find("○ ── ○ ── ○ ── ○"), "Q1 header must contain progression with non-filled circles: " .. tostring(q1_header))
+assert(q1_header:find("What database backend should we deploy%?"), "Q1 header must contain cleaned question title: " .. tostring(q1_header))
+assert(not q1_header:find("Question"), "Q1 header must not contain any 'Question' prefix: " .. tostring(q1_header))
+
+-- Verify progression extmarks on Q1: step 1 is current (AgyQuestionStepCurrent), lines are AgyQuestionStepLine, step 2 is todo (AgyQuestionStepTodo)
+local header_row = question_mod.get_start_line() - 1
+local q1_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { header_row, 0 }, { header_row, -1 }, { details = true })
+local has_step1_curr = false
+local has_step2_todo = false
+local has_step_line = false
+for _, em in ipairs(q1_extmarks) do
+  local d = em[4] or {}
+  if d.hl_group == "AgyQuestionStepCurrent" and em[3] == 2 then
+    has_step1_curr = true
+  end
+  if d.hl_group == "AgyQuestionStepTodo" then
+    has_step2_todo = true
+  end
+  if d.hl_group == "AgyQuestionStepLine" then
+    has_step_line = true
+  end
+end
+assert(has_step1_curr == true, "Step 1 circle must have AgyQuestionStepCurrent highlight")
+assert(has_step2_todo == true, "Step 2 circle must have AgyQuestionStepTodo highlight")
+assert(has_step_line == true, "Connecting lines must have AgyQuestionStepLine highlight")
+
+-- Answer Question 1 (toggle option 1)
+question_mod.jump_to(1)
+question_mod.toggle()
+assert(question_mod.has_question_answer(1) == true, "Q1 must be answered")
+
+-- 2. Multi-select submit item on Question 1: "Next Question" without brackets
+local next_btn_line = nil
+local next_btn_row = nil
+local q1_lines_ans = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+for idx, l in ipairs(q1_lines_ans) do
+  if l:find("Next Question") then
+    next_btn_line = l
+    next_btn_row = idx - 1
+    break
+  end
+end
+assert(next_btn_line ~= nil, "Question 1 must have Next Question button")
+assert(not next_btn_line:find("%["), "Next Question button must not contain brackets: " .. next_btn_line)
+assert(not next_btn_line:find("%]"), "Next Question button must not contain brackets: " .. next_btn_line)
+
+-- Navigate selection down to Next Question button
+question_mod.jump_to(#question_mod.state.items) -- submit is the last item
+local extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { next_btn_row, 0 }, { next_btn_row, -1 }, { details = true })
+local has_sel_hl = false
+local has_line_sel = false
+for _, em in ipairs(extmarks) do
+  local details = em[4] or {}
+  if details.hl_group == "AgyQuestionSubmitSel" then
+    has_sel_hl = true
+    assert(em[3] == 2, "Submit block highlight must start at col 2")
+  end
+  if details.line_hl_group == "AgyCompletionSel" then
+    has_line_sel = true
+  end
+end
+assert(has_sel_hl == true, "Hovered submit button must have AgyQuestionSubmitSel highlight")
+assert(has_line_sel == false, "Submit button should not apply line-wide AgyCompletionSel")
+
+-- Unselect Next Question button (jump back to option 1)
+question_mod.jump_to(1)
+extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { next_btn_row, 0 }, { next_btn_row, -1 }, { details = true })
+local has_unsel_hl = false
+for _, em in ipairs(extmarks) do
+  local details = em[4] or {}
+  if details.hl_group == "AgyQuestionSubmit" then
+    has_unsel_hl = true
+    assert(em[3] == 2, "Unselected submit highlight must start at col 2")
+  end
+end
+assert(has_unsel_hl == true, "Unselected submit button must have AgyQuestionSubmit highlight")
+
+-- 3. Check Question 2 header: step 1 is answered (●), step 2 is current (○), no "Question 2 of 4:" prefix
+question_mod.next_question()
+local q2_lines = question_mod.get_question_lines()
+local q2_header = q2_lines[1]
+assert(q2_header:find("● ── ○ ── ○ ── ○"), "Q2 progression must show step 1 answered (●) and step 2-4 unanswered (○): " .. tostring(q2_header))
+assert(q2_header:find("Which cache layer%?"), "Q2 title must be present: " .. tostring(q2_header))
+assert(not q2_header:find("Question"), "Q2 header must not contain Question prefix: " .. tostring(q2_header))
+
+-- Verify step 1 has AgyQuestionStepDone
+local q2_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { header_row, 0 }, { header_row, -1 }, { details = true })
+local has_step1_done = false
+for _, em in ipairs(q2_extmarks) do
+  local d = em[4] or {}
+  if d.hl_group == "AgyQuestionStepDone" and em[3] == 2 then
+    has_step1_done = true
+  end
+end
+assert(has_step1_done == true, "Step 1 must have AgyQuestionStepDone highlight now that it is answered")
+
+-- 4. Check Question 3 header: "Question 3/4" alone -> title cleaned, shows progression
+question_mod.next_question()
+local q3_lines = question_mod.get_question_lines()
+local q3_header = q3_lines[1]
+assert(q3_header:find("● ── ○ ── ○ ── ○"), "Q3 header must have progression: " .. tostring(q3_header))
+assert(not q3_header:find("Question"), "Q3 header must not contain Question prefix: " .. tostring(q3_header))
+
+-- 5. Check Question 4 header: "4/4: Final verification step?" -> title cleaned, no "4/4:" prefix
+question_mod.next_question()
+local q4_lines = question_mod.get_question_lines()
+local q4_header = q4_lines[1]
+assert(q4_header:find("Final verification step%?"), "Q4 header must have title: " .. tostring(q4_header))
+assert(not q4_header:find("4/4"), "Q4 header must not have '4/4' prefix: " .. tostring(q4_header))
+assert(not q4_header:find("Question"), "Q4 header must not contain Question prefix: " .. tostring(q4_header))
+
+-- 6. Check Summary Page (Page 5)
+question_mod.next_question()
+assert(question_mod.is_summary_page() == true, "Must be on summary page")
+local sum_lines = question_mod.get_question_lines()
+local sum_header = sum_lines[1]
+assert(sum_header:find("● ── ○ ── ○ ── ○"), "Summary header must show progression across all questions: " .. tostring(sum_header))
+assert(sum_header:find("Review Answers"), "Summary header must contain 'Review Answers': " .. tostring(sum_header))
+assert(not sum_header:find("Question"), "Summary header must not contain 'Question' prefix: " .. tostring(sum_header))
+
+local submit_all_line = nil
+local submit_all_row = nil
+local sum_buf_lines = vim.api.nvim_buf_get_lines(question_mod.state.buf, 0, -1, false)
+for idx, l in ipairs(sum_buf_lines) do
+  if l:find("Submit All Answers") then
+    submit_all_line = l
+    submit_all_row = idx - 1
+    break
+  end
+end
+assert(submit_all_line ~= nil, "Summary page must have Submit All Answers item")
+assert(not submit_all_line:find("%["), "Submit All Answers button must not contain brackets: " .. submit_all_line)
+assert(not submit_all_line:find("%]"), "Submit All Answers button must not contain brackets: " .. submit_all_line)
+
+-- Extmarks on Summary Page for Submit All Answers
+local sum_extmarks = vim.api.nvim_buf_get_extmarks(question_mod.state.buf, question_mod.NS_HL, { submit_all_row, 0 }, { submit_all_row, -1 }, { details = true })
+local has_sum_sel = false
+local has_sum_line_sel = false
+for _, em in ipairs(sum_extmarks) do
+  local details = em[4] or {}
+  if details.hl_group == "AgyQuestionSubmitSel" then
+    has_sum_sel = true
+    assert(em[3] == 2, "Submit All block highlight must start at col 2")
+  end
+  if details.line_hl_group == "AgyCompletionSel" then
+    has_sum_line_sel = true
+  end
+end
+assert(has_sum_sel == true, "Hovered Submit All Answers button must have AgyQuestionSubmitSel")
+assert(has_sum_line_sel == false, "Submit All button should not apply line-wide AgyCompletionSel")
+
+question_mod.close()
+protocol.cleanup_buffer(test18_buf)
+print("✓ Question title deduplication and block submit button styling verified")
+
+-- =========================================================================
+-- TEST 19: <CR> Tool/Thought Toggle & <C-c> Stop Turn Preservation
+-- =========================================================================
+print("\n[Test 19] Testing <CR> tool/thought toggle and <C-c> cancel turn preservation...")
+
+vim.cmd("edit! agy://test-tool-cr-preserve")
+local t19_buf = vim.api.nvim_get_current_buf()
+local t19_win = vim.api.nvim_get_current_win()
+local t19_state = protocol.buffers[t19_buf]
+
+local cr_map_before = vim.fn.maparg("<CR>", "n", false, true)
+assert(cr_map_before and cr_map_before.callback ~= nil, "<CR> must be mapped initially on buffer")
+local cc_map_before = vim.fn.maparg("<C-c>", "n", false, true)
+assert(cc_map_before and cc_map_before.callback ~= nil, "<C-c> must be mapped initially on buffer")
+
+local tool_line, ext_id = render.append_tool_call(t19_buf, "run_command", { CommandLine = "echo hello" }, t19_state.config)
+local tc = {
+  id = "tc-test-19",
+  tool_name = "run_command",
+  params = { CommandLine = "echo hello" },
+  output = "hello world\nline 2",
+  header_extmark_id = ext_id,
+  header_line_idx = tool_line,
+  status = "done",
+  is_open = false,
+}
+table.insert(t19_state.tool_calls, tc)
+render.complete_tool_call(t19_buf, tc, 0.1, "hello world\nline 2", t19_state.config)
+
+-- Move prompt divider below tool call
+local next_prompt_line, prompt_ext = render.render_cancelled(t19_buf, t19_state.config)
+t19_state.prompt_start_line = next_prompt_line
+t19_state.prompt_extmark_id = prompt_ext
+
+-- Intercept ask_question to display floating UI
+local q_spec = {
+  { question = "Pick an approach:", options = { "Option A", "Option B" }, is_multi_select = false },
+}
+protocol.intercept_ask_question(t19_buf, t19_state, q_spec)
+assert(t19_state.active_question ~= nil, "Question must be active")
+assert(question_mod.is_visible() == true, "Question UI must be visible")
+
+-- Navigate into history in target window above prompt onto tool call header line
+vim.api.nvim_set_current_win(t19_win)
+vim.api.nvim_win_set_cursor(t19_win, { tool_line + 1, 0 })
+
+-- 1. Press <CR> on tool call line in history while question is visible -> tool window opens
+local cr_map = vim.fn.maparg("<CR>", "n", false, true)
+assert(cr_map and cr_map.callback ~= nil, "<CR> keymap must remain accessible on target buffer")
+cr_map.callback()
+assert(tc.is_open == true, "Tool call must open via <CR> in history while question is open")
+assert(tc.win and vim.api.nvim_win_is_valid(tc.win), "Tool call window must be open")
+
+-- 2. Press <CR> again -> tool window collapses
+cr_map.callback()
+assert(tc.is_open == false, "Tool call must collapse via <CR> in history while question is open")
+assert(tc.win == nil or not vim.api.nvim_win_is_valid(tc.win), "Tool call window must be closed")
+
+-- 3. Cancel question with <C-c> from target buffer
+local cc_map = vim.fn.maparg("<C-c>", "n", false, true)
+assert(cc_map and cc_map.callback ~= nil, "<C-c> keymap must remain accessible on target buffer")
+cc_map.callback()
+assert(t19_state.active_question == nil, "Question must be cancelled via <C-c>")
+assert(question_mod.is_visible() == false, "Question UI must be closed")
+
+-- 4. Verify <CR> and <C-c> are NOT deleted after question closes
+local cr_map_after = vim.fn.maparg("<CR>", "n", false, true)
+assert(cr_map_after and cr_map_after.callback ~= nil, "<CR> must NOT be deleted after question is closed")
+local cc_map_after = vim.fn.maparg("<C-c>", "n", false, true)
+assert(cc_map_after and cc_map_after.callback ~= nil, "<C-c> must NOT be deleted after question is closed")
+
+-- 5. Toggle tool output again after question was closed
+vim.api.nvim_win_set_cursor(t19_win, { tool_line + 1, 0 })
+cr_map_after.callback()
+assert(tc.is_open == true, "Tool call must open via <CR> after question was closed")
+cr_map_after.callback()
+assert(tc.is_open == false, "Tool call must collapse via <CR> after question was closed")
+
+-- 6. Verify <C-c> stops active turn in normal mode
+t19_state.session = {
+  turn_active = true,
+  stop = function(self) self.turn_active = false end,
+}
+t19_state.stream_info.status = "streaming"
+cc_map_after.callback()
+assert(t19_state.session.turn_active == false, "<C-c> in normal mode must stop active turn")
+assert(t19_state.stream_info.status == "ready", "Status must become ready")
+
+-- 7. Verify <C-c> stops active turn in insert mode
+local ic_map = vim.fn.maparg("<C-c>", "i", false, true)
+assert(ic_map and ic_map.callback ~= nil, "Insert mode <C-c> must be mapped")
+t19_state.session.turn_active = true
+t19_state.stream_info.status = "thinking"
+ic_map.callback()
+assert(t19_state.session.turn_active == false, "<C-c> in insert mode must stop active turn")
+assert(t19_state.stream_info.status == "ready", "Status must become ready")
+
+protocol.cleanup_buffer(t19_buf)
+print("✓ <CR> tool toggle and <C-c> turn cancellation preserved before, during, and after questions")
+
+-- =========================================================================
+-- TEST 20: Inline Write-in Typing Persistence & Historical Display
+-- =========================================================================
+print("\n[Test 20] Testing inline write-in typing persistence and historical display...")
+
+vim.cmd("edit! agy://test-write-in-persist")
+local t20_buf = vim.api.nvim_get_current_buf()
+local t20_win = vim.api.nvim_get_current_win()
+local t20_state = protocol.buffers[t20_buf]
+
+local submitted_payload = nil
+t20_state.session.turn_active = true
+t20_state.session.stop = function() t20_state.session.turn_active = false end
+t20_state.session.send_prompt = function(_, prompt)
+  submitted_payload = prompt
+  return true
+end
+
+t20_state.session.on_step_update(t20_state.session, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Select target environment:",
+          options = { "Production", "Staging" },
+          is_multi_select = false,
+        }
+      }
+    }
+  }
+})
+
+local t20_ui = t20_state.active_question.ui
+assert(t20_ui.is_visible() == true)
+
+-- Start inline write-in editing
+t20_ui.start_inline_write_in()
+assert(t20_ui.state.is_editing_write_in == true)
+assert(vim.bo[t20_buf].modifiable == true)
+
+-- Find write-in line
+local opt_start = t20_ui.get_opt_start_line()
+local write_line = opt_start + 2 -- 2 options + 1 write-in
+local line = vim.api.nvim_buf_get_lines(t20_buf, write_line - 1, write_line, false)[1] or ""
+assert(line:find("Write%-in:"), "Must have Write-in: prefix")
+
+-- Simulate user typing "Local development" in insert mode
+local typed_line = line .. "Local development"
+vim.api.nvim_buf_set_lines(t20_buf, write_line - 1, write_line, false, { typed_line })
+vim.api.nvim_win_set_cursor(t20_win, { write_line, #typed_line })
+
+-- Fire TextChanged, TextChangedI, CursorMoved, CursorMovedI autocmds
+vim.api.nvim_exec_autocmds("TextChangedI", { buffer = t20_buf })
+vim.api.nvim_exec_autocmds("CursorMovedI", { buffer = t20_buf })
+vim.api.nvim_exec_autocmds("TextChanged", { buffer = t20_buf })
+vim.api.nvim_exec_autocmds("CursorMoved", { buffer = t20_buf })
+
+-- Verify the typed text was NOT erased
+local line_after_autocmds = vim.api.nvim_buf_get_lines(t20_buf, write_line - 1, write_line, false)[1] or ""
+assert(line_after_autocmds:find("Local development"), "Typed text must persist across TextChanged/CursorMoved events: " .. line_after_autocmds)
+assert(vim.bo[t20_buf].modifiable == true, "Buffer must remain modifiable while editing write-in")
+
+-- Trigger <CR> keymap in insert mode to confirm
+local i_cr = vim.fn.maparg("<CR>", "i", false, true)
+assert(i_cr and i_cr.callback ~= nil, "Insert mode <CR> must be mapped during inline write-in")
+i_cr.callback()
+
+assert(t20_ui.state.is_editing_write_in == false, "Editing write-in must end")
+assert(submitted_payload ~= nil, "Payload must have been submitted")
+assert(submitted_payload:find("Local development"), "Submitted payload must contain 'Local development'")
+
+-- Check historical rendering in buffer
+local buf_lines = vim.api.nvim_buf_get_lines(t20_buf, 0, -1, false)
+local found_write_in_checked = false
+local found_prod_unchecked = false
+for _, l in ipairs(buf_lines) do
+  if l:find("%- %[x%] Write%-in: Local development") then
+    found_write_in_checked = true
+  elseif l:find("%- %[ %] Production") then
+    found_prod_unchecked = true
+  end
+end
+
+assert(found_write_in_checked, "Historical question must render '- [x] Write-in: Local development'")
+assert(found_prod_unchecked, "Historical question options must render unchecked '- [ ] Production'")
+
+protocol.cleanup_buffer(t20_buf)
+print("✓ Inline write-in typing persists across events and renders properly in history")
+
+-- =========================================================================
+-- TEST 21: Transcript Replay (:e reload) Alignment for ask_question
+-- =========================================================================
+print("\n[Test 21] Testing transcript replay (:e reload) for ask_question...")
+
+-- 21a. Option selected
+local buf_replay1 = vim.api.nvim_create_buf(false, true)
+local replay_steps1 = {
+  {
+    type = "USER_INPUT",
+    content = "Configure build tool",
+    created_at = "2026-09-24T10:00:00Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Which build tool would you like?",
+    tool_calls = {
+      {
+        name = "ask_question",
+        args = {
+          questions = {
+            {
+              question = "Select build tool:",
+              options = { "Vite", "Webpack", "Rollup" },
+              is_multi_select = false,
+            }
+          }
+        }
+      }
+    },
+    created_at = "2026-09-24T10:00:05Z",
+  },
+  {
+    type = "USER_INPUT",
+    content = "A: Vite",
+    created_at = "2026-09-24T10:00:10Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Configuring Vite now...",
+    created_at = "2026-09-24T10:00:15Z",
+  }
+}
+
+render.render_transcript(buf_replay1, "test-replay-1", replay_steps1, state.config)
+local lines_r1 = vim.api.nvim_buf_get_lines(buf_replay1, 0, -1, false)
+
+local r1_vite_checked = false
+local r1_webpack_unchecked = false
+local r1_has_stray_a_vite = false
+
+for _, l in ipairs(lines_r1) do
+  if l:find("%- %[x%] Vite") then
+    r1_vite_checked = true
+  elseif l:find("%- %[ %] Webpack") then
+    r1_webpack_unchecked = true
+  elseif l == "A: Vite" then
+    r1_has_stray_a_vite = true
+  end
+end
+
+assert(r1_vite_checked, "Vite must be rendered checked [x] in replay: " .. table.concat(lines_r1, "\n"))
+assert(r1_webpack_unchecked, "Webpack must be rendered unchecked [ ] in replay")
+assert(not r1_has_stray_a_vite, "Transcript replay must NOT render redundant 'A: Vite' prompt line")
+
+protocol.cleanup_buffer(buf_replay1)
+print("✓ Transcript replay for selected option renders [x] option without duplicate user turn")
+
+-- 21b. Write-in only
+local buf_replay2 = vim.api.nvim_create_buf(false, true)
+local replay_steps2 = {
+  {
+    type = "USER_INPUT",
+    content = "Deploy project",
+    created_at = "2026-09-24T10:00:00Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Where to deploy?",
+    tool_calls = {
+      {
+        name = "ask_question",
+        args = {
+          questions = {
+            {
+              question = "Deploy target:",
+              options = { "AWS", "GCP" },
+              is_multi_select = false,
+            }
+          }
+        }
+      }
+    },
+    created_at = "2026-09-24T10:00:05Z",
+  },
+  {
+    type = "USER_INPUT",
+    content = "A: Bare metal Kubernetes",
+    created_at = "2026-09-24T10:00:10Z",
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Deploying to Bare metal Kubernetes...",
+    created_at = "2026-09-24T10:00:15Z",
+  }
+}
+
+render.render_transcript(buf_replay2, "test-replay-2", replay_steps2, state.config)
+local lines_r2 = vim.api.nvim_buf_get_lines(buf_replay2, 0, -1, false)
+
+local r2_write_in_checked = false
+local r2_aws_unchecked = false
+local r2_has_stray_answer = false
+
+for _, l in ipairs(lines_r2) do
+  if l:find("%- %[x%] Write%-in: Bare metal Kubernetes") then
+    r2_write_in_checked = true
+  elseif l:find("%- %[ %] AWS") then
+    r2_aws_unchecked = true
+  elseif l == "A: Bare metal Kubernetes" then
+    r2_has_stray_answer = true
+  end
+end
+
+assert(r2_write_in_checked, "Write-in response must be rendered checked [x] in replay: " .. table.concat(lines_r2, "\n"))
+assert(r2_aws_unchecked, "AWS must be rendered unchecked [ ] in replay")
+assert(not r2_has_stray_answer, "Transcript replay must NOT render redundant 'A: Bare metal Kubernetes' line")
+
+protocol.cleanup_buffer(buf_replay2)
+print("✓ Transcript replay for write-in renders - [x] Write-in: without duplicate user turn")
 
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")
