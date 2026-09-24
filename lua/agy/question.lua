@@ -49,13 +49,17 @@ M.state = {
   on_cancel = nil,
 }
 
-local QUESTION_KEYS = {
+local QUESTION_BUF_KEYS = {
   "j", "k", "<Down>", "<Up>", "<C-n>", "<C-p>",
   "h", "l", "<Left>", "<Right>", "<Tab>", "<S-Tab>",
   "[", "]",
   "<Space>", "<CR>", "<C-s>", "w", "i", "a",
   "1", "2", "3", "4", "5", "6", "7", "8", "9",
   "q", "<Esc>", "<C-c>",
+}
+
+local TARGET_NAV_KEYS = {
+  "j", "<Down>", "<C-n>",
 }
 
 local function get_icon(name, cfg)
@@ -210,16 +214,21 @@ function M.hide()
   M.state.is_hidden = true
 end
 
----Remove question keymaps from mapped buffer
+---Remove question keymaps from mapped buffer and floating buffer
 function M.clear_keymaps()
   local b = M.state.mapped_buf or M.state.target_buf
   if b and vim.api.nvim_buf_is_valid(b) then
-    for _, key in ipairs(QUESTION_KEYS) do
+    for _, key in ipairs(TARGET_NAV_KEYS) do
       pcall(vim.keymap.del, "n", key, { buffer = b })
+    end
+    local protocol = package.loaded["agy.protocol"]
+    local state = protocol and protocol.buffers and protocol.buffers[b]
+    if state and state.conversation_id then
+      pcall(protocol._setup_buffer, b, state.conversation_id)
     end
   end
   if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
-    for _, key in ipairs(QUESTION_KEYS) do
+    for _, key in ipairs(QUESTION_BUF_KEYS) do
       pcall(vim.keymap.del, "n", key, { buffer = M.state.buf })
     end
     local insert_keys = { "<CR>", "<Esc>", "<C-c>", "<BS>", "<C-h>", "<C-w>", "<C-u>", "<Left>", "<Home>", "<Up>", "<Down>" }
@@ -1398,244 +1407,117 @@ function M.setup_keymaps(target_buf)
   if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then return end
   M.state.mapped_buf = target_buf
 
-  local function is_at_prompt()
-    local cur_win = vim.api.nvim_get_current_win()
-    if cur_win == M.state.win then
-      return true
-    end
-    cur_win = vim.fn.bufwinid(target_buf)
-    if cur_win == -1 or not vim.api.nvim_win_is_valid(cur_win) then
-      cur_win = 0
-    end
-    local cur_line = vim.api.nvim_win_get_cursor(cur_win)[1]
+  -- Down navigation on target_buf: j, <Down>, <C-n>
+  -- Moves cursor in history; if crossing into the prompt area where the question is docked, focus question popup
+  local function handle_target_down()
+    local win = vim.api.nvim_get_current_win()
+    local cur = vim.api.nvim_win_get_cursor(win)
+    local line_count = vim.api.nvim_buf_line_count(target_buf)
     local protocol = package.loaded["agy.protocol"]
     local state = protocol and protocol.buffers[target_buf]
-    local prompt_start = (state and state.prompt_start_line) or 1
-    return cur_line >= prompt_start
-  end
-
-  -- Down navigation: j, <Down>, <C-n>
-  local function handle_down()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win then
-      M.select_next()
-      return
-    end
-
-    if is_at_prompt() and M.is_visible() then
+    local prompt_start = (state and state.prompt_start_line) or line_count
+    if (cur[1] + 1 >= prompt_start or cur[1] >= prompt_start) and M.is_visible() then
       M.focus()
-    else
-      local cur = vim.api.nvim_win_get_cursor(win)
-      local line_count = vim.api.nvim_buf_line_count(target_buf)
-      local protocol = package.loaded["agy.protocol"]
-      local state = protocol and protocol.buffers[target_buf]
-      local prompt_start = (state and state.prompt_start_line) or line_count
-      if cur[1] + 1 >= prompt_start and M.is_visible() then
-        M.focus()
-      elseif cur[1] < line_count then
-        local next_l = vim.api.nvim_buf_get_lines(target_buf, cur[1], cur[1] + 1, false)[1] or ""
-        vim.api.nvim_win_set_cursor(win, { cur[1] + 1, math.min(cur[2], #next_l) })
-      end
+    elseif cur[1] < line_count then
+      local next_l = vim.api.nvim_buf_get_lines(target_buf, cur[1], cur[1] + 1, false)[1] or ""
+      vim.api.nvim_win_set_cursor(win, { cur[1] + 1, math.min(cur[2], #next_l) })
     end
   end
 
-  -- Up navigation: k, <Up>, <C-p>
-  local function handle_up()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win then
-      if M.state.selected_idx > 1 then
-        M.select_prev()
-      else
-        local target_win = M.state.target_win
-        if target_win and vim.api.nvim_win_is_valid(target_win) then
-          vim.api.nvim_set_current_win(target_win)
-          local protocol = package.loaded["agy.protocol"]
-          local state = protocol and protocol.buffers[target_buf]
-          local prompt_start = (state and state.prompt_start_line) or vim.api.nvim_buf_line_count(target_buf)
-          local target_line = math.max(1, prompt_start - 1)
-          local line_text = vim.api.nvim_buf_get_lines(target_buf, target_line - 1, target_line, false)[1] or ""
-          vim.api.nvim_win_set_cursor(target_win, { target_line, math.min(0, #line_text) })
+  local target_opts = { buffer = target_buf, silent = true, nowait = true }
+  for _, k in ipairs(TARGET_NAV_KEYS) do
+    vim.keymap.set("n", k, handle_target_down, target_opts)
+  end
+
+  -- Keys on question buffer (M.state.buf)
+  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) and M.state.buf ~= target_buf then
+    local q_opts = { buffer = M.state.buf, silent = true, nowait = true }
+
+    -- Up navigation: k, <Up>, <C-p>
+    -- Moves selection up, or if at top option, moves focus into target_win history above prompt
+    local function handle_up()
+      local win = vim.api.nvim_get_current_win()
+      if win == M.state.win then
+        if M.state.selected_idx > 1 then
+          M.select_prev()
+        else
+          local target_win = M.state.target_win
+          if target_win and vim.api.nvim_win_is_valid(target_win) then
+            vim.api.nvim_set_current_win(target_win)
+            local protocol = package.loaded["agy.protocol"]
+            local state = protocol and protocol.buffers[target_buf]
+            local prompt_start = (state and state.prompt_start_line) or vim.api.nvim_buf_line_count(target_buf)
+            local target_line = math.max(1, prompt_start - 1)
+            local line_text = vim.api.nvim_buf_get_lines(target_buf, target_line - 1, target_line, false)[1] or ""
+            vim.api.nvim_win_set_cursor(target_win, { target_line, math.min(0, #line_text) })
+          end
         end
       end
-      return
     end
 
-    local cur = vim.api.nvim_win_get_cursor(win)
-    local protocol = package.loaded["agy.protocol"]
-    local state = protocol and protocol.buffers[target_buf]
-    local prompt_start = (state and state.prompt_start_line) or 1
-
-    if cur[1] >= prompt_start and M.is_visible() then
-      M.focus()
-    else
-      if cur[1] > 1 then
-        local prev_l = vim.api.nvim_buf_get_lines(target_buf, cur[1] - 2, cur[1] - 1, false)[1] or ""
-        vim.api.nvim_win_set_cursor(win, { cur[1] - 1, math.min(cur[2], #prev_l) })
-      end
-    end
-  end
-
-  -- Next question navigation: l, <Right>
-  local function handle_next_q()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win or is_at_prompt() then
+    local function handle_tab()
       if #M.state.questions > 1 then
         M.next_question()
-      end
-    else
-      local cur = vim.api.nvim_win_get_cursor(win)
-      local line = vim.api.nvim_buf_get_lines(target_buf, cur[1] - 1, cur[1], false)[1] or ""
-      if cur[2] < #line - 1 then
-        vim.api.nvim_win_set_cursor(win, { cur[1], cur[2] + 1 })
+      else
+        M.select_next()
       end
     end
-  end
 
-  -- Previous question navigation: h, <Left>
-  local function handle_prev_q()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win or is_at_prompt() then
+    local function handle_s_tab()
+      if #M.state.questions > 1 then
+        M.prev_question()
+      else
+        M.select_prev()
+      end
+    end
+
+    local function handle_bracket_prev()
       if #M.state.questions > 1 then
         M.prev_question()
       end
-    else
-      local cur = vim.api.nvim_win_get_cursor(win)
-      if cur[2] > 0 then
-        vim.api.nvim_win_set_cursor(win, { cur[1], cur[2] - 1 })
-      end
     end
-  end
 
-  local function handle_tab()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win or is_at_prompt() then
+    local function handle_bracket_next()
       if #M.state.questions > 1 then
         M.next_question()
       end
-    else
-      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Tab>", true, false, true), "n", false)
     end
-  end
-
-  local function handle_s_tab()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win or is_at_prompt() then
-      if #M.state.questions > 1 then
-        M.prev_question()
-      end
-    else
-      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true), "n", false)
-    end
-  end
-
-  local function handle_bracket_prev()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win or is_at_prompt() then
-      if #M.state.questions > 1 then
-        M.prev_question()
-      end
-    else
-      vim.api.nvim_feedkeys("[", "n", false)
-    end
-  end
-
-  local function handle_bracket_next()
-    local win = vim.api.nvim_get_current_win()
-    if win == M.state.win or is_at_prompt() then
-      if #M.state.questions > 1 then
-        M.next_question()
-      end
-    else
-      vim.api.nvim_feedkeys("]", "n", false)
-    end
-  end
-
-  local buffers_to_map = { target_buf }
-  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) and M.state.buf ~= target_buf then
-    table.insert(buffers_to_map, M.state.buf)
-  end
-
-  for _, b in ipairs(buffers_to_map) do
-    local opts = { buffer = b, silent = true, nowait = true }
 
     for _, k in ipairs({ "j", "<Down>", "<C-n>" }) do
-      vim.keymap.set("n", k, handle_down, opts)
+      vim.keymap.set("n", k, function() M.select_next() end, q_opts)
     end
     for _, k in ipairs({ "k", "<Up>", "<C-p>" }) do
-      vim.keymap.set("n", k, handle_up, opts)
+      vim.keymap.set("n", k, handle_up, q_opts)
     end
     for _, k in ipairs({ "h", "<Left>" }) do
-      vim.keymap.set("n", k, handle_prev_q, opts)
+      vim.keymap.set("n", k, function()
+        if #M.state.questions > 1 then M.prev_question() end
+      end, q_opts)
     end
     for _, k in ipairs({ "l", "<Right>" }) do
-      vim.keymap.set("n", k, handle_next_q, opts)
+      vim.keymap.set("n", k, function()
+        if #M.state.questions > 1 then M.next_question() end
+      end, q_opts)
     end
-    vim.keymap.set("n", "<Tab>", handle_tab, opts)
-    vim.keymap.set("n", "<S-Tab>", handle_s_tab, opts)
-    vim.keymap.set("n", "[", handle_bracket_prev, opts)
-    vim.keymap.set("n", "]", handle_bracket_next, opts)
+    vim.keymap.set("n", "<Tab>", handle_tab, q_opts)
+    vim.keymap.set("n", "<S-Tab>", handle_s_tab, q_opts)
+    vim.keymap.set("n", "[", handle_bracket_prev, q_opts)
+    vim.keymap.set("n", "]", handle_bracket_next, q_opts)
 
-    -- Space toggle
-    vim.keymap.set("n", "<Space>", function()
-      if is_at_prompt() and M.is_visible() then
-        M.toggle()
-      else
-        local win = vim.api.nvim_get_current_win()
-        local cur = vim.api.nvim_win_get_cursor(win)
-        local line = vim.api.nvim_buf_get_lines(target_buf, cur[1] - 1, cur[1], false)[1] or ""
-        if cur[2] < #line - 1 then
-          vim.api.nvim_win_set_cursor(win, { cur[1], cur[2] + 1 })
-        end
-      end
-    end, opts)
+    vim.keymap.set("n", "<Space>", function() M.toggle() end, q_opts)
+    vim.keymap.set("n", "<CR>", function() M.accept() end, q_opts)
+    vim.keymap.set("n", "<C-s>", function() M.submit_all() end, q_opts)
 
-    -- Enter accept
-    vim.keymap.set("n", "<CR>", function()
-      if is_at_prompt() and M.is_visible() then
-        M.accept()
-      else
-        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "n", false)
-      end
-    end, opts)
-
-    -- Submit with <C-s>
-    vim.keymap.set("n", "<C-s>", function()
-      if is_at_prompt() and M.is_visible() then
-        M.submit_all()
-      end
-    end, opts)
-
-    -- Write-in response: w, i, a
     for _, k in ipairs({ "w", "i", "a" }) do
-      vim.keymap.set("n", k, function()
-        if is_at_prompt() and M.is_visible() then
-          M.prompt_write_in()
-        else
-          vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "n", false)
-        end
-      end, opts)
+      vim.keymap.set("n", k, function() M.prompt_write_in() end, q_opts)
     end
 
-    -- Number jumps: 1 through 9
     for num = 1, 9 do
-      vim.keymap.set("n", tostring(num), function()
-        if is_at_prompt() and M.is_visible() then
-          M.jump_to(num)
-        else
-          vim.api.nvim_feedkeys(tostring(num), "n", false)
-        end
-      end, opts)
+      vim.keymap.set("n", tostring(num), function() M.jump_to(num) end, q_opts)
     end
 
-    -- Cancel: q, <Esc>, <C-c>
     for _, k in ipairs({ "q", "<Esc>", "<C-c>" }) do
-      vim.keymap.set("n", k, function()
-        if is_at_prompt() and M.is_visible() then
-          M.cancel()
-        else
-          vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), "n", false)
-        end
-      end, opts)
+      vim.keymap.set("n", k, function() M.cancel() end, q_opts)
     end
   end
 

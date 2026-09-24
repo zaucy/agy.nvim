@@ -1248,7 +1248,7 @@ function M.handle_write(buf)
 
   if state.active_question then
     if state.active_question.ui and state.active_question.ui.is_visible() then
-      state.active_question.ui.accept()
+      state.active_question.ui.submit_all()
       return
     end
     if state.active_question.questions and state.active_question.first_option_line then
@@ -1893,7 +1893,13 @@ end
 ---@param buf number
 function M.stop_turn(buf)
   local state = M.buffers[buf]
-  if not state or not state.session then return end
+  if not state then return end
+
+  render.stop_thinking_animation(buf)
+  if state.stream_flush_timer then
+    pcall(function() state.stream_flush_timer:stop() end)
+  end
+  state.stream_delta_queue = {}
 
   if state.active_question then
     if state.active_question.ui and state.active_question.ui.is_visible() then
@@ -1909,12 +1915,15 @@ function M.stop_turn(buf)
       state.prompt_extmark_id = prompt_extmark_id
     end)
     M.update_footer(buf)
+    M.update_modifiable(buf)
     vim.notify("[agy.nvim] Question cancelled.", vim.log.levels.INFO)
     return
   end
 
-  if state.session.turn_active then
-    state.session:stop()
+  if (state.session and state.session.turn_active) or state.agent_extmark_id or (state.stream_info and state.stream_info.status ~= "ready") then
+    if state.session then
+      state.session:stop()
+    end
     state.stream_info.status = "ready"
     M.with_modifiable(buf, function()
       local next_line, prompt_extmark_id = render.render_cancelled(buf, state.config)
@@ -1922,6 +1931,7 @@ function M.stop_turn(buf)
       state.prompt_extmark_id = prompt_extmark_id
     end)
     M.update_footer(buf)
+    M.update_modifiable(buf)
     vim.notify("[agy.nvim] Turn cancelled.", vim.log.levels.INFO)
   else
     vim.notify("[agy.nvim] No active turn running.", vim.log.levels.INFO)

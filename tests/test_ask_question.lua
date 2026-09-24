@@ -1116,4 +1116,104 @@ question_mod.close()
 protocol.cleanup_buffer(test18_buf)
 print("✓ Question title deduplication and block submit button styling verified")
 
+-- =========================================================================
+-- TEST 19: <CR> Tool/Thought Toggle & <C-c> Stop Turn Preservation
+-- =========================================================================
+print("\n[Test 19] Testing <CR> tool/thought toggle and <C-c> cancel turn preservation...")
+
+vim.cmd("edit! agy://test-tool-cr-preserve")
+local t19_buf = vim.api.nvim_get_current_buf()
+local t19_win = vim.api.nvim_get_current_win()
+local t19_state = protocol.buffers[t19_buf]
+
+local cr_map_before = vim.fn.maparg("<CR>", "n", false, true)
+assert(cr_map_before and cr_map_before.callback ~= nil, "<CR> must be mapped initially on buffer")
+local cc_map_before = vim.fn.maparg("<C-c>", "n", false, true)
+assert(cc_map_before and cc_map_before.callback ~= nil, "<C-c> must be mapped initially on buffer")
+
+local tool_line, ext_id = render.append_tool_call(t19_buf, "run_command", { CommandLine = "echo hello" }, t19_state.config)
+local tc = {
+  id = "tc-test-19",
+  tool_name = "run_command",
+  params = { CommandLine = "echo hello" },
+  output = "hello world\nline 2",
+  header_extmark_id = ext_id,
+  header_line_idx = tool_line,
+  status = "done",
+  is_open = false,
+}
+table.insert(t19_state.tool_calls, tc)
+render.complete_tool_call(t19_buf, tc, 0.1, "hello world\nline 2", t19_state.config)
+
+-- Move prompt divider below tool call
+local next_prompt_line, prompt_ext = render.render_cancelled(t19_buf, t19_state.config)
+t19_state.prompt_start_line = next_prompt_line
+t19_state.prompt_extmark_id = prompt_ext
+
+-- Intercept ask_question to display floating UI
+local q_spec = {
+  { question = "Pick an approach:", options = { "Option A", "Option B" }, is_multi_select = false },
+}
+protocol.intercept_ask_question(t19_buf, t19_state, q_spec)
+assert(t19_state.active_question ~= nil, "Question must be active")
+assert(question_mod.is_visible() == true, "Question UI must be visible")
+
+-- Navigate into history in target window above prompt onto tool call header line
+vim.api.nvim_set_current_win(t19_win)
+vim.api.nvim_win_set_cursor(t19_win, { tool_line + 1, 0 })
+
+-- 1. Press <CR> on tool call line in history while question is visible -> tool window opens
+local cr_map = vim.fn.maparg("<CR>", "n", false, true)
+assert(cr_map and cr_map.callback ~= nil, "<CR> keymap must remain accessible on target buffer")
+cr_map.callback()
+assert(tc.is_open == true, "Tool call must open via <CR> in history while question is open")
+assert(tc.win and vim.api.nvim_win_is_valid(tc.win), "Tool call window must be open")
+
+-- 2. Press <CR> again -> tool window collapses
+cr_map.callback()
+assert(tc.is_open == false, "Tool call must collapse via <CR> in history while question is open")
+assert(tc.win == nil or not vim.api.nvim_win_is_valid(tc.win), "Tool call window must be closed")
+
+-- 3. Cancel question with <C-c> from target buffer
+local cc_map = vim.fn.maparg("<C-c>", "n", false, true)
+assert(cc_map and cc_map.callback ~= nil, "<C-c> keymap must remain accessible on target buffer")
+cc_map.callback()
+assert(t19_state.active_question == nil, "Question must be cancelled via <C-c>")
+assert(question_mod.is_visible() == false, "Question UI must be closed")
+
+-- 4. Verify <CR> and <C-c> are NOT deleted after question closes
+local cr_map_after = vim.fn.maparg("<CR>", "n", false, true)
+assert(cr_map_after and cr_map_after.callback ~= nil, "<CR> must NOT be deleted after question is closed")
+local cc_map_after = vim.fn.maparg("<C-c>", "n", false, true)
+assert(cc_map_after and cc_map_after.callback ~= nil, "<C-c> must NOT be deleted after question is closed")
+
+-- 5. Toggle tool output again after question was closed
+vim.api.nvim_win_set_cursor(t19_win, { tool_line + 1, 0 })
+cr_map_after.callback()
+assert(tc.is_open == true, "Tool call must open via <CR> after question was closed")
+cr_map_after.callback()
+assert(tc.is_open == false, "Tool call must collapse via <CR> after question was closed")
+
+-- 6. Verify <C-c> stops active turn in normal mode
+t19_state.session = {
+  turn_active = true,
+  stop = function(self) self.turn_active = false end,
+}
+t19_state.stream_info.status = "streaming"
+cc_map_after.callback()
+assert(t19_state.session.turn_active == false, "<C-c> in normal mode must stop active turn")
+assert(t19_state.stream_info.status == "ready", "Status must become ready")
+
+-- 7. Verify <C-c> stops active turn in insert mode
+local ic_map = vim.fn.maparg("<C-c>", "i", false, true)
+assert(ic_map and ic_map.callback ~= nil, "Insert mode <C-c> must be mapped")
+t19_state.session.turn_active = true
+t19_state.stream_info.status = "thinking"
+ic_map.callback()
+assert(t19_state.session.turn_active == false, "<C-c> in insert mode must stop active turn")
+assert(t19_state.stream_info.status == "ready", "Status must become ready")
+
+protocol.cleanup_buffer(t19_buf)
+print("✓ <CR> tool toggle and <C-c> turn cancellation preserved before, during, and after questions")
+
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")

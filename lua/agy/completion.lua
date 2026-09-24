@@ -1837,6 +1837,14 @@ function M.setup_buffer(buf)
       M.close()
       return
     end
+    local protocol = package.loaded["agy.protocol"]
+    local state = protocol and protocol.buffers and protocol.buffers[buf]
+    local is_turn_running = state and ((state.session and state.session.turn_active) or state.active_question or state.agent_extmark_id or (state.stream_info and state.stream_info.status ~= "ready"))
+    if is_turn_running then
+      pcall(vim.cmd, "stopinsert")
+      protocol.stop_turn(buf)
+      return
+    end
     vim.api.nvim_feedkeys(vim.keycode("<C-c>"), "n", false)
   end, { buffer = buf, silent = true, desc = "Close completion or C-c" })
 end
