@@ -239,4 +239,39 @@ function M.get_conversation_workspace(conversation_id, app_data_dir)
   return ws
 end
 
+---Append a conversation entry to history.jsonl
+---@param entry { conversation_id: string, workspace: string, display?: string, timestamp?: number }
+---@param app_data_dir? string
+---@return boolean success
+function M.append_history(entry, app_data_dir)
+  assert(entry, "append_history: entry table required")
+  assert(entry.conversation_id and entry.conversation_id ~= "" and entry.conversation_id ~= "new", "append_history: valid conversation_id required")
+  assert(entry.workspace and entry.workspace ~= "", "append_history: valid workspace required")
+
+  local history_file = utils.get_history_file(app_data_dir)
+  pcall(vim.fn.mkdir, vim.fs.dirname(history_file), "p")
+
+  local f = io.open(history_file, "a")
+  if not f then
+    return false
+  end
+
+  local ts = entry.timestamp
+  if not ts then
+    local sec, usec = vim.uv.gettimeofday()
+    ts = math.floor(sec * 1000 + (usec or 0) / 1000)
+  end
+
+  local item = {
+    conversationId = entry.conversation_id,
+    display = entry.display or "",
+    timestamp = ts,
+    workspace = entry.workspace,
+  }
+
+  f:write(utils.json_encode(item) .. "\n")
+  f:close()
+  return true
+end
+
 return M
