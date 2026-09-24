@@ -1427,6 +1427,23 @@ function M.handle_write(buf)
   -- Mark buffer clean so [+] is cleared immediately after :w
   vim.bo[buf].modified = false
 
+  -- Log conversation prompt to history.jsonl
+  local clean_disp = utils.clean_user_content(prompt_text)
+  if clean_disp == "" then
+    clean_disp = prompt_text:match("^[^\r\n]+") or prompt_text
+  end
+  local target_ws = (workspaces and workspaces[1]) or vim.fn.getcwd()
+
+  if state.conversation_id and state.conversation_id ~= "" and state.conversation_id ~= "new" then
+    transcript_mod.append_history({
+      conversation_id = state.conversation_id,
+      display = clean_disp,
+      workspace = target_ws,
+    }, state.config and state.config.app_data_dir)
+  else
+    state.pending_history_display = clean_disp
+  end
+
   -- Restore prompt area so user can continue typing or queueing while turn is active
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(buf) and M.buffers[buf] == state then
@@ -2035,6 +2052,18 @@ function M.handle_buf_read(args)
         M.with_modifiable(buf, function()
           render.update_session_id(buf, cid, state.config)
         end)
+
+        if state.pending_history_display then
+          local ws = (state.workspaces and state.workspaces[1])
+            or (state.session and state.session.cwd)
+            or vim.fn.getcwd()
+          transcript_mod.append_history({
+            conversation_id = cid,
+            display = state.pending_history_display,
+            workspace = ws,
+          }, state.config and state.config.app_data_dir)
+          state.pending_history_display = nil
+        end
       end
 
       state.stream_info.status = "ready"
@@ -2189,6 +2218,17 @@ function M.handle_buf_read(args)
       state.stream_info.status = "ready"
       if result.conversation_id and result.conversation_id ~= "" then
         state.conversation_id = result.conversation_id
+      end
+      if state.pending_history_display and state.conversation_id and state.conversation_id ~= "" and state.conversation_id ~= "new" then
+        local ws = (state.workspaces and state.workspaces[1])
+          or (state.session and state.session.cwd)
+          or vim.fn.getcwd()
+        transcript_mod.append_history({
+          conversation_id = state.conversation_id,
+          display = state.pending_history_display,
+          workspace = ws,
+        }, state.config and state.config.app_data_dir)
+        state.pending_history_display = nil
       end
       if state.active_question then
         render.finalize_question_block(buf, state.active_question, state.config)
