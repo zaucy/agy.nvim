@@ -350,17 +350,75 @@ function M.render_buffer()
   end
 end
 
----Update floating window geometry to stay docked at target window bottom
+---Calculate the target window row for the question popup so it sits directly at the bottom of the prompt
+---@param target_win number
+---@param target_buf number
+---@param height number
+---@param should_scroll boolean
+---@return number row
+function M.calc_prompt_bottom_row(target_win, target_buf, height, should_scroll)
+  local win_height = vim.api.nvim_win_get_height(target_win)
+  local protocol = package.loaded["agy.protocol"]
+  local state = protocol and protocol.buffers[target_buf]
+  local prompt_line = (state and state.prompt_start_line) or vim.api.nvim_buf_line_count(target_buf)
+
+  local win_pos = vim.api.nvim_win_get_position(target_win)
+  local pos = vim.fn.screenpos(target_win, prompt_line, 1)
+
+  if (not pos or pos.row == 0) and vim.api.nvim_get_current_win() == target_win then
+    pcall(vim.cmd, "redraw")
+    pos = vim.fn.screenpos(target_win, prompt_line, 1)
+  end
+
+  local border_offset = 0
+  if state and state.footer_extmark_id then
+    local ok, ext = pcall(vim.api.nvim_buf_get_extmark_by_id, target_buf, require("agy.render").NS_UI, state.footer_extmark_id, {})
+    if ok and ext and #ext >= 1 then
+      border_offset = 1
+    end
+  end
+
+  if pos and pos.row > 0 then
+    local prompt_win_row = pos.row - 1 - win_pos[1]
+    local target_row = prompt_win_row + 1 + border_offset
+
+    if should_scroll and (target_row + height > win_height) then
+      local cur_win = vim.api.nvim_get_current_win()
+      if cur_win == target_win then
+        local cur_line = vim.api.nvim_win_get_cursor(target_win)[1]
+        if cur_line >= prompt_line then
+          local needed = (target_row + height) - win_height
+          local view = vim.fn.winsaveview()
+          view.topline = view.topline + needed
+          vim.fn.winrestview(view)
+          pcall(vim.cmd, "redraw")
+          pos = vim.fn.screenpos(target_win, prompt_line, 1)
+          if pos and pos.row > 0 then
+            prompt_win_row = pos.row - 1 - win_pos[1]
+            target_row = prompt_win_row + 1 + border_offset
+          end
+        end
+      end
+    end
+
+    return math.max(0, math.min(target_row, win_height - height))
+  end
+
+  return math.max(0, win_height - height)
+end
+
+---Update floating window geometry to stay docked at target window bottom of prompt
 function M.update_win_config()
   if not M.is_visible() or not M.state.target_win or not vim.api.nvim_win_is_valid(M.state.target_win) then
     return
   end
   local target_win = M.state.target_win
+  local target_buf = M.state.target_buf or vim.api.nvim_win_get_buf(target_win)
   local win_width = vim.api.nvim_win_get_width(target_win)
   local win_height = vim.api.nvim_win_get_height(target_win)
   local line_count = vim.api.nvim_buf_line_count(M.state.buf)
   local height = math.min(line_count, win_height)
-  local row = math.max(0, win_height - height)
+  local row = M.calc_prompt_bottom_row(target_win, target_buf, height, false)
 
   local win_cfg = {
     relative = "win",
@@ -729,7 +787,7 @@ function M.show_over_prompt(target_win, target_buf)
   local win_height = vim.api.nvim_win_get_height(target_win)
   local line_count = vim.api.nvim_buf_line_count(M.state.buf)
   local height = math.min(line_count, win_height)
-  local row = math.max(0, win_height - height)
+  local row = M.calc_prompt_bottom_row(target_win, target_buf, height, true)
 
   local win_cfg = {
     relative = "win",
@@ -789,13 +847,12 @@ function M.show(target_win, target_buf, questions, opts)
   M.show_over_prompt(target_win, target_buf)
 end
 
--- Resize listener to keep question menu docked cleanly over prompt
+-- Resize and scroll listener to keep question menu docked cleanly at bottom of prompt
 local resize_group = vim.api.nvim_create_augroup("AgyQuestionResize", { clear = true })
-vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
+vim.api.nvim_create_autocmd({ "WinResized", "VimResized", "WinScrolled" }, {
   group = resize_group,
   callback = function()
     if M.is_visible() then
-      M.render_buffer()
       M.update_win_config()
     end
   end,

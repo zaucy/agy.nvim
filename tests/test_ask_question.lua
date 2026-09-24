@@ -668,9 +668,9 @@ protocol.update_modifiable(buf_lock)
 assert(vim.bo[buf_lock].modifiable == false, "Target buffer modifiable must be false while active_question is active")
 
 -- =========================================================================
--- TEST 16: History Navigation & Seamless Question Hide / Restore
+-- TEST 16: History Navigation & Question UI Persistence
 -- =========================================================================
-print("\n[Test 16] Testing history navigation hides question float and returns seamlessly...")
+print("\n[Test 16] Testing history navigation keeps question float visible...")
 
 local prompt_line = state_lock.prompt_start_line or vim.api.nvim_buf_line_count(buf_lock)
 assert(prompt_line > 1, "prompt_line must be > 1 so history lines exist above it")
@@ -683,12 +683,12 @@ assert(ui_lock.is_visible() == true, "Question UI must be visible when cursor is
 -- Move cursor up into history (e.g. line 1, well above prompt_start_line)
 vim.api.nvim_win_set_cursor(win_lock, { 1, 0 })
 vim.cmd("doautocmd CursorMoved")
-assert(ui_lock.is_visible() == false, "Question UI must be hidden when cursor is scrolled into history")
+assert(ui_lock.is_visible() == true, "Question UI must NOT disappear when cursor is scrolled into history")
 
--- Move cursor back down to prompt line: question UI automatically re-appears
+-- Move cursor back down to prompt line: question UI remains visible
 vim.api.nvim_win_set_cursor(win_lock, { prompt_line, 0 })
 vim.cmd("doautocmd CursorMoved")
-assert(ui_lock.is_visible() == true, "Question UI must be restored when cursor returns to prompt line")
+assert(ui_lock.is_visible() == true, "Question UI must remain visible when cursor returns to prompt line")
 
 -- Navigate options and accept via <CR> at prompt
 local submitted_answer = nil
@@ -708,6 +708,6 @@ assert(state_lock.active_question == nil, "active_question must be nil after sub
 assert(ui_lock.is_visible() == false, "Question UI must be closed after submission")
 
 protocol.cleanup_buffer(buf_lock)
-print("✓ Question UI hides on history scroll, restores on prompt return, and accepts answer cleanly")
+print("✓ Question UI stays visible on history scroll, persists on prompt return, and accepts answer cleanly")
 
 print("\nALL ASK_QUESTION & PLANNING SAFETY TESTS PASSED PERFECTLY!")

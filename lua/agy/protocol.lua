@@ -544,14 +544,10 @@ function M._setup_buffer(buf, conversation_id)
           local prompt_start = state.prompt_start_line or line_count
 
           if state.active_question and state.active_question.ui then
-            if cur_line < prompt_start then
-              if state.active_question.ui.is_visible() then
-                state.active_question.ui.hide()
-              end
+            if state.active_question.ui.is_visible() then
+              state.active_question.ui.update_win_config()
             else
-              if not state.active_question.ui.is_visible() then
-                state.active_question.ui.show_over_prompt(win, buf)
-              end
+              state.active_question.ui.show_over_prompt(win, buf)
             end
           end
 
