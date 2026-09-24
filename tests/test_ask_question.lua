@@ -585,15 +585,19 @@ state_write.session.on_step_update(state_write.session, {
 })
 
 local write_ui = state_write.active_question.ui
-assert(write_ui.is_visible() == true)
+-- Prompt write-in with mocked vim.ui.input, verifying temporary hide to avoid obscuring input
+local orig_input = vim.ui.input
+local was_hidden_during_input = false
+vim.ui.input = function(opts, on_confirm)
+  was_hidden_during_input = write_ui.state.is_hidden
+  on_confirm("Build with ASAN enabled")
+end
 
--- Set write-in text and confirm
-write_ui.state.write_in_text[1] = "Build with ASAN enabled"
-write_ui.state.selected_answers[1] = 2 -- Debug build
-write_ui.confirm_current_question()
+write_ui.prompt_write_in()
+vim.ui.input = orig_input
 
+assert(was_hidden_during_input == true, "Question UI must hide during write-in to prevent covering vim.ui.input")
 assert(write_in_prompt ~= nil)
-assert(write_in_prompt:find("Debug build"), "Prompt must contain chosen option Debug build")
 assert(write_in_prompt:find("Build with ASAN enabled"), "Prompt must contain write-in notes")
 
 protocol.cleanup_buffer(buf_write)
@@ -800,19 +804,37 @@ for _, l in ipairs(lines_q2) do
 end
 assert(found_next_q_button == true, "Multi-select question prior to last question must display Next Question button")
 
+-- Starts on question 1: prev_question() must stay at question 1 (no wrap-around)
+mq_ui.prev_question()
+assert(mq_ui.state.current_q_idx == 1, "Prev from question 1 must stay at question 1 (no wrap)")
+
+-- Navigate to Question 2 via next_question()
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 2, "Must advance to question 2")
+local lines_q2 = vim.api.nvim_buf_get_lines(q_buf, 0, -1, false)
+local found_next_q_button = false
+for _, l in ipairs(lines_q2) do
+  if l:find("Next Question") then found_next_q_button = true end
+end
+assert(found_next_q_button == true, "Multi-select question prior to last question must display Next Question button")
+
 -- Navigate to Question 3 via next_question()
 mq_ui.next_question()
 assert(mq_ui.state.current_q_idx == 3, "Must advance to question 3")
 
--- Wrap-around navigation: next from 3 goes to 1
+-- Advancing past Question 3 lands on Page 4 (Summary Review Page)
 mq_ui.next_question()
-assert(mq_ui.state.current_q_idx == 1, "Next from question 3 must wrap to question 1")
+assert(mq_ui.state.current_q_idx == 4, "Next from question 3 must advance to summary page")
+assert(mq_ui.is_summary_page() == true, "Page 4 must be summary page")
 
--- Wrap-around navigation: prev from 1 goes to 3
+-- Clamped navigation at last page: next_question() on summary page stays at Page 4
+mq_ui.next_question()
+assert(mq_ui.state.current_q_idx == 4, "Next from summary page must stay on summary page (no wrap)")
+
+-- Navigate backwards step by step
 mq_ui.prev_question()
-assert(mq_ui.state.current_q_idx == 3, "Prev from question 1 must wrap to question 3")
+assert(mq_ui.state.current_q_idx == 3, "Prev from summary page must go to question 3")
 
--- Navigate back to question 2
 mq_ui.prev_question()
 assert(mq_ui.state.current_q_idx == 2, "Prev from question 3 must go to question 2")
 
@@ -839,9 +861,33 @@ assert(mq_ui.state.current_q_idx == 3, "Confirming question 2 advances to questi
 
 -- Answer Question 3 with option 1 (Kubernetes)
 mq_ui.jump_to(1)
+-- Since Question 3 is single-select, selecting an option advances to summary page (Page 4)
+assert(mq_ui.state.current_q_idx == 4, "Answering last question must advance to summary page")
+assert(mq_ui.is_summary_page() == true, "Must be on summary review page")
+assert(multi_q_submitted_prompt == nil, "Submission must wait for confirmation on summary page")
 
--- Now all 3 questions have been answered, submitting finishes all questions!
-assert(multi_q_submitted_prompt ~= nil, "All questions answered must trigger prompt submission")
+-- Verify summary buffer content displays all answers
+local summary_lines = vim.api.nvim_buf_get_lines(mq_ui.state.buf, 0, -1, false)
+local summary_text = table.concat(summary_lines, "\n")
+assert(summary_text:find("Summary: Review Answers"), "Summary header must be present")
+assert(summary_text:find("SQLite"), "Summary must list Q1 answer SQLite")
+assert(summary_text:find("Auth, Metrics"), "Summary must list Q2 answers Auth, Metrics")
+assert(summary_text:find("Kubernetes"), "Summary must list Q3 answer Kubernetes")
+assert(summary_text:find("Submit All Answers"), "Summary must have Submit All Answers item")
+
+-- Verify jump_to on summary page to edit a question
+mq_ui.jump_to(2)
+assert(mq_ui.state.current_q_idx == 2, "Direct jump 2 on summary page must edit question 2")
+
+-- Return to summary page
+mq_ui.go_to_question(4)
+assert(mq_ui.is_summary_page() == true)
+
+-- Accept on item 1 [ Submit All Answers ]
+mq_ui.accept()
+
+-- Now all 3 questions have been submitted!
+assert(multi_q_submitted_prompt ~= nil, "Submitting from summary page must trigger prompt submission")
 assert(multi_q_submitted_prompt:find("A1: SQLite"), "Must contain A1 answer SQLite: " .. tostring(multi_q_submitted_prompt))
 assert(multi_q_submitted_prompt:find("A2:"), "Must contain A2 prefix: " .. tostring(multi_q_submitted_prompt))
 assert(multi_q_submitted_prompt:find("Auth"), "Must contain A2 option Auth: " .. tostring(multi_q_submitted_prompt))

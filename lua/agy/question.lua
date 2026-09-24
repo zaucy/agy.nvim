@@ -140,8 +140,46 @@ function M.cancel()
   end
 end
 
----Build items list for the current question
+---Check if the current page is the summary review page (only exists if > 1 questions)
+---@return boolean
+function M.is_summary_page()
+  return #M.state.questions > 1 and M.state.current_q_idx == (#M.state.questions + 1)
+end
+
+---Get total navigable pages (questions + 1 summary page if multiple questions)
+---@return number
+function M.get_total_pages()
+  if #M.state.questions > 1 then
+    return #M.state.questions + 1
+  end
+  return #M.state.questions
+end
+
+---Build items list for the current question or summary page
 function M.build_items()
+  if M.is_summary_page() then
+    local items = {}
+    table.insert(items, {
+      type = "submit_all",
+      opt_idx = 1,
+      text = "Submit All Answers",
+    })
+    for q_idx = 1, #M.state.questions do
+      table.insert(items, {
+        type = "edit_question",
+        target_q_idx = q_idx,
+        opt_idx = 1 + q_idx,
+        text = string.format("Edit Question %d", q_idx),
+      })
+    end
+    M.state.items = items
+    if M.state.selected_idx > #items or M.state.selected_idx < 1 then
+      M.state.selected_idx = 1
+      M.state.scroll_offset = 1
+    end
+    return
+  end
+
   local q = M.state.questions[M.state.current_q_idx]
   assert(q, "agy question: active question not found")
   local items = {}
@@ -162,8 +200,12 @@ function M.build_items()
 
   if q.is_multi_select then
     local submit_label = "Submit Answers"
-    if #M.state.questions > 1 and M.state.current_q_idx < #M.state.questions then
-      submit_label = "Next Question"
+    if #M.state.questions > 1 then
+      if M.state.current_q_idx < #M.state.questions then
+        submit_label = "Next Question"
+      else
+        submit_label = "Review Summary"
+      end
     end
     table.insert(items, {
       type = "submit",
@@ -182,12 +224,7 @@ end
 ---Render the question floating buffer contents and highlights
 function M.render_buffer()
   if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
-  local q = M.state.questions[M.state.current_q_idx]
-  if not q then return end
 
-  local items = M.state.items
-  local total_count = #items
-  local selected_idx = M.state.selected_idx
   local cfg = M.state.config or config_mod.get()
   local q_icon = get_icon("question", cfg)
   local horiz_char = get_horizontal_sep(cfg)
@@ -196,6 +233,182 @@ function M.render_buffer()
   if M.state.target_win and vim.api.nvim_win_is_valid(M.state.target_win) then
     win_width = vim.api.nvim_win_get_width(M.state.target_win)
   end
+
+  if M.is_summary_page() then
+    local lines = {}
+    local highlights = {}
+
+    -- Top border divider
+    local top_divider = string.rep(horiz_char, win_width)
+    table.insert(lines, top_divider)
+    table.insert(highlights, {
+      row = 0,
+      start_col = 0,
+      end_col = #top_divider,
+      hl_group = "AgyDividerLine",
+    })
+
+    -- Header line
+    local header_text = string.format("  %s Summary: Review Answers (%d/%d)", q_icon, #M.state.questions, #M.state.questions)
+    table.insert(lines, header_text)
+    table.insert(highlights, {
+      row = #lines - 1,
+      start_col = 0,
+      end_col = #header_text,
+      hl_group = "AgyQuestionHeader",
+    })
+
+    -- Spacer
+    table.insert(lines, "")
+
+    -- Summary of each question
+    for q_idx, quest in ipairs(M.state.questions) do
+      local q_title = string.format("  %d. %s", q_idx, quest.question)
+      table.insert(lines, q_title)
+      table.insert(highlights, {
+        row = #lines - 1,
+        start_col = 2,
+        end_col = #q_title,
+        hl_group = "AgyQuestionPrompt",
+      })
+
+      local ans_summary = ""
+      if quest.is_multi_select then
+        local sel_map = M.state.selected_answers[q_idx] or {}
+        local opts = {}
+        for opt_i, opt_text in ipairs(quest.options) do
+          if sel_map[opt_i] then
+            table.insert(opts, opt_text)
+          end
+        end
+        ans_summary = table.concat(opts, ", ")
+      else
+        local choice = M.state.selected_answers[q_idx]
+        if type(choice) == "number" and quest.options[choice] then
+          ans_summary = quest.options[choice]
+        end
+      end
+
+      local write_in = M.state.write_in_text[q_idx]
+      if write_in and write_in ~= "" then
+        if ans_summary ~= "" then
+          ans_summary = ans_summary .. ' (Notes: "' .. write_in .. '")'
+        else
+          ans_summary = 'Write-in: "' .. write_in .. '"'
+        end
+      end
+
+      if ans_summary == "" then
+        ans_summary = "(Unanswered)"
+      end
+
+      local ans_line = string.format("     • %s", ans_summary)
+      table.insert(lines, ans_line)
+      table.insert(highlights, {
+        row = #lines - 1,
+        start_col = 5,
+        end_col = #ans_line,
+        hl_group = (ans_summary == "(Unanswered)") and "AgyBadgeError" or "AgyQuestionChecked",
+      })
+    end
+
+    -- Spacer
+    table.insert(lines, "")
+
+    -- Summary items (Submit All Answers, Edit Question 1..N)
+    for i, it in ipairs(M.state.items) do
+      local is_sel = (i == M.state.selected_idx)
+      local pointer = is_sel and "> " or "  "
+      local line_str = ""
+      if it.type == "submit_all" then
+        line_str = pointer .. "[ " .. it.text .. " ]"
+      elseif it.type == "edit_question" then
+        line_str = pointer .. string.format("%d. %s", it.target_q_idx, it.text)
+      end
+      table.insert(lines, line_str)
+      table.insert(highlights, {
+        row = #lines - 1,
+        is_sel = is_sel,
+        line_str = line_str,
+        item = it,
+      })
+    end
+
+    -- Spacer
+    table.insert(lines, "")
+
+    -- Footer
+    local footer_text = "  ←/h Previous · enter Select · 1-" .. tostring(#M.state.questions) .. " Edit · esc Cancel"
+    table.insert(lines, footer_text)
+
+    -- Bottom border divider
+    local bot_divider = string.rep(horiz_char, win_width)
+    table.insert(lines, bot_divider)
+    table.insert(highlights, {
+      row = #lines - 1,
+      start_col = 0,
+      end_col = #bot_divider,
+      hl_group = "AgyDividerLine",
+    })
+
+    vim.bo[M.state.buf].modifiable = true
+    vim.api.nvim_buf_set_lines(M.state.buf, 0, -1, false, lines)
+    vim.bo[M.state.buf].modifiable = false
+
+    -- Extmarks
+    vim.api.nvim_buf_clear_namespace(M.state.buf, M.NS_HL, 0, -1)
+    for _, hl in ipairs(highlights) do
+      if hl.hl_group then
+        vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, hl.start_col or 0, {
+          end_col = hl.end_col,
+          hl_group = hl.hl_group,
+          priority = 100,
+        })
+      elseif hl.is_sel ~= nil then
+        if hl.is_sel then
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            line_hl_group = "AgyCompletionSel",
+            priority = 100,
+          })
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            end_col = 2,
+            hl_group = "AgyCompletionPointer",
+            priority = 101,
+          })
+        end
+        if hl.item and hl.item.type == "submit_all" then
+          vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, hl.row, 0, {
+            end_col = #hl.line_str,
+            hl_group = "AgyCompletionKey",
+            priority = 100,
+          })
+        end
+      end
+    end
+
+    local footer_row = #lines - 2
+    vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, footer_row, 0, {
+      hl_group = "AgyCompletionFooter",
+    })
+    local key_tokens = { "←/h", "enter", "esc" }
+    for _, tok in ipairs(key_tokens) do
+      local s, e = footer_text:find(tok, 1, true)
+      if s and e then
+        vim.api.nvim_buf_set_extmark(M.state.buf, M.NS_HL, footer_row, s - 1, {
+          end_col = e,
+          hl_group = "AgyCompletionKey",
+        })
+      end
+    end
+    return
+  end
+
+  local q = M.state.questions[M.state.current_q_idx]
+  if not q then return end
+
+  local items = M.state.items
+  local total_count = #items
+  local selected_idx = M.state.selected_idx
 
   -- Sliding window scroll offset
   local max_visible = 6
@@ -467,7 +680,11 @@ end
 function M.sync_cursor()
   if not M.state.win or not vim.api.nvim_win_is_valid(M.state.win) then return end
   if not M.state.buf or not vim.api.nvim_buf_is_valid(M.state.buf) then return end
-  local cursor_line = 3 + (M.state.selected_idx - (M.state.scroll_offset or 1) + 1)
+  local opt_start = 4
+  if M.is_summary_page() then
+    opt_start = 4 + (#M.state.questions * 2) + 1
+  end
+  local cursor_line = opt_start + (M.state.selected_idx - (M.state.scroll_offset or 1))
   local line_count = vim.api.nvim_buf_line_count(M.state.buf)
   cursor_line = math.max(1, math.min(cursor_line, line_count))
   pcall(vim.api.nvim_win_set_cursor, M.state.win, { cursor_line, 0 })
@@ -501,26 +718,26 @@ end
 ---Navigate to a specific question by index (1-based)
 ---@param idx number
 function M.go_to_question(idx)
+  local total_pages = M.get_total_pages()
   assert(type(idx) == "number", "agy question: idx must be a number")
-  assert(idx >= 1 and idx <= #M.state.questions, "agy question: question index out of range: " .. tostring(idx))
+  assert(idx >= 1 and idx <= total_pages, "agy question: question index out of range: " .. tostring(idx))
 
   M.state.current_q_idx = idx
-  local q = M.state.questions[idx]
+  M.state.scroll_offset = 1
+  M.state.selected_idx = 1
 
-  if q and not q.is_multi_select then
-    local prev_ans = M.state.selected_answers[idx]
-    if type(prev_ans) == "number" and prev_ans >= 1 and prev_ans <= #q.options then
-      M.state.selected_idx = prev_ans
-    elseif prev_ans == "write_in" then
-      M.state.selected_idx = #q.options + 1
-    else
-      M.state.selected_idx = 1
+  if not M.is_summary_page() then
+    local q = M.state.questions[idx]
+    if q and not q.is_multi_select then
+      local prev_ans = M.state.selected_answers[idx]
+      if type(prev_ans) == "number" and prev_ans >= 1 and prev_ans <= #q.options then
+        M.state.selected_idx = prev_ans
+      elseif prev_ans == "write_in" then
+        M.state.selected_idx = #q.options + 1
+      end
     end
-  else
-    M.state.selected_idx = 1
   end
 
-  M.state.scroll_offset = 1
   M.build_items()
   M.render_buffer()
   M.update_win_config()
@@ -528,27 +745,44 @@ function M.go_to_question(idx)
   M.focus()
 end
 
----Navigate to next question (wraps around)
+---Navigate to next question or summary page (clamped, no wrap)
 function M.next_question()
-  if #M.state.questions <= 1 then return end
-  local next_idx = (M.state.current_q_idx % #M.state.questions) + 1
-  M.go_to_question(next_idx)
+  local total = M.get_total_pages()
+  if total <= 1 then return end
+  if M.state.current_q_idx < total then
+    M.go_to_question(M.state.current_q_idx + 1)
+  end
 end
 
----Navigate to previous question (wraps around)
+---Navigate to previous question (clamped, no wrap)
 function M.prev_question()
-  if #M.state.questions <= 1 then return end
-  local prev_idx = (M.state.current_q_idx - 2 + #M.state.questions) % #M.state.questions + 1
-  M.go_to_question(prev_idx)
+  local total = M.get_total_pages()
+  if total <= 1 then return end
+  if M.state.current_q_idx > 1 then
+    M.go_to_question(M.state.current_q_idx - 1)
+  end
 end
 
 ---Jump directly to a numbered option (1-9)
 ---@param idx number
 function M.jump_to(idx)
   if #M.state.items == 0 then return end
+  if M.is_summary_page() then
+    if idx >= 1 and idx <= #M.state.questions then
+      M.go_to_question(idx)
+      return
+    end
+  end
   if idx >= 1 and idx <= #M.state.items then
     M.state.selected_idx = idx
     local it = M.state.items[idx]
+    if it.type == "submit_all" then
+      M.submit_all()
+      return
+    elseif it.type == "edit_question" then
+      M.go_to_question(it.target_q_idx)
+      return
+    end
     local q = M.state.questions[M.state.current_q_idx]
     if q and not q.is_multi_select and it.type == "option" then
       M.state.selected_answers[M.state.current_q_idx] = it.opt_idx
@@ -568,6 +802,15 @@ function M.toggle()
   if #M.state.items == 0 then return end
   local it = M.state.items[M.state.selected_idx]
   if not it then return end
+
+  if it.type == "submit_all" then
+    M.submit_all()
+    return
+  elseif it.type == "edit_question" then
+    M.go_to_question(it.target_q_idx)
+    return
+  end
+
   local q = M.state.questions[M.state.current_q_idx]
   if not q then return end
 
@@ -593,6 +836,15 @@ function M.accept()
   if #M.state.items == 0 then return end
   local it = M.state.items[M.state.selected_idx]
   if not it then return end
+
+  if it.type == "submit_all" then
+    M.submit_all()
+    return
+  elseif it.type == "edit_question" then
+    M.go_to_question(it.target_q_idx)
+    return
+  end
+
   local q = M.state.questions[M.state.current_q_idx]
   if not q then return end
 
@@ -615,19 +867,29 @@ end
 
 ---Prompt user for write-in response
 function M.prompt_write_in()
-  vim.ui.input({ prompt = "Custom response: " }, function(input)
+  if M.is_summary_page() then return end
+  local target_win = M.state.target_win
+  local target_buf = M.state.target_buf
+  -- Temporarily hide the question window so the floating input modal / cmdline
+  -- is not obscured behind zindex 200
+  M.hide()
+
+  vim.ui.input({
+    prompt = "Custom response: ",
+    default = M.state.write_in_text[M.state.current_q_idx] or "",
+  }, function(input)
     if input and utils.trim(input) ~= "" then
       local trimmed = utils.trim(input)
       M.state.write_in_text[M.state.current_q_idx] = trimmed
       local q = M.state.questions[M.state.current_q_idx]
       if q and not q.is_multi_select then
         M.state.selected_answers[M.state.current_q_idx] = "write_in"
+        M.show_over_prompt(target_win, target_buf)
         M.confirm_current_question()
-      else
-        M.build_items()
-        M.render_buffer()
+        return
       end
     end
+    M.show_over_prompt(target_win, target_buf)
   end)
 end
 
@@ -740,7 +1002,7 @@ function M.confirm_current_question()
     return
   end
 
-  if M.state.current_q_idx < #M.state.questions then
+  if M.state.current_q_idx < M.get_total_pages() then
     M.next_question()
   else
     M.submit_all()
@@ -1006,6 +1268,9 @@ function M.setup_keymaps(target_buf)
         local cur = vim.api.nvim_win_get_cursor(M.state.win)
         local cur_line = cur[1]
         local opt_start = 4
+        if M.is_summary_page() then
+          opt_start = 4 + (#M.state.questions * 2) + 1
+        end
         local max_visible = 6
         local start_idx = M.state.scroll_offset or 1
         local total_count = #M.state.items
