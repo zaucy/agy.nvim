@@ -56,9 +56,10 @@
      ```
      (or `nu test.nu -t`).
 
-4. **Integration & Cleanup**:
-   - Once changes are verified and committed, either merge the branch or prepare it for review as requested by the user.
-   - Clean up temporary worktrees when finished:
+4. **Pull Requests & Worktree Preservation**:
+   - Once changes are verified and committed, push the branch to the remote repository and create a Pull Request using `gh pr create`:
      ```sh
-     git worktree remove .worktrees/<branch-name>
+     git push -u origin <branch-name>
+     gh pr create --fill
      ```
+   - Do not delete or remove the worktree upon completion (never run `git worktree remove`). Leave the worktree intact under `.worktrees/<branch-name>` for review, manual verification, and future iterations.
