@@ -8,20 +8,26 @@ local agy = require("agy")
 -- Initialize protocol handlers
 require("agy.protocol").setup()
 
+-- Prefetch models asynchronously in background
+pcall(function() require("agy.completion").prefetch_models() end)
+
 vim.api.nvim_create_user_command("Agy", function(opts)
   local arg = opts.args and vim.trim(opts.args) or ""
   if arg == "" then
-    agy.new()
+    agy.home()
   else
     agy.open(arg)
   end
 end, {
   nargs = "?",
-  desc = "Open an Antigravity conversation buffer (agy://new or agy://<id>)",
+  desc = "Open Antigravity home buffer or conversation (agy:// or agy://<id>)",
   complete = function(arglead)
     local cfg = require("agy.config").get()
     local history = require("agy.transcript").read_history(cfg.app_data_dir)
     local matches = {}
+    if ("new"):find(arglead, 1, true) then
+      table.insert(matches, "new")
+    end
     for _, item in ipairs(history) do
       if item.conversation_id:find(arglead, 1, true) then
         table.insert(matches, item.conversation_id)
@@ -35,6 +41,12 @@ vim.api.nvim_create_user_command("AgyNew", function()
   agy.new()
 end, {
   desc = "Start a new Antigravity session (agy://new)",
+})
+
+vim.api.nvim_create_user_command("AgyHome", function()
+  agy.home()
+end, {
+  desc = "Open the Antigravity root home buffer (agy://)",
 })
 
 vim.api.nvim_create_user_command("AgyResume", function(opts)
@@ -107,4 +119,15 @@ vim.api.nvim_create_user_command("AgyTasks", function()
   agy.tasks()
 end, {
   desc = "Show Antigravity background tasks and status",
+})
+
+vim.api.nvim_create_user_command("AgyArtifacts", function(opts)
+  local arg = opts.args and vim.trim(opts.args) or ""
+  agy.artifacts(arg ~= "" and arg or nil)
+end, {
+  nargs = "?",
+  desc = "Review Antigravity artifacts (agy://<id>/artifacts/<filename>)",
+  complete = function(arglead)
+    return agy.complete_artifacts(arglead)
+  end,
 })

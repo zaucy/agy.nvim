@@ -1944,6 +1944,61 @@ function M.render(buf, delta, is_final, config)
 	vim.bo[buf].modifiable = prev_mod
 end
 
+---Render a complete markdown document into buffer starting at line 1 (0-indexed row 0)
+---@param buf number
+---@param text string
+---@param config? table
+function M.render_document(buf, text, config)
+	if not buf or not vim.api.nvim_buf_is_valid(buf) then
+		return
+	end
+
+	local cfg = get_config(config)
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
+	local win_w = 80
+	local render_mod = require("agy.render")
+	if render_mod.get_max_window_width then
+		win_w = render_mod.get_max_window_width(buf)
+	end
+
+	local lines, extmark_directives, links = M.transform_markdown(text, true, cfg, win_w)
+
+	vim.api.nvim_buf_clear_namespace(buf, M.NS_MARKDOWN, 0, -1)
+	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+
+	local buf_links = {}
+	for _, l in ipairs(links or {}) do
+		table.insert(buf_links, {
+			row = l.rel_row + 1,
+			row_0 = l.rel_row,
+			start_col = l.start_col,
+			end_col = l.end_col,
+			url = l.url,
+		})
+	end
+	M.links[buf] = buf_links
+
+	for _, em in ipairs(extmark_directives) do
+		local em_row = em.rel_row
+		if em_row < vim.api.nvim_buf_line_count(buf) then
+			local opts = vim.deepcopy(em.opts)
+			if opts.end_row_rel then
+				opts.end_row = opts.end_row_rel
+				opts.end_row_rel = nil
+			end
+			pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_MARKDOWN, em_row, em.col or 0, opts)
+		end
+	end
+
+	M.last_raw[buf] = text
+	M.sessions[buf] = nil
+
+	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
+end
+
 ---Finalize active markdown stream block for buffer
 ---@param buf number
 ---@param config? table

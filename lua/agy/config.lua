@@ -6,6 +6,8 @@ local M = {}
 ---@field submit? string Keymap to submit prompt (default: "<C-s>")
 ---@field stop? string Keymap to stop current in-flight turn (default: "<C-c>")
 ---@field toggle_tool? string Keymap to toggle tool output block (default: "<CR>")
+---@field comment? string Keymap to comment on artifact line (default: "c")
+---@field delete_comment? string Keymap to delete comment on artifact line (default: "dc")
 
 ---@class AgyConfigUI
 ---@field virtual_text? boolean Show virtual text badges for turn status & tools (default: true)
@@ -68,6 +70,9 @@ local M = {}
 ---@field link? string Icon for link hover/inspection (default: "🔗")
 ---@field upper_block? string Upper half block for logo (default: "▀")
 ---@field lower_block? string Lower half block for logo (default: "▄")
+---@field review_comment? string Icon for review comments (default: "💬")
+---@field new_session? string Icon for new session entry in home buffer (default: "󰐕 ")
+---@field conversation? string Icon for conversation entries in home buffer (default: "󰭹 ")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -131,11 +136,16 @@ M.defaults = {
 		link = "🔗",
 		upper_block = "▀",
 		lower_block = "▄",
+		review_comment = "💬",
+		new_session = "󰐕 ",
+		conversation = "󰭹 ",
 	},
 	keymaps = {
 		submit = "<C-s>",
 		stop = "<C-c>",
 		toggle_tool = "<CR>",
+		comment = "c",
+		delete_comment = "dc",
 	},
 	ui = {
 		virtual_text = true,

@@ -10,6 +10,7 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_completion")
 M.COMMANDS = {
   { name = "/add-dir", desc = "Add a directory to the workspace", category = "control", arg_type = "dir" },
   { name = "/agents", desc = "List or manage custom agents", category = "control" },
+  { name = "/artifacts", desc = "Review artifacts produced in this session", category = "control", arg_type = "artifact" },
   { name = "/architect", desc = "Architecture and design mode", category = "modifier" },
   { name = "/auth", desc = "Manage authentication credentials", category = "control" },
   { name = "/boost", desc = "Deep thinking, strategic planning, and verification", category = "modifier" },
@@ -207,21 +208,49 @@ end
 
 ---Cached models list from dynamic CLI queries
 M._cached_models = nil
+M._prefetching = false
 
----Prefetch models dynamically in background
+---Prefetch models dynamically in background using agy.async
 ---@param cmd? string
 function M.prefetch_models(cmd)
-  local agy_cmd = get_agy_cmd(cmd)
-  pcall(function()
-    vim.system({ agy_cmd, "models" }, { text = true }, function(obj)
-      if obj and obj.code == 0 and obj.stdout and obj.stdout ~= "" then
-        local models = parse_models(obj.stdout)
-        if #models > 0 then
-          M._cached_models = models
-        end
+  if M._cached_models and #M._cached_models > 0 then
+    return
+  end
+  if M._prefetching then
+    return
+  end
+  M._prefetching = true
+  local async = require("agy.async")
+  async.run(function()
+    local agy_cmd = get_agy_cmd(cmd)
+    local ok, obj = async.psystem({ agy_cmd, "models" }, { text = true })
+    M._prefetching = false
+    if ok and obj and obj.code == 0 and obj.stdout and obj.stdout ~= "" then
+      local models = parse_models(obj.stdout)
+      if #models > 0 then
+        M._cached_models = models
       end
-    end)
-  end)
+    end
+  end):detach()
+end
+
+---Fetch models dynamically from agy CLI asynchronously.
+---@param cmd? string
+---@return table[] models
+function M.fetch_models_async(cmd)
+  local async = require("agy.async")
+  local agy_cmd = get_agy_cmd(cmd)
+  local obj = async.system({ agy_cmd, "models" }, { text = true })
+  if not obj or obj.code ~= 0 then
+    local err_msg = (obj and obj.stderr and obj.stderr ~= "") and obj.stderr or ("exit code " .. tostring(obj and obj.code))
+    error("[agy.nvim] '" .. agy_cmd .. " models' failed (" .. err_msg .. ")")
+  end
+  local models = parse_models(obj.stdout)
+  if #models == 0 then
+    error("[agy.nvim] '" .. agy_cmd .. " models' returned no available models")
+  end
+  M._cached_models = models
+  return models
 end
 
 ---Fetch models dynamically from agy CLI synchronously.
@@ -359,21 +388,36 @@ function M.resolve_model(model_or_name)
   local trimmed = model_or_name:gsub("^%s*", ""):gsub("%s*$", "")
   local q = trimmed:lower()
 
-  local models = M.get_available_models()
-  -- 1. Exact match on id or name
-  for _, m in ipairs(models) do
-    if m.id == trimmed or m.name == trimmed or m.id:lower() == q or m.name:lower() == q then
-      return m.id
+  -- If models are already cached, perform rich/exact matching
+  if M._cached_models and #M._cached_models > 0 then
+    -- 1. Exact match on id or name
+    for _, m in ipairs(M._cached_models) do
+      if m.id == trimmed or m.name == trimmed or m.id:lower() == q or m.name:lower() == q then
+        return m.id
+      end
     end
+
+    -- 2. Partial prefix / substring match using complete_models scoring
+    local matches = M.complete_models(trimmed)
+    if matches and #matches > 0 then
+      return matches[1].label
+    end
+  else
+    -- Trigger background prefetch so future queries are instant
+    M.prefetch_models()
   end
 
-  -- 2. Partial prefix / substring match using complete_models scoring
-  local matches = M.complete_models(trimmed)
-  if matches and #matches > 0 then
-    return matches[1].label
+  -- If trimmed is already in canonical ID format (lowercase alphanumeric with hyphens), return it directly
+  if trimmed:match("^[a-z0-9%-%.]+$") then
+    return trimmed
   end
 
-  -- 3. Return as-is if unrecognized (e.g. custom model or newer API name)
+  -- Fast slugification for display names (e.g. "Gemini 3.8 Flash (High)" -> "gemini-3.8-flash-high")
+  local slug = trimmed:lower():gsub("[()%s]+", "-"):gsub("%-+", "-"):gsub("^%-", ""):gsub("%-$", "")
+  if slug ~= "" then
+    return slug
+  end
+
   return trimmed
 end
 
@@ -381,7 +425,7 @@ end
 ---Priority:
 ---1. config_default if provided and non-empty
 ---2. Antigravity settings.json "model" field in app_data_dir
----3. First available model from agy models
+---3. First available model from agy models (or background prefetch)
 ---@param app_data_dir? string
 ---@param config_default? string
 ---@param cmd? string
@@ -544,6 +588,70 @@ function M.complete_history(query, app_data_dir)
         kind = "History",
         detail = h.title,
         insert_text = h.conversation_id,
+      })
+    end
+  end
+  return results
+end
+
+---Complete artifacts for /artifacts
+---@param query string
+---@param conv_id? string
+---@param app_data_dir? string
+---@return table[] matches
+function M.complete_artifacts(query, conv_id, app_data_dir)
+  local q = (query or ""):lower()
+  local artifacts_mod = require("agy.artifacts")
+
+  if not conv_id or conv_id == "" or conv_id == "new" then
+    local protocol = package.loaded["agy.protocol"]
+    if protocol and protocol.buffers then
+      local cur_buf = vim.api.nvim_get_current_buf()
+      if protocol.buffers[cur_buf] and protocol.buffers[cur_buf].conversation_id then
+        conv_id = protocol.buffers[cur_buf].conversation_id
+      else
+        for _, st in pairs(protocol.buffers) do
+          if st.conversation_id and st.conversation_id ~= "" and st.conversation_id ~= "new" then
+            conv_id = st.conversation_id
+            break
+          end
+        end
+      end
+    end
+    if not conv_id or conv_id == "" or conv_id == "new" then
+      local bname = vim.api.nvim_buf_get_name(0)
+      conv_id = bname:match("^agy://([^/?#]+)")
+    end
+    if not conv_id or conv_id == "" or conv_id == "new" then
+      local history = transcript_mod.read_history(app_data_dir)
+      if history and #history > 0 then
+        conv_id = history[1].conversation_id
+      end
+    end
+  end
+
+  if not conv_id or conv_id == "" or conv_id == "new" then
+    return {}
+  end
+
+  local arts = artifacts_mod.get_artifacts(conv_id, app_data_dir)
+  local results = {}
+  for _, art in ipairs(arts) do
+    local fname = art.filename
+    if q == "" or fname:lower():find(q, 1, true) or (art.summary and art.summary:lower():find(q, 1, true)) then
+      local has_unsaved = artifacts_mod.has_unsaved_comments(conv_id, fname)
+      local count = artifacts_mod.get_comments_count(conv_id, fname)
+      local label = fname .. (has_unsaved and " *" or "")
+      local detail = art.summary or ""
+      if has_unsaved then
+        local badge = string.format("[* %d unsaved comment%s] ", count, count > 1 and "s" or "")
+        detail = badge .. detail
+      end
+      table.insert(results, {
+        label = label,
+        kind = "Artifact",
+        detail = detail,
+        insert_text = fname .. " ",
       })
     end
   end
@@ -795,11 +903,24 @@ end
 ---@param col number 0-indexed cursor column
 ---@param app_data_dir? string
 ---@param workspaces? string[]
+---@param conv_id? string
 ---@return table|nil completion_data
-function M.get_completions(line_text, col, app_data_dir, workspaces)
+function M.get_completions(line_text, col, app_data_dir, workspaces, conv_id)
   local before = line_text:sub(1, col)
   if before:match("^%s*$") then
     return nil
+  end
+
+  if not conv_id or conv_id == "" or conv_id == "new" then
+    local cur_buf = vim.api.nvim_get_current_buf()
+    local protocol = package.loaded["agy.protocol"]
+    if protocol and protocol.buffers and protocol.buffers[cur_buf] then
+      conv_id = protocol.buffers[cur_buf].conversation_id
+    end
+    if not conv_id or conv_id == "" or conv_id == "new" then
+      local bname = vim.api.nvim_buf_get_name(cur_buf)
+      conv_id = bname:match("^agy://([^/?#]+)")
+    end
   end
 
   -- Check for @ mention triggers:
@@ -917,6 +1038,8 @@ function M.get_completions(line_text, col, app_data_dir, workspaces)
       items = M.complete_directories(arg_query)
     elseif cmd_def.arg_type == "history" then
       items = M.complete_history(arg_query, app_data_dir)
+    elseif cmd_def.arg_type == "artifact" then
+      items = M.complete_artifacts(arg_query, conv_id, app_data_dir)
     end
     return items
   end
@@ -1382,7 +1505,7 @@ function M.accept(is_enter)
   if is_enter then
     if data.type == "command" then
       if M.is_control(it.label) then
-        if it.label ~= "/add-dir" and it.label ~= "/drop" then
+        if it.label ~= "/add-dir" and it.label ~= "/drop" and it.label ~= "/artifacts" then
           should_process = true
         end
       end

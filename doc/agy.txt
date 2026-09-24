@@ -50,7 +50,12 @@ Using vim-plug: >vim
 ==============================================================================
 4. agy:// PROTOCOL                                              *agy-protocol*
 
-You can open Antigravity conversations using the `agy://` URL scheme:
+You can open Antigravity conversations and navigation using the `agy://` URL scheme:
+
+- `agy://`
+  Opens the root home buffer displaying the current workspace, an `agy://new`
+  entry at the top to start a fresh conversation, and a list of resumable
+  conversations recorded for the active workspace.
 
 - `agy://new`
   Opens a fresh conversation. Once Antigravity initializes the session, the
@@ -61,12 +66,19 @@ You can open Antigravity conversations using the `agy://` URL scheme:
   `transcript.jsonl` is loaded, and subsequent saves (`:w`) continue the
   dialogue.
 
+- `agy://<conversation-id>/artifacts` or `.../artifacts/<filename>`
+  Opens the artifact review buffer for inspecting deliverables and leaving
+  inline review comments.
+
 ==============================================================================
 5. COMMANDS                                                     *agy-commands*
 
 :Agy [conversation-id]                                                  *:Agy*
-    Open an Antigravity conversation buffer. If no ID is provided, starts a
-    new session (`agy://new`).
+    Open the Antigravity root home buffer (`agy://`). If a conversation ID or
+    `new` is specified, opens that conversation buffer directly.
+
+:AgyHome                                                              *:AgyHome*
+    Open the root Antigravity home buffer (`agy://`).
 
 :AgyNew                                                              *:AgyNew*
     Start a brand new Antigravity session (`agy://new`).
@@ -99,10 +111,34 @@ You can open Antigravity conversations using the `agy://` URL scheme:
     background tasks, status, exit codes, and log viewer. Matches native
     Antigravity CLI `/tasks`.
 
+:AgyArtifacts [filename]                                       *:AgyArtifacts*
+    Review deliverables and documents produced by Antigravity in this session
+    (`agy://<id>/artifacts/<filename>`). Defaults to the latest artifact if
+    omitted. An asterisk (`*`) in autocomplete indicates unsubmitted comments.
+
 ==============================================================================
 6. KEYMAPS                                                       *agy-keymaps*
 
-Inside an `agy://` buffer:
+Inside the root `agy://` home buffer:
+
+- `<CR>` (Normal mode):
+  Open `agy://new` to start a fresh conversation (when cursor is on `agy://new`
+  or header area) or resume the conversation selected under cursor.
+
+- `-` (Normal mode):
+  Notify that you are already at the agy root (`[agy.nvim] Already at agy root`).
+
+- `q` (Normal mode):
+  Close the home buffer / window.
+
+- `r` (Normal mode):
+  Refresh the home buffer and re-query resumable conversations for the current
+  workspace.
+
+Inside an `agy://<id>` or `agy://new` conversation buffer:
+
+- `-` (Normal mode):
+  Navigate up one level to the root `agy://` home buffer.
 
 - `<C-s>` (Normal and Insert modes):
   Save the buffer and submit the prompt below the User divider. If a turn
@@ -127,6 +163,23 @@ Inside an `agy://` buffer:
 - `<Tab>` / `<S-Tab>` (Insert mode):
   Autocomplete Antigravity `/` slash commands.
 
+Inside an `agy://<id>/artifacts/<filename>` artifact review buffer:
+
+- `c` (Normal and Visual modes):
+  Add or edit an inline review comment on the cursor line or selected range.
+  Comments render directly below target lines as virtual lines (`💬 L<num>: ...`).
+
+- `dc` (Normal mode):
+  Delete the review comment on the cursor line.
+
+- `-` (Normal mode):
+  Go up one level back to the conversation buffer (`agy://<id>`). Unsaved
+  comments are silently preserved in memory.
+
+- `:w` or `<C-s>`:
+  Submit all review comments formatted as `L<num>: <comment>` to the agent and
+  automatically return to `agy://<id>`. Silent no-op if no comments exist.
+
 ==============================================================================
 7. CONFIGURATION                                           *agy-configuration*
 
@@ -147,6 +200,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             submit = "<C-s>",      -- Save & send prompt
             stop = "<C-c>",        -- Cancel running turn
             toggle_tool = "<CR>",  -- Toggle tool output expand/collapse
+            comment = "c",         -- Add/edit artifact review comment
+            delete_comment = "dc", -- Delete artifact review comment
         },
 
         -- Icons used in session buffers and panels
@@ -165,6 +220,9 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             error = "❌",
             cancelled = "⏹️",
             queue = "⏳",
+            review_comment = "💬",
+            new_session = "󰐕 ",      -- Icon for agy://new in home buffer
+            conversation = "󰭹 ",     -- Icon for conversation entries in home buffer
             spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
             table = {
                 top_left = "╭",
@@ -223,6 +281,7 @@ The following highlight groups are used for styling and can be customized:
 - `AgyToolInline`: Subtle background for inline tool details and virtual lines.
 - `AgyToolOutput`: Text output inside tool detail views.
 - `AgyThoughtOutput`: Text output inside thought detail views.
+- `AgyReviewComment`: Review comment virtual lines and icons on artifact buffers.
 - `AgyH1`..`AgyH6`: Scaled headers with radnvim `:scale=` protocol and bold font.
 - `AgyTableBorder`: Rounded table borders.
 - `AgyTableHeader`: Table header row text.
@@ -299,6 +358,25 @@ API Functions:
 - `require("agy").register_mention(provider)`: Register a provider.
 - `require("agy").unregister_mention(name)`: Remove a provider by name.
 - `require("agy").get_mentions()`: Retrieve array of registered providers.
+
+==============================================================================
+14. ASYNC ARCHITECTURE                                             *agy-async*
+
+agy.nvim utilizes Neovim 0.13+'s built-in `vim.async` structured concurrency
+subsystem (incorporating `nvim-nio`) via `require("agy.async")`.
+
+Core Capabilities:
+- `async.run(fn, ...)`: Spawns a cooperative coroutine task.
+- `async.wrap(argc, fn)`: Wraps callback functions into awaitable calls.
+- `async.await(...)`: Suspends current task without blocking the event loop.
+- `async.pawait(...)`: Protected await analogous to `pcall`.
+- `async.sleep(ms)`: Non-blocking coroutine sleep.
+- `async.checkpoint()`: Cooperative yielding point.
+- `async.system(cmd, opts)`: Awaitable `vim.system` execution without blocking.
+
+All background polling (thinking animations, logo hue transitions, background
+task log watchers, model prefetching, and git diff inspection) run
+asynchronously on `vim.async` tasks without UI hitching or timer leaks.
 
 ==============================================================================
 vim:tw=78:ts=8:ft=help:norl:

@@ -249,6 +249,79 @@ function M.update_footer(buf)
   end
 end
 
+---Flush any queued streaming text deltas to the buffer and trigger a live screen redraw
+---@param buf number
+---@param is_final? boolean
+function M.flush_stream_delta(buf, is_final)
+  local state = M.buffers[buf]
+  if not state or not vim.api.nvim_buf_is_valid(buf) then return end
+
+  if state.stream_flush_timer then
+    pcall(function()
+      state.stream_flush_timer:stop()
+      if not state.stream_flush_timer:is_closing() then
+        state.stream_flush_timer:close()
+      end
+    end)
+    state.stream_flush_timer = nil
+  end
+
+  local delta = state.pending_text_delta
+  state.pending_text_delta = nil
+
+  if (delta and delta ~= "") or is_final then
+    state.last_stream_render_time = vim.uv.hrtime() / 1e6
+    M.with_modifiable(buf, function()
+      render.append_text_delta(buf, delta or "", state.config, is_final)
+      M.ensure_prompt_line(buf)
+      if state.follow_bottom then
+        render.scroll_to_bottom(buf, true)
+      end
+      M.update_footer(buf)
+    end)
+    if vim.fn.bufwinid(buf) ~= -1 then
+      pcall(vim.cmd, "redraw")
+    end
+  end
+end
+
+---Queue an incoming streaming delta and flush either immediately or via high-frequency throttle
+---@param buf number
+---@param delta string
+function M.queue_stream_delta(buf, delta)
+  local state = M.buffers[buf]
+  if not state or not vim.api.nvim_buf_is_valid(buf) then return end
+  if not delta or delta == "" then return end
+
+  if state.stream_info.status ~= "generating" then
+    state.stream_info.status = "generating"
+    M.update_footer(buf)
+  end
+
+  state.pending_text_delta = (state.pending_text_delta or "") .. delta
+
+  local now = vim.uv.hrtime() / 1e6
+  local elapsed = state.last_stream_render_time and (now - state.last_stream_render_time) or 9999
+
+  -- If sufficient time has elapsed since the last render, flush immediately
+  -- for zero latency on initial chunks or slow streams
+  if elapsed >= 30 and not state.stream_flush_timer then
+    M.flush_stream_delta(buf, false)
+    return
+  end
+
+  -- If rapid deltas are arriving and a timer is not already ticking, schedule a flush
+  if not state.stream_flush_timer then
+    local timer = (vim.uv and vim.uv.new_timer) and vim.uv.new_timer() or vim.loop.new_timer()
+    state.stream_flush_timer = timer
+    local wait_ms = math.max(1, math.floor(30 - elapsed))
+    timer:start(wait_ms, 0, vim.schedule_wrap(function()
+      state.stream_flush_timer = nil
+      M.flush_stream_delta(buf, false)
+    end))
+  end
+end
+
 ---Extract prompt text from the active user prompt section at the bottom of the buffer
 ---@param buf number
 ---@return string prompt_text
@@ -375,6 +448,15 @@ function M._setup_buffer(buf, conversation_id)
     buffer = buf,
     silent = true,
     desc = "Open link under cursor or go to definition",
+  })
+
+  -- Up navigation to agy:// home
+  vim.keymap.set("n", "-", function()
+    vim.cmd("edit agy://")
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Navigate up to agy:// home",
   })
 
   local toggle_key = cfg.keymaps.toggle_tool or "<CR>"
@@ -866,6 +948,18 @@ function M.handle_write(buf)
   local state = M.buffers[buf]
   if not state then return end
 
+  if state.is_home then
+    vim.notify("[agy.nvim] Home buffer is read-only. Press <CR> to open a session.", vim.log.levels.INFO)
+    vim.bo[buf].modified = false
+    return
+  end
+
+  if state.is_artifact then
+    local artifacts_mod = require("agy.artifacts")
+    artifacts_mod.submit_review(buf, state.conversation_id, state.artifact_filename)
+    return
+  end
+
   if state.active_question then
     local payload, has_answer = render.extract_question_answer(buf, state.active_question)
     if not has_answer then
@@ -1137,33 +1231,36 @@ function M.handle_write(buf)
 
     -- 17. /doctor: check system health and CLI installation
     elseif first_token == "/doctor" then
-      local lines = {
-        "# Antigravity Doctor Health Check",
-        "",
-      }
-      local cfg = state.config or config_mod.get()
-      local cmd_name = cfg.agy_cmd or "agy"
-      local agy_exe = vim.fn.exepath(cmd_name)
-      if agy_exe ~= "" then
-        table.insert(lines, "[✓] `" .. cmd_name .. "` CLI found: `" .. agy_exe .. "`")
-        local ok, ver = pcall(function() return vim.system({ cmd_name, "--version" }, { text = true }):wait() end)
-        if ok and ver and ver.code == 0 then
-          table.insert(lines, "[✓] `" .. cmd_name .. "` CLI version: " .. utils.trim(ver.stdout))
-        end
-      else
-        table.insert(lines, "[✗] `" .. cmd_name .. "` executable NOT found on PATH!")
-      end
-      local nvim_ver = vim.version()
-      table.insert(lines, string.format("[✓] Neovim version: %d.%d.%d", nvim_ver.major, nvim_ver.minor, nvim_ver.patch))
-      table.insert(lines, "[✓] Current working directory: `" .. vim.fn.getcwd() .. "`")
-      local app_dir = utils.get_app_data_dir(cfg.app_data_dir)
-      if vim.fn.isdirectory(app_dir) == 1 then
-        table.insert(lines, "[✓] App data directory accessible: `" .. app_dir .. "`")
-      else
-        table.insert(lines, "[!] App data directory does not exist yet: `" .. app_dir .. "`")
-      end
       clear_prompt_and_clean()
-      M.show_info_float("Antigravity Doctor", lines, buf)
+      local async = require("agy.async")
+      async.run(function()
+        local lines = {
+          "# Antigravity Doctor Health Check",
+          "",
+        }
+        local cfg = state.config or config_mod.get()
+        local cmd_name = cfg.agy_cmd or "agy"
+        local agy_exe = vim.fn.exepath(cmd_name)
+        if agy_exe ~= "" then
+          table.insert(lines, "[✓] `" .. cmd_name .. "` CLI found: `" .. agy_exe .. "`")
+          local ok, ver = async.psystem({ cmd_name, "--version" }, { text = true })
+          if ok and ver and ver.code == 0 then
+            table.insert(lines, "[✓] `" .. cmd_name .. "` CLI version: " .. utils.trim(ver.stdout))
+          end
+        else
+          table.insert(lines, "[✗] `" .. cmd_name .. "` executable NOT found on PATH!")
+        end
+        local nvim_ver = vim.version()
+        table.insert(lines, string.format("[✓] Neovim version: %d.%d.%d", nvim_ver.major, nvim_ver.minor, nvim_ver.patch))
+        table.insert(lines, "[✓] Current working directory: `" .. vim.fn.getcwd() .. "`")
+        local app_dir = utils.get_app_data_dir(cfg.app_data_dir)
+        if vim.fn.isdirectory(app_dir) == 1 then
+          table.insert(lines, "[✓] App data directory accessible: `" .. app_dir .. "`")
+        else
+          table.insert(lines, "[!] App data directory does not exist yet: `" .. app_dir .. "`")
+        end
+        M.show_info_float("Antigravity Doctor", lines, buf)
+      end)
       return
 
     -- 18. /help: show command reference
@@ -1182,6 +1279,7 @@ function M.handle_write(buf)
         "- `/settings` — View active configuration and options",
         "- `/status` — View session and connection status",
         "- `/tasks` — View and manage ongoing background tasks",
+        "- `/artifacts [filename]` — Review artifacts produced in session",
         "- `/usage` / `/tokens` / `/cost` — View token metrics",
         "- `/doctor` — Verify system health and dependencies",
         "- `/diff` — View git diff of changes",
@@ -1215,7 +1313,26 @@ function M.handle_write(buf)
       require("agy.tasks").open(buf)
       return
 
-    -- 20. /version: show version info
+    -- 20. /artifacts: view and review artifacts produced in conversation
+    elseif first_token == "/artifacts" then
+      local art_arg = trimmed:match("^/artifacts%s+(%S+)")
+      clear_prompt_and_clean()
+      local cid = state.conversation_id
+      if not cid or cid == "" or cid == "new" then
+        vim.notify("[agy.nvim] No active conversation session.", vim.log.levels.WARN)
+        return
+      end
+      local artifacts_mod = require("agy.artifacts")
+      local arts = artifacts_mod.get_artifacts(cid, state.config.app_data_dir)
+      if #arts == 0 then
+        vim.notify("[agy.nvim] No artifacts found for this conversation", vim.log.levels.INFO)
+        return
+      end
+      local target_art = art_arg or arts[1].filename
+      vim.cmd("edit agy://" .. cid .. "/artifacts/" .. target_art)
+      return
+
+    -- 21. /version: show version info
     elseif first_token == "/version" then
       clear_prompt_and_clean()
       local cfg = state.config or config_mod.get()
@@ -1232,6 +1349,7 @@ function M.handle_write(buf)
     end
   end
 
+  M.flush_stream_delta(buf, false)
   state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
   state.active_agent_started_output = false
   state.last_thought_start_time = vim.uv.hrtime()
@@ -1554,6 +1672,22 @@ function M.cleanup_buffer(buf)
   completion.close()
   local state = M.buffers[buf]
   if state then
+    if state.stream_flush_timer then
+      pcall(function()
+        state.stream_flush_timer:stop()
+        if not state.stream_flush_timer:is_closing() then
+          state.stream_flush_timer:close()
+        end
+      end)
+      state.stream_flush_timer = nil
+    end
+    state.pending_text_delta = nil
+    if state.is_artifact then
+      pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.artifacts").NS_COMMENTS, 0, -1)
+      pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.artifacts").NS_FOOTER, 0, -1)
+      M.buffers[buf] = nil
+      return
+    end
     if state.active_tool_call then
       render.close_tool_window(state, state.active_tool_call)
     end
@@ -1573,12 +1707,66 @@ function M.handle_buf_read(args)
   local buf = args.buf
   local uri = args.file
   local raw_id = uri:match("^agy://(.*)$") or ""
-  local conv_id = raw_id:match("^([^?#]+)") or ""
+  local clean_raw = raw_id:match("^([^?#]+)") or ""
 
   local cfg = config_mod.get()
 
-  -- Check if this is a reload (:e or :e!) on an already initialized agy buffer
+  -- Check if this is an artifact URL: agy://<conv_id>/artifacts[/<filename>]
+  local art_conv_id, art_subpath = clean_raw:match("^([^/]+)/artifacts/?(.*)$")
+  if art_conv_id then
+    local artifacts_mod = require("agy.artifacts")
+    local target_filename = art_subpath
+    if not target_filename or target_filename == "" then
+      local latest = artifacts_mod.get_latest_artifact(art_conv_id, cfg.app_data_dir)
+      if latest then
+        target_filename = latest.filename
+        local target_name = "agy://" .. art_conv_id .. "/artifacts/" .. target_filename
+        pcall(vim.api.nvim_buf_set_name, buf, target_name)
+      else
+        vim.notify("[agy.nvim] No artifacts found for this conversation", vim.log.levels.INFO)
+        vim.cmd("edit agy://" .. art_conv_id)
+        return
+      end
+    end
+
+    artifacts_mod.render_artifact(buf, art_conv_id, target_filename, cfg)
+    M.buffers[buf] = {
+      buf = buf,
+      conversation_id = art_conv_id,
+      artifact_filename = target_filename,
+      is_artifact = true,
+      config = cfg,
+    }
+    return
+  end
+
+  -- Check if this is the home buffer: agy:// or agy:/// or agy://home
+  if clean_raw == "" or clean_raw == "/" or clean_raw == "home" then
+    local existing_state = M.buffers[buf]
+    if existing_state and existing_state.session and existing_state.session.turn_active then
+      existing_state.session:stop()
+    end
+
+    local home_mod = require("agy.home")
+    home_mod.render_home(buf, cfg)
+    M.buffers[buf] = {
+      buf = buf,
+      is_home = true,
+      config = cfg,
+    }
+    return
+  end
+
+  local conv_id = clean_raw
+
+  -- If previous buffer state was an artifact buffer or home buffer, clear it
   local existing_state = M.buffers[buf]
+  if existing_state and (existing_state.is_artifact or existing_state.is_home) then
+    M.buffers[buf] = nil
+    existing_state = nil
+  end
+
+  -- Check if this is a reload (:e or :e!) on an already initialized agy buffer
   if existing_state then
     local target_id = conv_id
     if (target_id == "" or target_id == "new") and existing_state.conversation_id then
@@ -1676,6 +1864,15 @@ function M.handle_buf_read(args)
 
     completion.setup_buffer(buf)
 
+    -- Up navigation to agy:// home
+    vim.keymap.set("n", "-", function()
+      vim.cmd("edit agy://")
+    end, {
+      buffer = buf,
+      silent = true,
+      desc = "Navigate up to agy:// home",
+    })
+
     vim.bo[buf].modified = false
     pcall(function() vim.cmd("let &undolevels = &undolevels") end)
 
@@ -1692,7 +1889,7 @@ function M.handle_buf_read(args)
 
   M._setup_buffer(buf, conv_id)
 
-  local is_new = (conv_id == "" or conv_id == "new")
+  local is_new = (conv_id == "new")
   local prompt_line, prompt_ext_id, initial_tool_calls
   local rendered_thinking = {}
 
@@ -1711,12 +1908,9 @@ function M.handle_buf_read(args)
   local render_workspaces = workspaces
   if not render_workspaces or #render_workspaces == 0 then
     if not is_new then
-      local history_items = transcript_mod.read_history(cfg.app_data_dir)
-      for _, item in ipairs(history_items) do
-        if item.conversation_id == conv_id and item.workspace and item.workspace ~= "" then
-          render_workspaces = { item.workspace }
-          break
-        end
+      local ws = transcript_mod.get_conversation_workspace(conv_id, cfg.app_data_dir)
+      if ws and ws ~= "" then
+        render_workspaces = { ws }
       end
     end
   end
@@ -1843,28 +2037,18 @@ function M.handle_buf_read(args)
       local stype = step.step_type
 
       if stype == "agent_response" then
-        M.reconcile_background_tasks(buf, state, state.conversation_id)
         if not state.active_agent_started_output then
+          M.reconcile_background_tasks(buf, state, state.conversation_id)
           M.check_and_render_pending_thoughts(buf)
           state.active_agent_started_output = true
         end
         M.handle_post_task_bottom_visibility(buf, state)
         if step.text_delta and step.text_delta ~= "" then
-          if state.stream_info.status ~= "generating" then
-            state.stream_info.status = "generating"
-            M.update_footer(buf)
-          end
-          M.with_modifiable(buf, function()
-            render.append_text_delta(buf, step.text_delta, state.config)
-            M.ensure_prompt_line(buf)
-            if state.follow_bottom then
-              render.scroll_to_bottom(buf, true)
-            end
-            M.update_footer(buf)
-          end)
+          M.queue_stream_delta(buf, step.text_delta)
         end
 
       elseif stype == "tool" then
+        M.flush_stream_delta(buf, false)
         if step.tool_name == "ask_question" then
           if step.state == "ACTIVE" then
             local q_list = render.parse_question_params(step.tool_info and step.tool_info.parameters)
@@ -1971,11 +2155,15 @@ function M.handle_buf_read(args)
         end
 
       elseif stype == "system_message" and step.state == "DONE" then
+        M.flush_stream_delta(buf, false)
         M.reconcile_background_tasks(buf, state, state.conversation_id)
+      else
+        M.flush_stream_delta(buf, false)
       end
     end,
 
     on_result = function(s, result)
+      M.flush_stream_delta(buf, false)
       state.stream_info.status = "ready"
       state.active_agent_started_output = false
       if result.conversation_id and result.conversation_id ~= "" then
@@ -2063,6 +2251,7 @@ function M.handle_buf_read(args)
     end,
 
     on_error = function(s, err_msg)
+      M.flush_stream_delta(buf, false)
       state.stream_info.status = "ready"
       if state.active_question then
         render.finalize_question_block(buf, state.active_question, state.config)

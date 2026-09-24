@@ -10,60 +10,56 @@ M._cache = nil
 M._cache_time = 0
 M.CACHE_TTL_SECONDS = 30
 
+---Fetch quota data from agy CLI asynchronously via agy.async
+---@param agy_cmd? string
+---@return table quota_data
+function M.fetch_async(agy_cmd)
+  local now = os.time()
+  if M._cache and (now - M._cache_time) < M.CACHE_TTL_SECONDS then
+    return M._cache
+  end
+
+  local async = require("agy.async")
+  agy_cmd = agy_cmd or "agy"
+  local cmd = { agy_cmd, "-p=/usage", "--output-format", "json" }
+
+  local ok_proc, obj = async.psystem(cmd, { stdin = false, text = true })
+  if not ok_proc or not obj then
+    error("Command execution failed: " .. tostring(obj))
+  end
+  if obj.code ~= 0 then
+    error("Command failed with exit code " .. tostring(obj.code) .. ": " .. utils.trim(obj.stderr or ""))
+  end
+
+  local trimmed = utils.trim(obj.stdout or "")
+  local ok, parsed = pcall(vim.json.decode, trimmed)
+  if not ok or not parsed then
+    error("Failed to parse JSON response: " .. tostring(parsed))
+  end
+
+  local quota_data = parsed.command and parsed.command.data
+  if not quota_data then
+    error("No quota data found in response")
+  end
+
+  M._cache = quota_data
+  M._cache_time = os.time()
+  return quota_data
+end
+
 ---Fetch quota data from agy CLI in JSON format
 ---@param agy_cmd string
 ---@param callback fun(err?: string, data?: table)
 function M.fetch(agy_cmd, callback)
-  local now = os.time()
-  if M._cache and (now - M._cache_time) < M.CACHE_TTL_SECONDS then
-    callback(nil, M._cache)
-    return
-  end
-
-  agy_cmd = agy_cmd or "agy"
-  local cmd = { agy_cmd, "-p=/usage", "--output-format", "json" }
-
-  local stdout_buf = ""
-  local stderr_buf = ""
-
-  vim.system(
-    cmd,
-    {
-      stdin = false,
-      text = true,
-      stdout = function(err, data)
-        if data then stdout_buf = stdout_buf .. data end
-      end,
-      stderr = function(err, data)
-        if data then stderr_buf = stderr_buf .. data end
-      end,
-    },
-    function(obj)
-      vim.schedule(function()
-        if obj.code ~= 0 then
-          callback("Command failed with exit code " .. tostring(obj.code) .. ": " .. utils.trim(stderr_buf), nil)
-          return
-        end
-
-        local trimmed = utils.trim(stdout_buf)
-        local ok, parsed = pcall(vim.json.decode, trimmed)
-        if not ok or not parsed then
-          callback("Failed to parse JSON response: " .. tostring(parsed), nil)
-          return
-        end
-
-        local quota_data = parsed.command and parsed.command.data
-        if not quota_data then
-          callback("No quota data found in response", nil)
-          return
-        end
-
-        M._cache = quota_data
-        M._cache_time = os.time()
-        callback(nil, quota_data)
-      end)
+  local async = require("agy.async")
+  async.run(function()
+    local ok, res = async.pawait(M.fetch_async, agy_cmd)
+    if ok then
+      callback(nil, res)
+    else
+      callback(tostring(res), nil)
     end
-  )
+  end)
 end
 
 local function is_leap_year(y)
@@ -462,21 +458,23 @@ function M.open(caller_buf)
     filetype = "agy_quota",
   })
 
-  -- Fetch fresh quota asynchronously
-  M.fetch(agy_cmd, function(err, quota_data)
+  -- Fetch fresh quota asynchronously using agy.async
+  local async = require("agy.async")
+  async.run(function()
+    local ok, quota_data = async.pawait(M.fetch_async, agy_cmd)
     if not panel.is_open() or panel.get_buf() ~= buf then
       return
     end
 
     local fresh_lines, fresh_meta
-    if err then
+    if not ok then
       fresh_lines = {
         "🗎 Models & Quota",
         "",
         "Account: " .. email,
         "",
         "Failed to load Models & Quota from agy CLI:",
-        "  " .. tostring(err),
+        "  " .. tostring(quota_data),
         "",
       }
       local footer = panel.format_footer("esc Close", model_name .. " · " .. effort, width)

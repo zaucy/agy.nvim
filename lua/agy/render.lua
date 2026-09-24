@@ -232,6 +232,7 @@ function M.setup_highlights()
 		AgyQueueHeader = { link = "Title", default = true, bold = true },
 		AgyQueueBadge = { link = "DiagnosticInfo", default = true },
 		AgyQueueMessage = { link = "Normal", default = true },
+		AgyReviewComment = { link = "DiagnosticInfo", default = true, italic = true },
 		AgyHeaderTitle = { bold = true, fg = "#7aa2f7", default = true },
 		AgyHeaderSub = { fg = "#787c99", default = true },
 		AgyH1 = { font = ":scale=2.0:margin_top=0.8:margin_bottom=0.4", bold = true, fg = header_fg, default = true },
@@ -1206,7 +1207,15 @@ function M.start_logo_animation(buf, config)
 			for b in pairs(M.active_logo_buffers) do
 				if vim.api.nvim_buf_is_valid(b) then
 					has_active = true
-					if vim.fn.bufwinid(b) ~= -1 then
+					local wins = vim.fn.win_findbuf(b)
+					if #wins > 0 then
+						for _, w in ipairs(wins) do
+							if vim.api.nvim_win_is_valid(w) and vim.fn.line("w0", w) <= 6 then
+								is_any_visible = true
+								break
+							end
+						end
+					elseif vim.fn.bufwinid(b) ~= -1 and vim.fn.line("w0", vim.fn.bufwinid(b)) <= 6 then
 						is_any_visible = true
 					end
 				else
@@ -1219,12 +1228,10 @@ function M.start_logo_animation(buf, config)
 				return
 			end
 
-			if not is_any_visible then
-				return
+			if is_any_visible then
+				M.logo_animation_angle = (M.logo_animation_angle + 6) % 360
+				M.apply_logo_animation_frame(M.logo_animation_angle, cfg)
 			end
-
-			M.logo_animation_angle = (M.logo_animation_angle + 6) % 360
-			M.apply_logo_animation_frame(M.logo_animation_angle, cfg)
 		end)
 	)
 end
@@ -1261,8 +1268,11 @@ end
 ---Build the banner lines with padding around the logo and vertically centered text
 ---@param session_uri string
 ---@param config? table
+---@param session_uri string
+---@param config? table
+---@param sub_text? string
 ---@return string[]
-function M.build_banner_lines(session_uri, config)
+function M.build_banner_lines(session_uri, config, sub_text)
 	local cfg = get_config(config)
 	local pad = "    "
 	local version = utils.get_agy_version(cfg)
@@ -1278,6 +1288,8 @@ function M.build_banner_lines(session_uri, config)
 			table.insert(lines, logo_str .. pad .. title_text)
 		elseif r == 2 then
 			table.insert(lines, logo_str .. pad .. session_uri)
+		elseif r == 3 and sub_text then
+			table.insert(lines, logo_str .. pad .. sub_text)
 		else
 			table.insert(lines, logo_str)
 		end
@@ -1295,7 +1307,8 @@ end
 ---@param buf number
 ---@param session_uri string
 ---@param config? table
-function M.render_banner_extmarks(buf, session_uri, config)
+---@param sub_text? string
+function M.render_banner_extmarks(buf, session_uri, config, sub_text)
 	local cfg = get_config(config)
 	vim.api.nvim_buf_clear_namespace(buf, M.NS_LOGO, 0, -1)
 
@@ -1328,6 +1341,14 @@ function M.render_banner_extmarks(buf, session_uri, config)
 			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, sub_start, {
 				end_col = sub_end,
 				hl_group = "AgyHeaderSub",
+				priority = 150,
+			})
+		elseif r == 3 and sub_text then
+			local sub2_start = #logo_str + #pad
+			local sub2_end = sub2_start + #sub_text
+			vim.api.nvim_buf_set_extmark(buf, M.NS_LOGO, buf_row, sub2_start, {
+				end_col = sub2_end,
+				hl_group = "Comment",
 				priority = 150,
 			})
 		end
