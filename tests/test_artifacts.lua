@@ -7,6 +7,7 @@ local artifacts = require("agy.artifacts")
 local completion = require("agy.completion")
 local protocol = require("agy.protocol")
 local config = require("agy.config")
+local render = require("agy.render")
 local agy = require("agy")
 
 print("=== Running Antigravity Artifacts & Review Tests ===")
@@ -318,14 +319,34 @@ art_st.session.on_step_update(art_st.session, {
 assert(art_st.pending_artifact_feedback ~= nil, "pending_artifact_feedback must be tracked")
 assert(art_st.pending_artifact_feedback.filename == "implementation_plan.md", "Filename must match")
 
--- 2. Agent provides text delta
+-- 2. write_to_file completes with state = DONE: turn must be stopped immediately!
+art_st.session.on_step_update(art_st.session, {
+  step_type = "tool",
+  tool_name = "write_to_file",
+  state = "DONE",
+  tool_info = {
+    name = "write_to_file",
+    output = "File created successfully",
+  },
+})
+
+assert(stop_called == true, "Turn must be stopped immediately when tool with RequestFeedback completes")
+assert(art_st.pending_artifact_feedback == nil, "pending_artifact_feedback must be cleared after interception")
+assert(art_st.active_question ~= nil, "active_question must be set on artifact review interception")
+assert(art_st.active_question.is_artifact_review == true, "is_artifact_review must be true")
+assert(art_st.active_question.artifact_filename == "implementation_plan.md", "Filename must match")
+assert(art_st.active_question.questions[1].options[1] == "Approve and proceed", "Option 1 must be Approve and proceed")
+assert(art_st.active_question.questions[1].options[2] == "Review artifact", "Option 2 must be Review artifact")
+assert(art_st.stream_info.status == "question", "stream_info.status must be 'question', not 'thinking'")
+assert(render.thinking_timers[art_buf] == nil, "thinking timer must not be active during question review")
+
+-- 3. Any subsequent agent text or tool execution is completely ignored while question is active
+local lines_before = vim.api.nvim_buf_line_count(art_buf)
 art_st.session.on_step_update(art_st.session, {
   step_type = "agent_response",
   state = "ACTIVE",
-  text_delta = "Here is the implementation plan.",
+  text_delta = "This delta should be ignored.",
 })
-
--- 3. If agent attempts to execute another tool before user review, turn is stopped
 art_st.session.on_step_update(art_st.session, {
   step_type = "tool",
   tool_name = "run_command",
@@ -335,14 +356,7 @@ art_st.session.on_step_update(art_st.session, {
     parameters = { CommandLine = "cargo build" },
   },
 })
-
-assert(stop_called == true, "Turn must be stopped before subsequent tool can execute")
-assert(art_st.pending_artifact_feedback == nil, "pending_artifact_feedback must be cleared after stop")
-assert(art_st.active_question ~= nil, "active_question must be set on artifact review interception")
-assert(art_st.active_question.is_artifact_review == true, "is_artifact_review must be true")
-assert(art_st.active_question.artifact_filename == "implementation_plan.md", "Filename must match")
-assert(art_st.active_question.questions[1].options[1] == "Approve and proceed", "Option 1 must be Approve and proceed")
-assert(art_st.active_question.questions[1].options[2] == "Review artifact", "Option 2 must be Review artifact")
+assert(vim.api.nvim_buf_line_count(art_buf) == lines_before, "Buffer lines should not change from ignored steps")
 
 -- [Test 12] Testing artifact review question options and approval flow
 print("\n[Test 12] Testing artifact review question options and approval flow...")

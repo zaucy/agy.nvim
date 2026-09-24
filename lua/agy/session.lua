@@ -335,7 +335,7 @@ function M:stop()
   local old_proc = self.proc
   self.proc = nil
   self._proc_id = (self._proc_id or 0) + 1
-  pcall(function() old_proc:kill(15) end)
+  pcall(function() old_proc:kill(9) end)
 
   -- Restart the session so it is ready for the next prompt
   vim.defer_fn(function()

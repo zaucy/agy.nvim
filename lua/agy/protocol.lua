@@ -179,9 +179,12 @@ function M.update_prompt_divider(buf)
     return
   end
 
-  local badge = (render.thinking_timers and render.thinking_timers[buf])
-    and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
-    or nil
+  local badge = nil
+  if not state.active_question and not (state.stream_info and state.stream_info.status == "question") then
+    badge = (render.thinking_timers and render.thinking_timers[buf])
+      and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
+      or nil
+  end
 
   state.prompt_extmark_id = render.set_divider(buf, state.prompt_start_line - 1, "user", badge, "AgyBadgeActive", true, state.prompt_extmark_id, state.config)
   render.apply_prompt_highlights(buf, state.prompt_start_line)
@@ -889,6 +892,16 @@ function M.intercept_ask_question(buf, state, q_list)
     pcall(function() state.stream_flush_timer:stop() end)
   end
 
+  if state.agent_extmark_id and state.agent_line then
+    M.with_modifiable(buf, function()
+      local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
+      state.prompt_start_line = next_line
+      state.prompt_extmark_id = prompt_extmark_id
+      state.agent_extmark_id = nil
+      state.agent_line = nil
+    end)
+  end
+
   render.stop_thinking_animation(buf)
   M.ensure_prompt_line(buf)
   M.update_prompt_divider(buf)
@@ -962,6 +975,16 @@ function M.intercept_artifact_review(buf, state, filename, summary)
   state.stream_delta_queue = {}
   if state.stream_flush_timer then
     pcall(function() state.stream_flush_timer:stop() end)
+  end
+
+  if state.agent_extmark_id and state.agent_line then
+    M.with_modifiable(buf, function()
+      local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
+      state.prompt_start_line = next_line
+      state.prompt_extmark_id = prompt_extmark_id
+      state.agent_extmark_id = nil
+      state.agent_line = nil
+    end)
   end
 
   render.stop_thinking_animation(buf)
@@ -1812,7 +1835,7 @@ end
 function M.restore_prompt_area(buf)
   local state = M.buffers[buf]
   if not state or not vim.api.nvim_buf_is_valid(buf) then return end
-  if state.active_question then return end
+  if state.active_question or (state.stream_info and state.stream_info.status == "question") then return end
   if state.prompt_extmark_id then
     local pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.prompt_extmark_id, {})
     if pos and #pos >= 1 then
@@ -2007,6 +2030,7 @@ function M.stop_turn(buf)
     pcall(function() state.stream_flush_timer:stop() end)
   end
   state.stream_delta_queue = {}
+  state.pending_artifact_feedback = nil
 
   if state.active_question then
     if state.active_question.ui and state.active_question.ui.is_visible() then
@@ -2476,7 +2500,9 @@ function M.handle_buf_read(args)
         end
       end
 
-      state.stream_info.status = "ready"
+      if not state.active_question and not (state.stream_info and state.stream_info.status == "question") then
+        state.stream_info.status = "ready"
+      end
       if payload then
         if payload.permission_mode then
           state.stream_info.permission_mode = payload.permission_mode
@@ -2518,6 +2544,25 @@ function M.handle_buf_read(args)
       end
 
       if stype == "agent_response" then
+        if state.pending_artifact_feedback then
+          local paf = state.pending_artifact_feedback
+          state.pending_artifact_feedback = nil
+          if state.session and state.session.turn_active then
+            state.session:stop()
+          end
+          if state.agent_extmark_id and state.agent_line then
+            M.with_modifiable(buf, function()
+              local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
+              state.prompt_start_line = next_line
+              state.prompt_extmark_id = prompt_extmark_id
+              state.agent_extmark_id = nil
+              state.agent_line = nil
+            end)
+          end
+          M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
+          return
+        end
+
         if not state.active_agent_started_output then
           M.reconcile_background_tasks(buf, state, state.conversation_id)
           M.check_and_render_pending_thoughts(buf)
@@ -2592,8 +2637,21 @@ function M.handle_buf_read(args)
             M.update_footer(buf)
           end)
         elseif step.state == "DONE" then
-          state.stream_info.status = "thinking"
-          state.last_thought_start_time = vim.uv.hrtime()
+          local is_feedback = false
+          local fname, summary
+          if state.pending_artifact_feedback then
+            is_feedback = true
+            fname = state.pending_artifact_feedback.filename
+            summary = state.pending_artifact_feedback.summary
+            state.pending_artifact_feedback = nil
+          else
+            is_feedback, fname, summary = check_artifact_feedback_request(step.tool_name, step.tool_info and step.tool_info.parameters)
+          end
+
+          if not is_feedback then
+            state.stream_info.status = "thinking"
+            state.last_thought_start_time = vim.uv.hrtime()
+          end
           M.update_footer(buf)
           if state.active_tool_record then
             M.with_modifiable(buf, function()
@@ -2608,6 +2666,23 @@ function M.handle_buf_read(args)
               M.update_footer(buf)
             end)
             state.active_tool_record = nil
+          end
+
+          if is_feedback then
+            if state.session and state.session.turn_active then
+              state.session:stop()
+            end
+            if state.agent_extmark_id and state.agent_line then
+              M.with_modifiable(buf, function()
+                local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
+                state.prompt_start_line = next_line
+                state.prompt_extmark_id = prompt_extmark_id
+                state.agent_extmark_id = nil
+                state.agent_line = nil
+              end)
+            end
+            M.intercept_artifact_review(buf, state, fname, summary)
+            return
           end
 
           -- Handle manage_task with Action == "kill"
@@ -2642,7 +2717,9 @@ function M.handle_buf_read(args)
 
     on_result = function(s, result)
       M.flush_stream_delta(buf, false)
-      state.stream_info.status = "ready"
+      if not state.active_question and not (state.stream_info and state.stream_info.status == "question") then
+        state.stream_info.status = "ready"
+      end
       if result.conversation_id and result.conversation_id ~= "" then
         state.conversation_id = result.conversation_id
       end
@@ -2796,7 +2873,7 @@ function M.handle_buf_read(args)
     end,
 
     on_exit = function(s, code, was_turn_active)
-      if state.active_question then
+      if state.active_question or (state.stream_info and state.stream_info.status == "question") then
         return
       end
       state.stream_info.status = "ready"

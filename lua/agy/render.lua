@@ -1052,6 +1052,12 @@ end
 function M.start_thinking_animation(buf, line, extmark_id, config)
 	M.stop_thinking_animation(buf)
 
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+	if state and (state.active_question or (state.stream_info and state.stream_info.status == "question")) then
+		return
+	end
+
 	local cfg = get_config(config)
 	if not cfg.ui or cfg.ui.animate_thinking == false then
 		return
@@ -1063,8 +1069,6 @@ function M.start_thinking_animation(buf, line, extmark_id, config)
 	M.current_thinking_badge[buf] = initial_badge
 
 	pcall(function()
-		local protocol = package.loaded["agy.protocol"]
-		local state = protocol and protocol.buffers and protocol.buffers[buf]
 		local target_id = (state and state.prompt_extmark_id) or (not state and extmark_id) or nil
 		if target_id then
 			local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, target_id, { details = true })
@@ -1094,6 +1098,12 @@ function M.start_thinking_animation(buf, line, extmark_id, config)
 				return
 			end
 			if M.thinking_timers[buf] ~= timer then
+				return
+			end
+			local cur_prot = package.loaded["agy.protocol"]
+			local cur_state = cur_prot and cur_prot.buffers and cur_prot.buffers[buf]
+			if cur_state and (cur_state.active_question or (cur_state.stream_info and cur_state.stream_info.status == "question")) then
+				M.stop_thinking_animation(buf)
 				return
 			end
 
