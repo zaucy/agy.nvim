@@ -2667,14 +2667,18 @@ function M.handle_buf_read(args)
           return
         end
 
-        if not state.active_agent_started_output then
+        local has_delta = (step.text_delta and step.text_delta ~= "")
+        if has_delta and not state.active_agent_started_output then
           M.reconcile_background_tasks(buf, state, state.conversation_id)
+          M.collapse_active_work_group(buf)
           M.check_and_render_pending_thoughts(buf)
           state.active_agent_started_output = true
-          M.collapse_active_work_group(buf)
+        elseif not state.active_agent_started_output then
+          M.reconcile_background_tasks(buf, state, state.conversation_id)
+          M.check_and_render_pending_thoughts(buf)
         end
         M.handle_post_task_bottom_visibility(buf, state)
-        if step.text_delta and step.text_delta ~= "" then
+        if has_delta then
           M.queue_stream_delta(buf, step.text_delta)
         end
 

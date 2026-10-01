@@ -558,6 +558,9 @@ assert(has_raw_run, "run_command should be rendered directly when collapse_work 
 
 print("✓ ui.collapse_work = false successfully leaves all tools and thoughts expanded")
 
+-- Reset config back to clean defaults after test 9
+cfg = config_mod.setup()
+
 -- =========================================================================
 -- TEST 10: Single item in work group is not collapsed (shows item directly)
 -- =========================================================================
@@ -738,6 +741,117 @@ assert(found_live_stask_th, "Live single task thought must remain visible direct
 assert(found_live_stask_tl, "Live single task tool must remain visible directly")
 
 print("✓ Single task with 1 thought and 1 tool remains directly visible and uncollapsed")
+
+-- =========================================================================
+-- TEST 11: Live streaming with intermediate agent_response (no text delta)
+-- =========================================================================
+print("\n[Test 11] Testing live streaming with intermediate agent_response steps without text delta...")
+
+local test_helpers = require("tests.test_helpers")
+local tmp_env11, conv11 = test_helpers.create_mock_environment()
+local buf11 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = buf11, file = "agy://" .. conv11 })
+local state11 = protocol.buffers[buf11]
+assert(state11 ~= nil, "State must exist for buf11")
+
+-- Submit prompt
+vim.api.nvim_buf_set_lines(buf11, state11.prompt_start_line - 1, -1, false, { "Run two tools" })
+protocol.handle_write(buf11)
+
+-- 1. Step 1: agent_response DONE without text delta (reasoning before tools)
+state11.session.on_step_update(state11.session, {
+  conversation_id = conv11,
+  step_index = 1,
+  state = "DONE",
+  step_type = "agent_response",
+  duration_seconds = 2.0,
+})
+assert(state11.active_agent_started_output == false, "Empty agent_response must not trigger active_agent_started_output")
+
+-- 2. Step 2: Tool 1 ACTIVE & DONE
+state11.session.on_step_update(state11.session, {
+  conversation_id = conv11,
+  step_index = 2,
+  state = "ACTIVE",
+  step_type = "tool",
+  tool_name = "run_command",
+  tool_info = { parameters = { CommandLine = "echo tool1" } },
+})
+state11.session.on_step_update(state11.session, {
+  conversation_id = conv11,
+  step_index = 2,
+  state = "DONE",
+  step_type = "tool",
+  tool_name = "run_command",
+  duration_seconds = 0.5,
+  tool_info = { parameters = { CommandLine = "echo tool1" }, output = "tool1" },
+})
+assert(state11.current_work_group ~= nil, "Tool 1 must create current_work_group")
+assert(#state11.current_work_group.items == 1, "current_work_group must contain Tool 1")
+
+-- 3. Intermediate agent_response DONE without text delta (reasoning between tools)
+state11.session.on_step_update(state11.session, {
+  conversation_id = conv11,
+  step_index = 2,
+  state = "DONE",
+  step_type = "agent_response",
+  duration_seconds = 1.0,
+})
+assert(state11.active_agent_started_output == false, "Intermediate empty agent_response must not trigger active_agent_started_output")
+assert(state11.current_work_group ~= nil, "current_work_group must not be cleared by empty intermediate agent_response")
+assert(#state11.current_work_group.items == 1, "Tool 1 must still be in current_work_group")
+
+-- 4. Step 3: Tool 2 ACTIVE & DONE
+state11.session.on_step_update(state11.session, {
+  conversation_id = conv11,
+  step_index = 3,
+  state = "ACTIVE",
+  step_type = "tool",
+  tool_name = "run_command",
+  tool_info = { parameters = { CommandLine = "echo tool2" } },
+})
+state11.session.on_step_update(state11.session, {
+  conversation_id = conv11,
+  step_index = 3,
+  state = "DONE",
+  step_type = "tool",
+  tool_name = "run_command",
+  duration_seconds = 0.7,
+  tool_info = { parameters = { CommandLine = "echo tool2" }, output = "tool2" },
+})
+assert(#state11.current_work_group.items == 2, "current_work_group must accumulate both tools")
+
+-- 5. Step 4: Final agent_response with text delta
+state11.session.on_step_update(state11.session, {
+  conversation_id = conv11,
+  step_index = 4,
+  state = "ACTIVE",
+  step_type = "agent_response",
+  text_delta = "Both tools completed.",
+})
+assert(state11.active_agent_started_output == true, "Non-empty text_delta must trigger active_agent_started_output")
+assert(#state11.work_groups == 1, "Work group must be collapsed on non-empty text_delta")
+assert(state11.current_work_group == nil, "current_work_group should be reset after collapse")
+
+-- 6. Result
+state11.session.on_result(state11.session, {
+  conversation_id = conv11,
+  status = "SUCCESS",
+  duration_seconds = 4.2,
+})
+
+local live11_lines = vim.api.nvim_buf_get_lines(buf11, 0, -1, false)
+for i, l in ipairs(live11_lines) do
+  print(string.format("  [%02d] %s", i, l))
+end
+local found_header11 = false
+for _, l in ipairs(live11_lines) do
+  if l:find("Worked for") and l:find("tools") then
+    found_header11 = true
+  end
+end
+assert(found_header11, "Live buffer must contain collapsed '▶ Worked for ... (2 tools)' header")
+print("✓ Live streaming with intermediate agent_response steps properly creates collapsed work group")
 
 -- Reset config back to clean defaults
 config_mod.setup()
