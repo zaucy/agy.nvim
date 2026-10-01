@@ -859,17 +859,14 @@ local function check_artifact_feedback_request(tool_name, params)
   if tool_name ~= "write_to_file" or type(params) ~= "table" then
     return false
   end
-  local meta = params.ArtifactMetadata or params.artifact_metadata or params.artifactMetadata
+  local meta = params.ArtifactMetadata
   if type(meta) == "string" then
     meta = utils.json_decode(meta)
   end
-  if type(meta) == "table" then
-    local req = (meta.RequestFeedback == true or meta.requestFeedback == true)
-    if req then
-      local target = params.TargetFile or params.target_file or params.targetFile or "artifact"
-      local fname = vim.fs.basename(target)
-      return true, fname, meta.Summary or meta.summary
-    end
+  if type(meta) == "table" and meta.RequestFeedback == true then
+    local target = params.TargetFile
+    local fname = target and vim.fs.basename(target) or "artifact"
+    return true, fname, meta.Summary
   end
   return false
 end
@@ -2472,7 +2469,6 @@ function M.handle_buf_read(args)
     model = active_model,
     cwd = vim.fn.getcwd(),
     workspaces = workspaces,
-    client_instructions = (cfg.client_instructions ~= false),
 
     on_init = function(s, cid, payload)
       if cid and cid ~= "" then

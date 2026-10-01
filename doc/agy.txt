@@ -178,9 +178,10 @@ Inside an `agy://<id>/artifacts/<filename>` artifact review buffer:
 
 - `:w` or `<C-s>`:
   Submit all review comments formatted as `L<num>: <comment>` to the agent and
-  automatically return to `agy://<id>`. Silent no-op if no comments exist.
+  automatically return to `agy://<id>`. If no comments exist, automatically
+  submits approval ("Approved <filename>") and returns to `agy://<id>`.
 
-Inside an interactive question popup (when the agent invokes `ask_question`):
+Inside an interactive question prompt (when the agent invokes `ask_question`):
 
 - `j` / `k`, `<Down>` / `<Up>` (Normal mode):
   Navigate between options within the active question.

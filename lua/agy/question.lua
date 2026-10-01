@@ -17,7 +17,6 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_question")
 ---@field target_buf? number
 ---@field mapped_buf? number
 ---@field start_line? number
----@field is_hidden boolean
 ---@field questions table[]
 ---@field current_q_idx number
 ---@field selected_idx number
@@ -38,7 +37,6 @@ M.state = {
   target_buf = nil,
   mapped_buf = nil,
   start_line = nil,
-  is_hidden = false,
   questions = {},
   current_q_idx = 1,
   selected_idx = 1,
@@ -238,28 +236,7 @@ end
 ---@return boolean
 function M.is_visible()
   local b = M.state.buf or M.state.target_buf
-  return b ~= nil and vim.api.nvim_buf_is_valid(b) and #M.state.questions > 0 and not M.state.is_hidden
-end
-
----Temporarily hide the question UI
-function M.hide()
-  M.state.is_hidden = true
-end
-
----Legacy compatibility helper for prompt bottom row
----@param target_win number
----@param target_buf number
----@param height number
----@param should_scroll boolean
----@return number row
-function M.calc_prompt_bottom_row(target_win, target_buf, height, should_scroll)
-  local start_line = M.get_start_line()
-  local pos = vim.fn.screenpos(target_win, start_line, 1)
-  if pos and pos.row > 0 then
-    local win_pos = vim.api.nvim_win_get_position(target_win)
-    return math.max(0, pos.row - 1 - win_pos[1])
-  end
-  return 0
+  return b ~= nil and vim.api.nvim_buf_is_valid(b) and #M.state.questions > 0
 end
 
 ---Update question UI layout upon window resize
@@ -276,6 +253,7 @@ function M.clear_keymaps()
     for _, key in ipairs(QUESTION_BUF_KEYS) do
       pcall(vim.keymap.del, "n", key, { buffer = b })
     end
+    pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionCursor_" .. b)
     local protocol = package.loaded["agy.protocol"]
     local state = protocol and protocol.buffers and protocol.buffers[b]
     if state and state.conversation_id then
@@ -328,7 +306,6 @@ function M.close()
   M.state.is_editing_write_in = false
   M.state.on_submit = nil
   M.state.on_cancel = nil
-  M.state.is_hidden = false
 end
 
 ---Cancel active question and invoke on_cancel callback
@@ -1684,25 +1661,6 @@ function M.setup_keymaps(target_buf)
   })
 end
 
----Display or update the interactive question UI in the conversation buffer
----@param target_win number
----@param target_buf number
-function M.show_over_prompt(target_win, target_buf)
-  if not M.state.questions or #M.state.questions == 0 then return end
-  if target_win and vim.api.nvim_win_is_valid(target_win) then
-    M.state.target_win = target_win
-    M.state.win = target_win
-  end
-  if target_buf and vim.api.nvim_buf_is_valid(target_buf) then
-    M.state.target_buf = target_buf
-    M.state.buf = target_buf
-  end
-  M.state.is_hidden = false
-  M.render_buffer()
-  M.setup_keymaps(M.state.buf)
-  M.sync_cursor()
-end
-
 ---Display or update the interactive question UI directly inside the conversation session buffer
 ---@param target_win number
 ---@param target_buf number
@@ -1732,7 +1690,6 @@ function M.show(target_win, target_buf, questions, opts)
   M.state.config = opts.config or config_mod.get()
   M.state.on_submit = opts.on_submit
   M.state.on_cancel = opts.on_cancel
-  M.state.is_hidden = false
 
   local protocol = package.loaded["agy.protocol"]
   local pstate = protocol and protocol.buffers and protocol.buffers[target_buf]

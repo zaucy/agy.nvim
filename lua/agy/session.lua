@@ -11,7 +11,6 @@ M.__index = M
 ---@field model? string Optional active LLM model ID
 ---@field cwd? string Working directory for agy CLI
 ---@field workspaces? string[] Workspace directories to register with agy CLI (defaults to { cwd })
----@field client_instructions? boolean Whether to automatically inject client protocol instructions for planning and questions (default: true)
 ---@field on_init? fun(session: AgySession, conv_id: string, payload: table)
 ---@field on_step_update? fun(session: AgySession, step: table)
 ---@field on_result? fun(session: AgySession, result: table)
@@ -27,7 +26,6 @@ M.__index = M
 ---@field model? string
 ---@field cwd string
 ---@field workspaces string[]
----@field client_instructions boolean
 ---@field is_active boolean
 ---@field turn_active boolean
 ---@field line_buffer string
@@ -57,7 +55,6 @@ function M.new(opts)
     -- Resumed conversations already have their workspaces stored and restored by agy
     self.workspaces = {}
   end
-  self.client_instructions = (opts.client_instructions ~= false)
   self.is_active = false
   self.is_initialized = false
   self.turn_active = false
@@ -74,9 +71,6 @@ function M.new(opts)
   self:start()
   return self
 end
-
----Deprecated / unused instruction injection constant
-M.CLIENT_INSTRUCTIONS = ""
 
 ---Build the command argument list for spawning agy
 ---@return string[]

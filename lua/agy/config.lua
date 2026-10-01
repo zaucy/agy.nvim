@@ -83,7 +83,6 @@ local M = {}
 ---@field app_data_dir? string Path to ~/.gemini/antigravity-cli (default: auto-detected)
 ---@field default_mode? string Agent mode: "accept-edits" | "plan" (default: nil)
 ---@field default_model? string Default model for sessions (default: nil)
----@field client_instructions? boolean Automatically inject client instructions for planning and questions (default: true)
 ---@field workspaces? string[] | fun(): string[] Workspace directories to register with agy CLI (default: nil, falls back to vim.fn.getcwd())
 ---@field icons? AgyConfigIcons
 ---@field keymaps? AgyConfigKeymaps
@@ -95,7 +94,6 @@ M.defaults = {
 	app_data_dir = utils.get_app_data_dir(),
 	default_mode = nil,
 	default_model = nil,
-	client_instructions = true,
 	workspaces = nil,
 	icons = {
 		default = "  ",

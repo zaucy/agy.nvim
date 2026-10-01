@@ -3487,7 +3487,7 @@ function M.parse_question_params(params)
 			table.insert(questions, {
 				question = tostring(item.question),
 				options = opts,
-				is_multi_select = (item.is_multi_select == true or item.IsMultiSelect == true),
+				is_multi_select = (item.is_multi_select == true),
 				selected = sel,
 				write_in = write_in,
 			})
