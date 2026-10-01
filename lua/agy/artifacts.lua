@@ -263,8 +263,10 @@ function M.render_footer(buf, conv_id, filename, config)
   if count > 0 then
     local count_str = string.format(" %s %d pending comment%s  │  ", comment_icon, count, count > 1 and "s" or "")
     table.insert(chunks, { count_str, "AgyBadgeTool" })
+    table.insert(chunks, { "c Comment · dc Delete comment · :w Submit review · - Back", "AgyPromptFooter" })
+  else
+    table.insert(chunks, { "c Comment · :w Approve · - Back", "AgyPromptFooter" })
   end
-  table.insert(chunks, { "c Comment · dc Delete comment · :w Submit review · - Back", "AgyPromptFooter" })
 
   vim.api.nvim_buf_set_extmark(buf, M.NS_FOOTER, last_row, 0, {
     virt_lines = { chunks },
@@ -360,42 +362,44 @@ end
 ---@param buf number
 ---@param conv_id string
 ---@param filename string
+---Submit review comments or approval to agent and switch back to conversation
+---@param buf number
+---@param conv_id string
+---@param filename string
 function M.submit_review(buf, conv_id, filename)
   assert(conv_id and conv_id ~= "", "agy artifacts: conv_id is required")
   assert(filename and filename ~= "", "agy artifacts: filename is required")
 
   local comments = M.get_comments(conv_id, filename)
+  local payload
   if next(comments) == nil then
-    -- Silent no-op when no comments exist
-    if vim.api.nvim_buf_is_valid(buf) then
-      vim.bo[buf].modified = false
+    payload = "Approved " .. filename
+    vim.notify(string.format("[agy.nvim] Approved %s", filename), vim.log.levels.INFO)
+  else
+    -- Sort comments by line number
+    local sorted_lines = {}
+    for line, _ in pairs(comments) do
+      table.insert(sorted_lines, line)
     end
-    return
-  end
+    table.sort(sorted_lines)
 
-  -- Sort comments by line number
-  local sorted_lines = {}
-  for line, _ in pairs(comments) do
-    table.insert(sorted_lines, line)
-  end
-  table.sort(sorted_lines)
+    local payload_lines = {
+      "Review comments on " .. filename .. ":",
+    }
 
-  local payload_lines = {
-    "Review comments on " .. filename .. ":",
-  }
-
-  for _, line in ipairs(sorted_lines) do
-    local item = comments[line]
-    local line_ref
-    if item.start_line == item.end_line or not item.end_line then
-      line_ref = "L" .. tostring(item.start_line)
-    else
-      line_ref = "L" .. tostring(item.start_line) .. "-L" .. tostring(item.end_line)
+    for _, line in ipairs(sorted_lines) do
+      local item = comments[line]
+      local line_ref
+      if item.start_line == item.end_line or not item.end_line then
+        line_ref = "L" .. tostring(item.start_line)
+      else
+        line_ref = "L" .. tostring(item.start_line) .. "-L" .. tostring(item.end_line)
+      end
+      table.insert(payload_lines, string.format("%s: %s", line_ref, item.text))
     end
-    table.insert(payload_lines, string.format("%s: %s", line_ref, item.text))
-  end
 
-  local payload = table.concat(payload_lines, "\n")
+    payload = table.concat(payload_lines, "\n")
+  end
 
   -- Clear in-memory comments for this artifact
   M.clear_comments(conv_id, filename)
@@ -409,7 +413,7 @@ function M.submit_review(buf, conv_id, filename)
   local target_buf = nil
 
   for b, state in pairs(protocol.buffers) do
-    if state.conversation_id == conv_id and state.session then
+    if state.conversation_id == conv_id and not state.is_artifact and not state.is_home then
       target_session = state.session
       target_buf = b
       break
@@ -419,18 +423,38 @@ function M.submit_review(buf, conv_id, filename)
   -- Switch current window to agy://<conv_id>
   vim.cmd("edit agy://" .. conv_id)
 
-  -- Send prompt through session
-  if target_session and target_session.send_prompt then
-    target_session:send_prompt(payload)
-    if target_buf and protocol.buffers[target_buf] then
-      local state = protocol.buffers[target_buf]
-      state.stream_info.status = "thinking"
-      state.follow_bottom = true
-      protocol.update_footer(target_buf)
+  local cur_buf = vim.api.nvim_get_current_buf()
+  local conv_buf = (protocol.buffers[cur_buf] and not protocol.buffers[cur_buf].is_artifact and not protocol.buffers[cur_buf].is_home and cur_buf) or target_buf
+
+  if conv_buf and protocol.buffers[conv_buf] then
+    local state = protocol.buffers[conv_buf]
+    state.pending_artifact_feedback = nil
+
+    if state.active_question and state.active_question.ui then
+      state.active_question.ui.close()
+      state.active_question = nil
     end
+
+    if not state.prompt_extmark_id or not state.prompt_start_line then
+      local cur_count = vim.api.nvim_buf_line_count(conv_buf)
+      state.prompt_start_line = cur_count
+      state.prompt_extmark_id = require("agy.render").set_divider(conv_buf, cur_count - 1, "user", nil, nil, true, nil, state.config)
+    end
+
+    protocol.ensure_prompt_line(conv_buf)
+
+    local utils_mod = require("agy.utils")
+    local payload_lines = utils_mod.split_lines(payload)
+    protocol.with_modifiable(conv_buf, function()
+      local start = state.prompt_start_line or vim.api.nvim_buf_line_count(conv_buf)
+      vim.api.nvim_buf_set_lines(conv_buf, start - 1, -1, false, payload_lines)
+    end)
+
+    protocol.submit_prompt(conv_buf)
+  elseif target_session and target_session.send_prompt then
+    target_session:send_prompt(payload)
   else
-    -- If no existing session found, record notification
-    vim.notify("[agy.nvim] Review comments saved. Start conversation to dispatch.", vim.log.levels.INFO)
+    vim.notify("[agy.nvim] Review submitted. Start conversation to dispatch.", vim.log.levels.INFO)
   end
 end
 

@@ -7,6 +7,7 @@ local artifacts = require("agy.artifacts")
 local completion = require("agy.completion")
 local protocol = require("agy.protocol")
 local config = require("agy.config")
+local render = require("agy.render")
 local agy = require("agy")
 
 print("=== Running Antigravity Artifacts & Review Tests ===")
@@ -216,11 +217,14 @@ assert(sent_payload:find("L4: Needs clarification on API design"), "Expected L4:
 assert(artifacts.has_unsaved_comments(conv_id, "implementation_plan.md") == false, "Comments should be cleared after submit")
 assert(artifacts.get_comments_count(conv_id, "implementation_plan.md") == 0, "Comments count should be 0")
 
--- Saving when no comments exist is a silent no-op
+-- Saving when no comments exist approves the artifact
 sent_payload = nil
 artifacts.submit_review(art_buf, conv_id, "implementation_plan.md")
-assert(sent_payload == nil, "Expected silent no-op when saving with 0 comments")
-print("✓ submit_review formatting and silent no-op verified")
+assert(sent_payload == "Approved implementation_plan.md", "Expected 'Approved implementation_plan.md' when saving with 0 comments, got: " .. tostring(sent_payload))
+print("✓ submit_review formatting and approval with 0 comments verified")
+protocol.cleanup_buffer(conv_buf)
+pcall(vim.api.nvim_buf_delete, conv_buf, { force = true })
+pcall(vim.api.nvim_buf_delete, art_buf, { force = true })
 
 -- [Test 7] Testing protocol URL routing agy://<conv_id>/artifacts/<filename>
 print("\n[Test 7] Testing protocol handle_buf_read with artifact URLs...")
@@ -281,6 +285,141 @@ local comp_candidates = agy.complete_artifacts("walk")
 assert(#comp_candidates >= 1, "Expected complete_artifacts to match walkthrough")
 assert(comp_candidates[1]:find("walkthrough%.md"), "Expected walkthrough.md in completion candidates")
 print("✓ :AgyArtifacts user command and completion verified")
+
+-- [Test 11] Testing RequestFeedback: true artifact turn stopping
+print("\n[Test 11] Testing RequestFeedback: true artifact turn stopping...")
+vim.cmd("edit! agy://new")
+local art_buf = vim.api.nvim_get_current_buf()
+local art_st = protocol.buffers[art_buf]
+
+local stop_called = false
+art_st.session.turn_active = true
+art_st.session.stop = function()
+  stop_called = true
+  art_st.session.turn_active = false
+end
+
+-- 1. write_to_file tool with RequestFeedback: true
+art_st.session.on_step_update(art_st.session, {
+  step_type = "tool",
+  tool_name = "write_to_file",
+  state = "ACTIVE",
+  tool_info = {
+    name = "write_to_file",
+    parameters = {
+      TargetFile = "implementation_plan.md",
+      ArtifactMetadata = {
+        RequestFeedback = true,
+        Summary = "Implementation plan for feature",
+      },
+    },
+  },
+})
+
+assert(art_st.pending_artifact_feedback ~= nil, "pending_artifact_feedback must be tracked")
+assert(art_st.pending_artifact_feedback.filename == "implementation_plan.md", "Filename must match")
+
+-- 2. write_to_file completes with state = DONE: turn must be stopped immediately!
+art_st.session.on_step_update(art_st.session, {
+  step_type = "tool",
+  tool_name = "write_to_file",
+  state = "DONE",
+  tool_info = {
+    name = "write_to_file",
+    output = "File created successfully",
+  },
+})
+
+assert(stop_called == true, "Turn must be stopped immediately when tool with RequestFeedback completes")
+assert(art_st.pending_artifact_feedback == nil, "pending_artifact_feedback must be cleared after interception")
+assert(art_st.active_question ~= nil, "active_question must be set on artifact review interception")
+assert(art_st.active_question.is_artifact_review == true, "is_artifact_review must be true")
+assert(art_st.active_question.artifact_filename == "implementation_plan.md", "Filename must match")
+assert(art_st.active_question.questions[1].options[1] == "Approve and proceed", "Option 1 must be Approve and proceed")
+assert(art_st.active_question.questions[1].options[2] == "Review artifact", "Option 2 must be Review artifact")
+assert(art_st.stream_info.status == "question", "stream_info.status must be 'question', not 'thinking'")
+assert(render.thinking_timers[art_buf] == nil, "thinking timer must not be active during question review")
+
+-- 3. Any subsequent agent text or tool execution is completely ignored while question is active
+local lines_before = vim.api.nvim_buf_line_count(art_buf)
+art_st.session.on_step_update(art_st.session, {
+  step_type = "agent_response",
+  state = "ACTIVE",
+  text_delta = "This delta should be ignored.",
+})
+art_st.session.on_step_update(art_st.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = {
+    name = "run_command",
+    parameters = { CommandLine = "cargo build" },
+  },
+})
+assert(vim.api.nvim_buf_line_count(art_buf) == lines_before, "Buffer lines should not change from ignored steps")
+
+-- [Test 12] Testing artifact review question options and approval flow
+print("\n[Test 12] Testing artifact review question options and approval flow...")
+local test_sent = nil
+art_st.session.send_prompt = function(self, payload)
+  test_sent = payload
+  return true
+end
+
+-- Test selecting "Approve and proceed" via question UI
+art_st.active_question.ui.state.selected_answers[1] = 1
+art_st.active_question.ui.submit_all()
+
+assert(test_sent ~= nil, "Expected payload to be sent upon approving artifact")
+assert(test_sent:find("Approve and proceed"), "Expected payload to contain 'Approve and proceed', got: " .. tostring(test_sent))
+assert(art_st.active_question == nil, "active_question must be cleared after submission")
+
+-- Test intercepting artifact review on result
+art_st.conversation_id = conv_id
+pcall(vim.api.nvim_buf_set_name, art_buf, "agy://" .. conv_id)
+
+art_st.pending_artifact_feedback = {
+  filename = "walkthrough.md",
+  summary = "Completed walkthrough",
+}
+art_st.session.on_result(art_st.session, {
+  conversation_id = conv_id,
+  usage = { total_tokens = 50 },
+  duration_seconds = 1.2,
+})
+
+assert(art_st.active_question ~= nil, "active_question must be set after on_result with pending feedback")
+assert(art_st.active_question.artifact_filename == "walkthrough.md", "Filename must match walkthrough.md")
+
+-- Test choosing "Review artifact" opens the artifact buffer
+art_st.active_question.ui.state.selected_answers[1] = 2
+art_st.active_question.ui.submit_all()
+
+local current_buf = vim.api.nvim_get_current_buf()
+local current_name = vim.api.nvim_buf_get_name(current_buf)
+assert(current_name:find("/artifacts/walkthrough%.md"), "Expected artifact buffer to be opened, got: " .. current_name)
+
+-- In artifact buffer, saving with 0 comments approves walkthrough.md and returns to conv buffer
+test_sent = nil
+protocol.handle_write(current_buf)
+assert(test_sent == "Approved walkthrough.md", "Expected 'Approved walkthrough.md' on saving artifact, got: " .. tostring(test_sent))
+
+local final_buf = vim.api.nvim_get_current_buf()
+local final_name = vim.api.nvim_buf_get_name(final_buf)
+assert(final_name == "agy://" .. conv_id, "Expected to switch back to conversation buffer, got: " .. final_name)
+local final_lines = vim.api.nvim_buf_get_lines(final_buf, 0, -1, false)
+local found_approval_in_history = false
+for _, line in ipairs(final_lines) do
+  if line:find("Approved walkthrough%.md") then
+    found_approval_in_history = true
+    break
+  end
+end
+assert(found_approval_in_history, "Expected approval to show up in conversation buffer history")
+print("✓ Artifact review question interaction and :w approval flow verified")
+
+protocol.cleanup_buffer(art_buf)
+print("✓ RequestFeedback: true prevents subsequent tool execution and stops turn")
 
 -- Cleanup test files
 pcall(vim.fn.delete, tmp_root, "rf")
