@@ -507,6 +507,103 @@ assert(has_raw_run, "run_command should be rendered directly when collapse_work 
 
 print("✓ ui.collapse_work = false successfully leaves all tools and thoughts expanded")
 
+-- =========================================================================
+-- TEST 10: Single item in work group is not collapsed (shows item directly)
+-- =========================================================================
+print("\n[Test 10] Testing single item in work group is not collapsed...")
+
+-- 10a. Unit test collapse_work_group_in_place with 1 item does nothing
+local buf10 = vim.api.nvim_create_buf(false, true)
+render.render_new_session(buf10, cfg)
+local t10_line, t10_ext, t10_p = render.append_tool_call(buf10, "view_file", { AbsolutePath = "foo.lua" }, nil, cfg)
+local tl10 = {
+  id = 1,
+  tool_name = "view_file",
+  params = { AbsolutePath = "foo.lua" },
+  param_str = t10_p,
+  duration_seconds = 0.3,
+  output = "ok",
+  header_extmark_id = t10_ext,
+  header_line_idx = t10_line,
+}
+render.complete_tool_call(buf10, tl10, 0.3, "ok", cfg)
+
+local lines10_before = vim.api.nvim_buf_get_lines(buf10, 0, -1, false)
+local single_group = {
+  id = 1,
+  is_open = true,
+  duration_seconds = 0.3,
+  items = { tl10 },
+}
+render.collapse_work_group_in_place(buf10, single_group, cfg)
+local lines10_after = vim.api.nvim_buf_get_lines(buf10, 0, -1, false)
+assert(#lines10_before == #lines10_after, "Buffer line count should not change when collapsing a 1-item group")
+assert(lines10_before[t10_line + 1] == lines10_after[t10_line + 1], "Single tool line should remain untouched")
+assert(single_group.is_open == true, "Single-item group should remain open/uncollapsed")
+
+-- 10b. Transcript with single tool call is not collapsed
+local single_steps = {
+  { type = "USER_INPUT", content = "Check single file" },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "File looks good.",
+    tool_calls = {
+      { name = "view_file", args = { TargetFile = "single.lua" }, output = "content", duration_seconds = 0.4 },
+    }
+  }
+}
+local single_trans_buf = vim.api.nvim_create_buf(false, true)
+local _, _, _, single_wgs = render.render_transcript(single_trans_buf, "test-conv-single", single_steps, cfg, vim.fn.getcwd())
+assert(#single_wgs == 0, "No work groups should be formed for a single tool call")
+local st_lines = vim.api.nvim_buf_get_lines(single_trans_buf, 0, -1, false)
+local found_direct_tool = false
+for _, l in ipairs(st_lines) do
+  if l:find("view_file") then found_direct_tool = true end
+  assert(not l:find("^▶ Worked for"), "Single tool call must NOT be wrapped in a 'Worked for' summary header")
+end
+assert(found_direct_tool, "Single tool call must be rendered directly in buffer")
+
+-- 10c. Live session with single tool call auto-collapse does not create a group
+local live_buf10 = vim.api.nvim_create_buf(false, false)
+render.render_new_session(live_buf10, cfg)
+local lt10_line, lt10_ext, lt10_p = render.append_tool_call(live_buf10, "run_command", { CommandLine = "echo test" }, nil, cfg)
+local ltc10 = {
+  id = 1,
+  tool_name = "run_command",
+  params = { CommandLine = "echo test" },
+  param_str = lt10_p,
+  duration_seconds = 0.2,
+  header_extmark_id = lt10_ext,
+  header_line_idx = lt10_line,
+}
+local state10 = {
+  buf = live_buf10,
+  config = cfg,
+  tool_calls = { ltc10 },
+  work_groups = {},
+  current_work_group = nil,
+  active_agent_started_output = false,
+  follow_bottom = false,
+  stream_info = { status = "ready" },
+}
+protocol.buffers[live_buf10] = state10
+protocol.add_item_to_current_work_group(live_buf10, ltc10)
+render.complete_tool_call(live_buf10, ltc10, 0.2, "test", cfg)
+
+-- Agent begins emitting response text
+protocol.collapse_active_work_group(live_buf10)
+assert(#state10.work_groups == 0, "Work groups list must remain empty for single tool call")
+assert(state10.current_work_group == nil, "current_work_group should be reset to nil")
+local live10_lines = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_live_single = false
+for _, l in ipairs(live10_lines) do
+  if l:find("run_command") then found_live_single = true end
+  assert(not l:find("^▶ Worked for"), "Live single tool call must NOT produce a 'Worked for' header")
+end
+assert(found_live_single, "Live single tool call must remain visible directly")
+
+print("✓ Single item work group remains directly visible and uncollapsed")
+
 -- Reset config back to clean defaults
 config_mod.setup()
 

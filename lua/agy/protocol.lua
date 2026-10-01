@@ -2102,7 +2102,7 @@ function M.collapse_active_work_group(buf)
   local state = M.buffers[buf]
   if not state or not state.current_work_group then return end
   local group = state.current_work_group
-  if not group.items or #group.items == 0 then
+  if not group.items or #group.items <= 1 then
     state.current_work_group = nil
     return
   end

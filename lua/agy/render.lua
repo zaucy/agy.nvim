@@ -2058,7 +2058,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 	local current_work_group = nil
 
 	local function collapse_current_work_group()
-		if not current_work_group or not current_work_group.items or #current_work_group.items == 0 then
+		if not current_work_group or not current_work_group.items or #current_work_group.items <= 1 then
 			current_work_group = nil
 			return
 		end
@@ -3364,7 +3364,7 @@ end
 ---@param group table AgyWorkGroup
 ---@param config? table
 function M.collapse_work_group_in_place(buf, group, config)
-	if not group or not group.items or #group.items == 0 then return end
+	if not group or not group.items or #group.items <= 1 then return end
 	local cfg = get_config(config)
 
 	local start_row, end_row
@@ -3413,7 +3413,7 @@ end
 ---@param group table AgyWorkGroup
 ---@param config? table
 function M.expand_work_group_in_place(buf, group, config)
-	if not group or not group.items or #group.items == 0 or not group.child_lines then return end
+	if not group or not group.items or #group.items <= 1 or not group.child_lines then return end
 	local cfg = get_config(config)
 
 	local header_row = group.header_line_idx
