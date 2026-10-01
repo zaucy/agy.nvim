@@ -2056,11 +2056,33 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 
 	local work_groups = {}
 	local current_work_group = nil
+	local function update_work_group_time(step_created_at)
+		if current_work_group and step_created_at then
+			local t = utils.parse_iso_timestamp(step_created_at)
+			if t then
+				if not current_work_group.start_time then
+					current_work_group.start_time = t
+				end
+				current_work_group.end_time = t
+			end
+		end
+	end
 
-	local function collapse_current_work_group()
-		if not current_work_group or not current_work_group.items or #current_work_group.items <= 1 then
+	local function collapse_current_work_group(step_created_at)
+		if not current_work_group or not M.should_collapse_work_group(current_work_group) then
 			current_work_group = nil
 			return
+		end
+		if step_created_at then
+			update_work_group_time(step_created_at)
+		end
+		if current_work_group.duration_seconds <= 0 then
+			if current_work_group.start_time and current_work_group.end_time then
+				local elapsed = current_work_group.end_time - current_work_group.start_time
+				if elapsed > 0 then
+					current_work_group.duration_seconds = elapsed
+				end
+			end
 		end
 		if config.ui and config.ui.collapse_work == false then
 			table.insert(work_groups, current_work_group)
@@ -2072,7 +2094,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		current_work_group = nil
 	end
 
-	local function add_to_current_work_group(item)
+	local function add_to_current_work_group(item, step_created_at)
 		if not current_work_group then
 			current_work_group = {
 				id = #work_groups + 1,
@@ -2084,6 +2106,9 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		table.insert(current_work_group.items, item)
 		if item.duration_seconds and item.duration_seconds > 0 then
 			current_work_group.duration_seconds = current_work_group.duration_seconds + item.duration_seconds
+		end
+		if step_created_at then
+			update_work_group_time(step_created_at)
 		end
 	end
 
@@ -2177,10 +2202,10 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		has_user_input_for_current_turn = false
 	end
 
-	local function replay_tool_call(name, args, output, duration_seconds)
+	local function replay_tool_call(name, args, output, duration_seconds, step_created_at)
 		local q_list = (name == "ask_question") and M.parse_question_params(args) or {}
 		if name == "ask_question" and #q_list > 0 then
-			collapse_current_work_group()
+			collapse_current_work_group(step_created_at)
 			M.render_historical_question(buf, args, output, config, cwd)
 		else
 			local tool_line, ext_id, param_str = M.append_tool_call(buf, name, args or {}, cwd, config)
@@ -2209,7 +2234,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 					end
 				end
 			end
-			add_to_current_work_group(tool_rec)
+			add_to_current_work_group(tool_rec, step_created_at)
 		end
 	end
 
@@ -2234,19 +2259,24 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		elseif step.type == "PLANNER_RESPONSE" then
 			ensure_agent_turn(step.duration_seconds, step.created_at)
 
+			local text = step.content or step.text_delta
+			local has_tools = (step.tool_calls and #step.tool_calls > 0)
+			local has_text = (text and text ~= "")
+
+			if has_text and not has_tools then
+				collapse_current_work_group(step.created_at)
+			end
+
 			if config.ui and config.ui.show_thoughts ~= false and step.thinking and step.thinking ~= "" then
 				local tc_rec = M.append_thought_block(buf, step.thinking, step.duration_seconds, config)
 				tc_rec.id = #tool_calls + 1
 				table.insert(tool_calls, tc_rec)
-				add_to_current_work_group(tc_rec)
+				if has_tools or not has_text then
+					add_to_current_work_group(tc_rec, step.created_at)
+				end
 			end
 
-			local text = step.content or step.text_delta
-			local has_tools = (step.tool_calls and #step.tool_calls > 0)
-			if text and text ~= "" and not has_tools then
-				collapse_current_work_group()
-				M.append_text_delta(buf, text, config, true)
-			elseif text and text ~= "" and has_tools then
+			if has_text then
 				M.append_text_delta(buf, text, config, true)
 			end
 
@@ -2276,7 +2306,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 						end
 					end
 					local dur = tc.duration_seconds or step.duration_seconds
-					replay_tool_call(tc.name, tc.args, output, dur)
+					replay_tool_call(tc.name, tc.args, output, dur, step.created_at)
 				end
 				if has_ask_question and in_agent_turn then
 					finish_agent_turn()
@@ -2307,7 +2337,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 					end
 				end
 			end
-			replay_tool_call(name, args, output, step.duration_seconds)
+			replay_tool_call(name, args, output, step.duration_seconds, step.created_at)
 			if has_ask_question and in_agent_turn then
 				finish_agent_turn()
 			end
@@ -3218,6 +3248,29 @@ function M.close_tool_window(state, tc)
 	end
 end
 
+---Check if a work group has enough items to be collapsed (at least 2 tools, or at least 2 thoughts, or > 1 task)
+---Single-task clusters (at most 1 tool and at most 1 thought) remain uncollapsed and directly visible.
+---@param group table AgyWorkGroup
+---@return boolean
+function M.should_collapse_work_group(group)
+	if not group or not group.items or #group.items <= 1 then
+		return false
+	end
+	local tool_count = 0
+	local thought_count = 0
+	for _, item in ipairs(group.items) do
+		if item.is_thought then
+			thought_count = thought_count + 1
+		else
+			tool_count = tool_count + 1
+		end
+	end
+	if tool_count <= 1 and thought_count <= 1 then
+		return false
+	end
+	return true
+end
+
 ---Format the header text for a collapsible work group
 ---@param group table AgyWorkGroup
 ---@param is_open boolean
@@ -3364,7 +3417,7 @@ end
 ---@param group table AgyWorkGroup
 ---@param config? table
 function M.collapse_work_group_in_place(buf, group, config)
-	if not group or not group.items or #group.items <= 1 then return end
+	if not group or not M.should_collapse_work_group(group) then return end
 	local cfg = get_config(config)
 
 	local start_row, end_row
@@ -3378,16 +3431,22 @@ function M.collapse_work_group_in_place(buf, group, config)
 	end
 
 	if not start_row then
-		-- Initial collapse of active tool cluster
-		local first_item = group.items[1]
-		local last_item = group.items[#group.items]
-		local f_pos = first_item.header_extmark_id and vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, first_item.header_extmark_id, {})
-		local l_pos = last_item.header_extmark_id and vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, last_item.header_extmark_id, {})
+		-- Initial collapse of active tool cluster: find true min and max rows across all items
+		local min_row = nil
+		local max_row = nil
+		for _, it in ipairs(group.items) do
+			local pos = it.header_extmark_id and vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, it.header_extmark_id, {})
+			local row = (pos and #pos >= 1) and pos[1] or it.header_line_idx
+			if row then
+				if not min_row or row < min_row then min_row = row end
+				if not max_row or row > max_row then max_row = row end
+			end
+		end
 
-		start_row = (f_pos and #f_pos >= 1) and f_pos[1] or first_item.header_line_idx
-		end_row = (l_pos and #l_pos >= 1) and l_pos[1] or last_item.header_line_idx
+		start_row = min_row
+		end_row = max_row
 
-		if not start_row or not end_row then return end
+		if not start_row or not end_row or start_row > end_row then return end
 		group.child_lines = vim.api.nvim_buf_get_lines(buf, start_row, end_row + 1, false)
 	end
 
@@ -3413,7 +3472,7 @@ end
 ---@param group table AgyWorkGroup
 ---@param config? table
 function M.expand_work_group_in_place(buf, group, config)
-	if not group or not group.items or #group.items <= 1 or not group.child_lines then return end
+	if not group or not M.should_collapse_work_group(group) or not group.child_lines then return end
 	local cfg = get_config(config)
 
 	local header_row = group.header_line_idx

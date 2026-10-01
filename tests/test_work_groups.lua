@@ -103,6 +103,19 @@ local tl_rec = {
 }
 render.complete_tool_call(buf, tl_rec, 0.8, "local x = 1", cfg)
 
+local tl2_line, tl2_ext, p2_str = render.append_tool_call(buf, "run_command", { CommandLine = "echo test" }, nil, cfg)
+local tl2_rec = {
+  id = 2,
+  tool_name = "run_command",
+  params = { CommandLine = "echo test" },
+  param_str = p2_str,
+  duration_seconds = 0.4,
+  output = "test",
+  header_extmark_id = tl2_ext,
+  header_line_idx = tl2_line,
+}
+render.complete_tool_call(buf, tl2_rec, 0.4, "test", cfg)
+
 local lines_before = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 print("Buffer lines before collapse:")
 for i, l in ipairs(lines_before) do
@@ -112,8 +125,8 @@ end
 local work_group = {
   id = 1,
   is_open = true,
-  duration_seconds = 1.3,
-  items = { th_rec, tl_rec },
+  duration_seconds = 1.7,
+  items = { th_rec, tl_rec, tl2_rec },
 }
 
 -- 3a. Collapse in-place
@@ -127,11 +140,12 @@ end
 assert(work_group.is_open == false, "Group should be marked closed")
 local found_col_header = false
 for _, l in ipairs(lines_collapsed) do
-  if l:find("^▶ Worked for 1%.3s %(1 thought, 1 tool%)") then
+  if l:find("^▶ Worked for 1%.7s %(1 thought, 2 tools%)") then
     found_col_header = true
   end
   assert(not l:find("Thinking about code"), "Thought line should be collapsed")
   assert(not l:find("view_file"), "Tool line should be collapsed")
+  assert(not l:find("run_command"), "Second tool line should be collapsed")
 end
 assert(found_col_header, "Collapsed header line must exist in buffer")
 
@@ -147,18 +161,22 @@ assert(work_group.is_open == true, "Group should be marked open")
 local found_exp_header = false
 local found_th = false
 local found_tl = false
+local found_tl2 = false
 for _, l in ipairs(lines_expanded) do
-  if l:find("^▼ Worked for 1%.3s %(1 thought, 1 tool%)") then
+  if l:find("^▼ Worked for 1%.7s %(1 thought, 2 tools%)") then
     found_exp_header = true
   elseif l:find("Thought") then
     found_th = true
   elseif l:find("view_file") then
     found_tl = true
+  elseif l:find("run_command") then
+    found_tl2 = true
   end
 end
 assert(found_exp_header, "Expanded header line must exist in buffer")
 assert(found_th, "Thought line must be restored")
 assert(found_tl, "Tool line must be restored")
+assert(found_tl2, "Second tool line must be restored")
 
 -- 3c. Toggle back to collapsed using toggle_work_group
 render.toggle_work_group(buf, { config = cfg }, work_group)
@@ -166,7 +184,7 @@ assert(work_group.is_open == false, "Group should be collapsed again after toggl
 local lines_retoggled = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 local found_retoggled_hdr = false
 for _, l in ipairs(lines_retoggled) do
-  if l:find("^▶ Worked for 1%.3s") then
+  if l:find("^▶ Worked for 1%.7s") then
     found_retoggled_hdr = true
   end
 end
@@ -197,11 +215,24 @@ local tl4 = {
 }
 render.complete_tool_call(buf4, tl4, 0.4, "file1\nfile2", cfg)
 
+local t4_line2, t4_ext2, t4_p2 = render.append_tool_call(buf4, "view_file", { AbsolutePath = "file1" }, nil, cfg)
+local tl4_2 = {
+  id = 2,
+  tool_name = "view_file",
+  params = { AbsolutePath = "file1" },
+  param_str = t4_p2,
+  duration_seconds = 0.3,
+  output = "content1",
+  header_extmark_id = t4_ext2,
+  header_line_idx = t4_line2,
+}
+render.complete_tool_call(buf4, tl4_2, 0.3, "content1", cfg)
+
 local wg4 = {
   id = 1,
   is_open = true,
-  duration_seconds = 0.7,
-  items = { th4, tl4 },
+  duration_seconds = 1.0,
+  items = { th4, tl4, tl4_2 },
 }
 render.collapse_work_group_in_place(buf4, wg4, cfg)
 
@@ -209,7 +240,7 @@ local state4 = {
   buf = buf4,
   config = cfg,
   prompt_start_line = vim.api.nvim_buf_line_count(buf4),
-  tool_calls = { th4, tl4 },
+  tool_calls = { th4, tl4, tl4_2 },
   work_groups = { wg4 },
 }
 protocol.buffers[buf4] = state4
@@ -328,6 +359,7 @@ local multi_steps = {
     duration_seconds = 0.3,
     tool_calls = {
       { name = "view_file", args = { TargetFile = "file1.lua" }, output = "content1", duration_seconds = 0.2 },
+      { name = "view_file", args = { TargetFile = "file2.lua" }, output = "content2", duration_seconds = 0.2 },
     }
   },
   {
@@ -340,7 +372,8 @@ local multi_steps = {
     thinking = "Running step 2",
     duration_seconds = 0.4,
     tool_calls = {
-      { name = "run_command", args = { CommandLine = "test" }, output = "pass", duration_seconds = 1.0 },
+      { name = "run_command", args = { CommandLine = "test1" }, output = "pass", duration_seconds = 0.5 },
+      { name = "run_command", args = { CommandLine = "test2" }, output = "pass", duration_seconds = 0.5 },
     }
   },
   {
@@ -416,7 +449,7 @@ local agent_ext8, agent_line8 = render.prepare_turn_submission(live_buf8, p_star
 state8.agent_extmark_id = agent_ext8
 state8.agent_line = agent_line8
 
--- 2. Simulate thought and tool arrival while running
+-- 2. Simulate thought and tools arrival while running
 local tc_th8 = render.append_thought_block(live_buf8, "Thinking live...", 0.2, cfg)
 table.insert(state8.tool_calls, tc_th8)
 protocol.add_item_to_current_work_group(live_buf8, tc_th8)
@@ -446,8 +479,26 @@ for _, l in ipairs(lines_mid_run) do
 end
 assert(found_live_tool, "Tool line should be visible in buffer while actively running")
 
--- Complete the tool
+-- Complete tool 1
 render.complete_tool_call(live_buf8, tc_cmd8, 0.4, "1", cfg)
+state8.active_tool_record = nil
+
+-- Tool 2
+local t_line8_2, t_ext8_2, t_param8_2 = render.append_tool_call(live_buf8, "run_command", { CommandLine = "echo 2" }, nil, cfg)
+local tc_cmd8_2 = {
+  id = 3,
+  tool_name = "run_command",
+  params = { CommandLine = "echo 2" },
+  param_str = t_param8_2,
+  start_time = vim.uv.hrtime(),
+  status = "running",
+  header_extmark_id = t_ext8_2,
+  header_line_idx = t_line8_2,
+}
+table.insert(state8.tool_calls, tc_cmd8_2)
+state8.active_tool_record = tc_cmd8_2
+protocol.add_item_to_current_work_group(live_buf8, tc_cmd8_2)
+render.complete_tool_call(live_buf8, tc_cmd8_2, 0.4, "2", cfg)
 state8.active_tool_record = nil
 
 -- 3. Simulate first text delta arrival: triggers auto-collapse
@@ -603,6 +654,90 @@ end
 assert(found_live_single, "Live single tool call must remain visible directly")
 
 print("✓ Single item work group remains directly visible and uncollapsed")
+
+-- 10d. Single task with 1 thought + 1 tool is not collapsed
+local single_task_group = {
+  id = 1,
+  is_open = true,
+  duration_seconds = 0.5,
+  items = {
+    { is_thought = true, tool_name = "Thought", header_line_idx = 10 },
+    { tool_name = "view_file", header_line_idx = 11 },
+  },
+}
+assert(render.should_collapse_work_group(single_task_group) == false, "Single task (1 thought, 1 tool) must not collapse")
+
+-- 10e. Transcript with 1 thought + 1 tool remains uncollapsed
+local single_task_steps = {
+  { type = "USER_INPUT", content = "Single task query" },
+  {
+    type = "PLANNER_RESPONSE",
+    thinking = "Investigating single task...",
+    content = "Done single task.",
+    tool_calls = {
+      { name = "run_command", args = { CommandLine = "echo 1" }, output = "1", duration_seconds = 0.2 },
+    }
+  }
+}
+local stask_buf = vim.api.nvim_create_buf(false, true)
+local _, _, _, stask_wgs = render.render_transcript(stask_buf, "test-conv-single-task", single_task_steps, cfg, vim.fn.getcwd())
+assert(#stask_wgs == 0, "No work groups should be formed for single task with 1 thought and 1 tool")
+local stask_lines = vim.api.nvim_buf_get_lines(stask_buf, 0, -1, false)
+local found_stask_thought = false
+local found_stask_tool = false
+for _, l in ipairs(stask_lines) do
+  if l:find("Thought") then found_stask_thought = true end
+  if l:find("run_command") then found_stask_tool = true end
+  assert(not l:find("^▶ Worked for"), "Single task must NOT be wrapped in a 'Worked for' summary header")
+end
+assert(found_stask_thought, "Single task thought must be visible directly")
+assert(found_stask_tool, "Single task tool must be visible directly")
+
+-- 10f. Live session with 1 thought + 1 tool auto-collapse does not create a group
+local live_stask_buf = vim.api.nvim_create_buf(false, false)
+render.render_new_session(live_stask_buf, cfg)
+local th10_rec = render.append_thought_block(live_stask_buf, "Thinking live single task...", 0.2, cfg)
+local lt10_stask_line, lt10_stask_ext, lt10_stask_p = render.append_tool_call(live_stask_buf, "view_file", { AbsolutePath = "single.lua" }, nil, cfg)
+local ltc10_stask = {
+  id = 2,
+  tool_name = "view_file",
+  params = { AbsolutePath = "single.lua" },
+  param_str = lt10_stask_p,
+  duration_seconds = 0.3,
+  header_extmark_id = lt10_stask_ext,
+  header_line_idx = lt10_stask_line,
+}
+local state10_stask = {
+  buf = live_stask_buf,
+  config = cfg,
+  tool_calls = { th10_rec, ltc10_stask },
+  work_groups = {},
+  current_work_group = nil,
+  active_agent_started_output = false,
+  follow_bottom = false,
+  stream_info = { status = "ready" },
+}
+protocol.buffers[live_stask_buf] = state10_stask
+protocol.add_item_to_current_work_group(live_stask_buf, th10_rec)
+protocol.add_item_to_current_work_group(live_stask_buf, ltc10_stask)
+render.complete_tool_call(live_stask_buf, ltc10_stask, 0.3, "ok", cfg)
+
+-- Agent begins emitting response text
+protocol.collapse_active_work_group(live_stask_buf)
+assert(#state10_stask.work_groups == 0, "Work groups list must remain empty for 1 thought + 1 tool")
+assert(state10_stask.current_work_group == nil, "current_work_group should be reset to nil")
+local live_stask_lines = vim.api.nvim_buf_get_lines(live_stask_buf, 0, -1, false)
+local found_live_stask_th = false
+local found_live_stask_tl = false
+for _, l in ipairs(live_stask_lines) do
+  if l:find("Thought") then found_live_stask_th = true end
+  if l:find("view_file") then found_live_stask_tl = true end
+  assert(not l:find("^▶ Worked for"), "Live single task must NOT produce a 'Worked for' header")
+end
+assert(found_live_stask_th, "Live single task thought must remain visible directly")
+assert(found_live_stask_tl, "Live single task tool must remain visible directly")
+
+print("✓ Single task with 1 thought and 1 tool remains directly visible and uncollapsed")
 
 -- Reset config back to clean defaults
 config_mod.setup()

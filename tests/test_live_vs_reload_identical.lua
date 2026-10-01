@@ -838,4 +838,135 @@ assert(syn_slash_after:find("AgySlashCommand") ~= nil,
 
 print("✓ Treesitter syntax highlighting and code block formatting preserved identically across :e reload")
 
+-- =========================================================================
+-- TEST 14: Collapsible work group turn (collapse_work = true) identity
+-- =========================================================================
+print("\n[Test 14] Testing collapsible work group turn (collapse_work = true): live vs. reload identity...")
+
+local tmp_env14, conv14 = test_helpers.create_mock_environment()
+local cfg14 = config_mod.setup({
+  app_data_dir = tmp_env14,
+  icons = test_icons,
+  ui = {
+    virtual_text = true,
+    auto_scroll = false,
+    fold_tool_output = false,
+    protect_history = true,
+    show_thoughts = true,
+    collapse_work = true,
+  }
+})
+
+local buf14 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = buf14, file = "agy://" .. conv14 })
+local state14 = protocol.buffers[buf14]
+assert(state14 ~= nil, "State must exist for buf14")
+
+-- Submit prompt
+vim.api.nvim_buf_set_lines(buf14, state14.prompt_start_line - 1, -1, false, { "Run two tools" })
+protocol.handle_write(buf14)
+
+-- Tool 1
+state14.session.on_step_update(state14.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = { parameters = { CommandLine = "echo 1" } }
+})
+state14.session.on_step_update(state14.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "DONE",
+  duration_seconds = 0.5,
+  tool_info = { parameters = { CommandLine = "echo 1" }, output = "1" }
+})
+
+-- Tool 2
+state14.session.on_step_update(state14.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = { parameters = { CommandLine = "echo 2" } }
+})
+state14.session.on_step_update(state14.session, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "DONE",
+  duration_seconds = 0.7,
+  tool_info = { parameters = { CommandLine = "echo 2" }, output = "2" }
+})
+
+-- Agent text response
+state14.session.on_step_update(state14.session, {
+  step_type = "agent_response",
+  text_delta = "Finished both tools successfully.",
+  state = "ACTIVE"
+})
+
+-- Result
+state14.session.on_result(state14.session, {
+  status = "DONE",
+  conversation_id = conv14,
+  duration_seconds = 1.2,
+})
+
+local live14_lines = vim.api.nvim_buf_get_lines(buf14, 0, -1, false)
+
+-- Append to transcript.jsonl
+local tf14_path = tmp_env14 .. "/brain/" .. conv14 .. "/.system_generated/logs/transcript.jsonl"
+local tf14 = io.open(tf14_path, "a")
+tf14:write(vim.json.encode({
+  step_index = 5,
+  type = "USER_INPUT",
+  content = "Run two tools",
+  created_at = "2026-09-20T21:00:00Z",
+}) .. "\n")
+tf14:write(vim.json.encode({
+  step_index = 6,
+  type = "PLANNER_RESPONSE",
+  duration_seconds = 0.5,
+  tool_calls = {
+    { name = "run_command", args = { CommandLine = "echo 1" }, output = "1", duration_seconds = 0.5 },
+  },
+  created_at = "2026-09-20T21:00:01Z",
+}) .. "\n")
+tf14:write(vim.json.encode({
+  step_index = 7,
+  type = "PLANNER_RESPONSE",
+  duration_seconds = 0.7,
+  tool_calls = {
+    { name = "run_command", args = { CommandLine = "echo 2" }, output = "2", duration_seconds = 0.7 },
+  },
+  created_at = "2026-09-20T21:00:02Z",
+}) .. "\n")
+tf14:write(vim.json.encode({
+  step_index = 8,
+  type = "PLANNER_RESPONSE",
+  content = "Finished both tools successfully.",
+  duration_seconds = 0.2,
+  created_at = "2026-09-20T21:00:02.2Z",
+}) .. "\n")
+tf14:close()
+
+-- Reload via protocol.handle_buf_read (simulating :e)
+protocol.handle_buf_read({ buf = buf14, file = "agy://" .. conv14 })
+local reload14_lines = vim.api.nvim_buf_get_lines(buf14, 0, -1, false)
+
+assert(#live14_lines == #reload14_lines,
+  string.format("Line count mismatch with collapse_work=true: live=%d reload=%d", #live14_lines, #reload14_lines))
+for i = 1, #live14_lines do
+  assert(live14_lines[i] == reload14_lines[i],
+    string.format("Line %d mismatch with collapse_work=true:\n  Live:   '%s'\n  Reload: '%s'", i, live14_lines[i], reload14_lines[i]))
+end
+
+local found_col_header14 = false
+for _, l in ipairs(live14_lines) do
+  if l:find("^▶ Worked for") and l:find("2 tools") then
+    found_col_header14 = true
+  end
+end
+assert(found_col_header14, "Must contain '▶ Worked for ... (2 tools)' header in both live and reload")
+
+print("✓ Collapsible work group turn is 100% IDENTICAL in live and reload")
+
 print("\nALL LIVE VS. RELOAD IDENTICAL RENDERING TESTS PASSED SUCCESSFULLY!")

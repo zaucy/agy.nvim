@@ -2102,7 +2102,7 @@ function M.collapse_active_work_group(buf)
   local state = M.buffers[buf]
   if not state or not state.current_work_group then return end
   local group = state.current_work_group
-  if not group.items or #group.items <= 1 then
+  if not render.should_collapse_work_group(group) then
     state.current_work_group = nil
     return
   end
@@ -2112,11 +2112,12 @@ function M.collapse_active_work_group(buf)
     return
   end
 
-  if not group.duration_seconds or group.duration_seconds <= 0 then
-    if group.start_time then
-      group.duration_seconds = math.max(0.1, (vim.uv.hrtime() - group.start_time) / 1e9)
-    end
+  local dur = group.duration_seconds or 0
+  if group.start_time then
+    local elapsed = (vim.uv.hrtime() - group.start_time) / 1e9
+    dur = math.max(dur, elapsed)
   end
+  group.duration_seconds = math.max(0.1, dur)
 
   M.with_modifiable(buf, function()
     render.collapse_work_group_in_place(buf, group, state.config)
