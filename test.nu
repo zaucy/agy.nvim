@@ -48,7 +48,8 @@ def main [
             "tests/test_thoughts_lifecycle.lua",
             "tests/test_history_logging.lua",
             "tests/test_thinking_prompt_relocation.lua",
-            "tests/test_question_markdown.lua"
+            "tests/test_question_markdown.lua",
+            "tests/test_db.lua"
         ]
 
         for t in $tests {
