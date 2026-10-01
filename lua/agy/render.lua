@@ -1707,23 +1707,71 @@ function M.render_historical_question(buf, params, output, config, cwd)
 	local q_icon = get_icon("question", config)
 	local header_indices = {}
 	local parsed_answers = M.parse_answers_from_payload(answer_text, q_list)
+	local markdown_mod = require("agy.markdown")
+	local inline_extmarks = {}
+	local links_to_register = {}
 
 	for q_idx, q in ipairs(q_list) do
-		local q_text = clean_question_text(q.question)
-		local header_text
-		if q_text ~= "" then
-			header_text = (#q_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q_text)
-				or string.format("%s Question: %s", q_icon, q_text)
+		local raw_q_text = clean_question_text(q.question)
+		local q_prefix
+		if raw_q_text ~= "" then
+			q_prefix = (#q_list > 1) and string.format("%s Question %d: ", q_icon, q_idx)
+				or string.format("%s Question: ", q_icon)
 		else
-			header_text = (#q_list > 1) and string.format("%s Question %d", q_icon, q_idx)
+			q_prefix = (#q_list > 1) and string.format("%s Question %d", q_icon, q_idx)
 				or string.format("%s Question", q_icon)
 		end
+
+		local clean_q, q_inlines, q_links = markdown_mod.parse_inline_formatting(raw_q_text)
+		local header_text = q_prefix .. clean_q
 
 		local h_lines = utils.split_lines(header_text)
 		table.insert(to_append, h_lines[1])
 		table.insert(header_indices, #to_append)
+		local h_rel_row = #to_append - 1
+
+		for _, im in ipairs(q_inlines) do
+			table.insert(inline_extmarks, {
+				rel_row = h_rel_row,
+				col = #q_prefix + im.col,
+				end_col = #q_prefix + im.end_col,
+				hl_group = im.hl_group,
+				hl_mode = "combine",
+				priority = 115,
+			})
+		end
+		for _, ql in ipairs(q_links) do
+			table.insert(links_to_register, {
+				rel_row = h_rel_row,
+				start_col = #q_prefix + ql.start_col,
+				end_col = #q_prefix + ql.end_col,
+				url = ql.url,
+			})
+		end
+
 		for h_i = 2, #h_lines do
-			table.insert(to_append, "  " .. h_lines[h_i])
+			local clean_sub, sub_inlines, sub_links = markdown_mod.parse_inline_formatting(h_lines[h_i])
+			local sub_pfx = "  "
+			table.insert(to_append, sub_pfx .. clean_sub)
+			local sub_rel_row = #to_append - 1
+			for _, im in ipairs(sub_inlines) do
+				table.insert(inline_extmarks, {
+					rel_row = sub_rel_row,
+					col = #sub_pfx + im.col,
+					end_col = #sub_pfx + im.end_col,
+					hl_group = im.hl_group,
+					hl_mode = "combine",
+					priority = 115,
+				})
+			end
+			for _, sl in ipairs(sub_links) do
+				table.insert(links_to_register, {
+					rel_row = sub_rel_row,
+					start_col = #sub_pfx + sl.start_col,
+					end_col = #sub_pfx + sl.end_col,
+					url = sl.url,
+				})
+			end
 		end
 		table.insert(to_append, "")
 
@@ -1743,23 +1791,152 @@ function M.render_historical_question(buf, params, output, config, cwd)
 		for _, opt in ipairs(q.options) do
 			local is_checked = sel_map[opt] == true
 			local opt_lines = utils.split_lines(tostring(opt))
-			table.insert(to_append, string.format("- [%s] %s", is_checked and "x" or " ", opt_lines[1]))
+			local opt_pfx = string.format("- [%s] ", is_checked and "x" or " ")
+			local clean_opt, o_inlines, o_links = markdown_mod.parse_inline_formatting(opt_lines[1])
+			table.insert(to_append, opt_pfx .. clean_opt)
+			local opt_rel_row = #to_append - 1
+			for _, im in ipairs(o_inlines) do
+				table.insert(inline_extmarks, {
+					rel_row = opt_rel_row,
+					col = #opt_pfx + im.col,
+					end_col = #opt_pfx + im.end_col,
+					hl_group = im.hl_group,
+					hl_mode = "combine",
+					priority = 115,
+				})
+			end
+			for _, ol in ipairs(o_links) do
+				table.insert(links_to_register, {
+					rel_row = opt_rel_row,
+					start_col = #opt_pfx + ol.start_col,
+					end_col = #opt_pfx + ol.end_col,
+					url = ol.url,
+				})
+			end
+
 			for o_i = 2, #opt_lines do
-				table.insert(to_append, "      " .. opt_lines[o_i])
+				local clean_sub, sub_inlines, sub_links = markdown_mod.parse_inline_formatting(opt_lines[o_i])
+				local sub_pfx = "      "
+				table.insert(to_append, sub_pfx .. clean_sub)
+				local sub_rel_row = #to_append - 1
+				for _, im in ipairs(sub_inlines) do
+					table.insert(inline_extmarks, {
+						rel_row = sub_rel_row,
+						col = #sub_pfx + im.col,
+						end_col = #sub_pfx + im.end_col,
+						hl_group = im.hl_group,
+						hl_mode = "combine",
+						priority = 115,
+					})
+				end
+				for _, sl in ipairs(sub_links) do
+					table.insert(links_to_register, {
+						rel_row = sub_rel_row,
+						start_col = #sub_pfx + sl.start_col,
+						end_col = #sub_pfx + sl.end_col,
+						url = sl.url,
+					})
+				end
 			end
 		end
 
 		if write_in and write_in ~= "" then
 			local w_lines = utils.split_lines(tostring(write_in))
 			if #sel_list == 0 then
-				table.insert(to_append, string.format("- [x] Write-in: %s", w_lines[1]))
+				local w_pfx = "- [x] Write-in: "
+				local clean_w, w_inlines, w_links = markdown_mod.parse_inline_formatting(w_lines[1])
+				table.insert(to_append, w_pfx .. clean_w)
+				local w_rel_row = #to_append - 1
+				for _, im in ipairs(w_inlines) do
+					table.insert(inline_extmarks, {
+						rel_row = w_rel_row,
+						col = #w_pfx + im.col,
+						end_col = #w_pfx + im.end_col,
+						hl_group = im.hl_group,
+						hl_mode = "combine",
+						priority = 115,
+					})
+				end
+				for _, wl in ipairs(w_links) do
+					table.insert(links_to_register, {
+						rel_row = w_rel_row,
+						start_col = #w_pfx + wl.start_col,
+						end_col = #w_pfx + wl.end_col,
+						url = wl.url,
+					})
+				end
+
 				for w_i = 2, #w_lines do
-					table.insert(to_append, "      " .. w_lines[w_i])
+					local clean_sub, sub_inlines, sub_links = markdown_mod.parse_inline_formatting(w_lines[w_i])
+					local sub_pfx = "      "
+					table.insert(to_append, sub_pfx .. clean_sub)
+					local sub_rel_row = #to_append - 1
+					for _, im in ipairs(sub_inlines) do
+						table.insert(inline_extmarks, {
+							rel_row = sub_rel_row,
+							col = #sub_pfx + im.col,
+							end_col = #sub_pfx + im.end_col,
+							hl_group = im.hl_group,
+							hl_mode = "combine",
+							priority = 115,
+						})
+					end
+					for _, sl in ipairs(sub_links) do
+						table.insert(links_to_register, {
+							rel_row = sub_rel_row,
+							start_col = #sub_pfx + sl.start_col,
+							end_col = #sub_pfx + sl.end_col,
+							url = sl.url,
+						})
+					end
 				end
 			else
-				table.insert(to_append, string.format("  Notes: %s", w_lines[1]))
+				local w_pfx = "  Notes: "
+				local clean_w, w_inlines, w_links = markdown_mod.parse_inline_formatting(w_lines[1])
+				table.insert(to_append, w_pfx .. clean_w)
+				local w_rel_row = #to_append - 1
+				for _, im in ipairs(w_inlines) do
+					table.insert(inline_extmarks, {
+						rel_row = w_rel_row,
+						col = #w_pfx + im.col,
+						end_col = #w_pfx + im.end_col,
+						hl_group = im.hl_group,
+						hl_mode = "combine",
+						priority = 115,
+					})
+				end
+				for _, wl in ipairs(w_links) do
+					table.insert(links_to_register, {
+						rel_row = w_rel_row,
+						start_col = #w_pfx + wl.start_col,
+						end_col = #w_pfx + wl.end_col,
+						url = wl.url,
+					})
+				end
+
 				for w_i = 2, #w_lines do
-					table.insert(to_append, "         " .. w_lines[w_i])
+					local clean_sub, sub_inlines, sub_links = markdown_mod.parse_inline_formatting(w_lines[w_i])
+					local sub_pfx = "         "
+					table.insert(to_append, sub_pfx .. clean_sub)
+					local sub_rel_row = #to_append - 1
+					for _, im in ipairs(sub_inlines) do
+						table.insert(inline_extmarks, {
+							rel_row = sub_rel_row,
+							col = #sub_pfx + im.col,
+							end_col = #sub_pfx + im.end_col,
+							hl_group = im.hl_group,
+							hl_mode = "combine",
+							priority = 115,
+						})
+					end
+					for _, sl in ipairs(sub_links) do
+						table.insert(links_to_register, {
+							rel_row = sub_rel_row,
+							start_col = #sub_pfx + sl.start_col,
+							end_col = #sub_pfx + sl.end_col,
+							url = sl.url,
+						})
+					end
 				end
 			end
 		end
@@ -1795,6 +1972,18 @@ function M.render_historical_question(buf, params, output, config, cwd)
 			priority = 100,
 		})
 	end
+
+	for _, em in ipairs(inline_extmarks) do
+		local actual_row = start_line + em.rel_row
+		pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, actual_row, em.col, {
+			end_col = em.end_col,
+			hl_group = em.hl_group,
+			hl_mode = em.hl_mode or "combine",
+			priority = em.priority or 115,
+		})
+	end
+
+	markdown_mod.register_links(buf, links_to_register, start_line)
 
 	vim.bo[buf].modified = false
 end
@@ -3325,33 +3514,124 @@ function M.render_question_block(buf, question_list, config)
 	local start_line = line_count + #to_append + 1
 	local questions_meta = {}
 	local header_lines = {}
+	local markdown_mod = require("agy.markdown")
+	local inline_extmarks = {}
+	local links_to_register = {}
 
 	local q_icon = get_icon("question", config)
 	for q_idx, q in ipairs(question_list) do
-		local q_text = clean_question_text(q.question)
-		local header_text
-		if q_text ~= "" then
-			header_text = (#question_list > 1) and string.format("%s Question %d: %s", q_icon, q_idx, q_text)
-				or string.format("%s Question: %s", q_icon, q_text)
+		local raw_q_text = clean_question_text(q.question)
+		local q_prefix
+		if raw_q_text ~= "" then
+			q_prefix = (#question_list > 1) and string.format("%s Question %d: ", q_icon, q_idx)
+				or string.format("%s Question: ", q_icon)
 		else
-			header_text = (#question_list > 1) and string.format("%s Question %d", q_icon, q_idx)
+			q_prefix = (#question_list > 1) and string.format("%s Question %d", q_icon, q_idx)
 				or string.format("%s Question", q_icon)
 		end
+
+		local clean_q, q_inlines, q_links = markdown_mod.parse_inline_formatting(raw_q_text)
+		local header_text = q_prefix .. clean_q
 
 		local h_lines = utils.split_lines(header_text)
 		table.insert(to_append, h_lines[1])
 		table.insert(header_lines, line_count + #to_append)
+		local h_rel_row = #to_append - 1
+
+		for _, im in ipairs(q_inlines) do
+			table.insert(inline_extmarks, {
+				rel_row = h_rel_row,
+				col = #q_prefix + im.col,
+				end_col = #q_prefix + im.end_col,
+				hl_group = im.hl_group,
+				hl_mode = "combine",
+				priority = 115,
+			})
+		end
+		for _, ql in ipairs(q_links) do
+			table.insert(links_to_register, {
+				rel_row = h_rel_row,
+				start_col = #q_prefix + ql.start_col,
+				end_col = #q_prefix + ql.end_col,
+				url = ql.url,
+			})
+		end
+
 		for h_i = 2, #h_lines do
-			table.insert(to_append, "  " .. h_lines[h_i])
+			local clean_sub, sub_inlines, sub_links = markdown_mod.parse_inline_formatting(h_lines[h_i])
+			local sub_pfx = "  "
+			table.insert(to_append, sub_pfx .. clean_sub)
+			local sub_rel_row = #to_append - 1
+			for _, im in ipairs(sub_inlines) do
+				table.insert(inline_extmarks, {
+					rel_row = sub_rel_row,
+					col = #sub_pfx + im.col,
+					end_col = #sub_pfx + im.end_col,
+					hl_group = im.hl_group,
+					hl_mode = "combine",
+					priority = 115,
+				})
+			end
+			for _, sl in ipairs(sub_links) do
+				table.insert(links_to_register, {
+					rel_row = sub_rel_row,
+					start_col = #sub_pfx + sl.start_col,
+					end_col = #sub_pfx + sl.end_col,
+					url = sl.url,
+				})
+			end
 		end
 		table.insert(to_append, "")
 
 		local opt_start = line_count + #to_append + 1
 		for _, opt in ipairs(q.options) do
 			local opt_lines = utils.split_lines(tostring(opt))
-			table.insert(to_append, string.format("- [ ] %s", opt_lines[1]))
+			local opt_pfx = "- [ ] "
+			local clean_opt, o_inlines, o_links = markdown_mod.parse_inline_formatting(opt_lines[1])
+			table.insert(to_append, opt_pfx .. clean_opt)
+			local opt_rel_row = #to_append - 1
+			for _, im in ipairs(o_inlines) do
+				table.insert(inline_extmarks, {
+					rel_row = opt_rel_row,
+					col = #opt_pfx + im.col,
+					end_col = #opt_pfx + im.end_col,
+					hl_group = im.hl_group,
+					hl_mode = "combine",
+					priority = 115,
+				})
+			end
+			for _, ol in ipairs(o_links) do
+				table.insert(links_to_register, {
+					rel_row = opt_rel_row,
+					start_col = #opt_pfx + ol.start_col,
+					end_col = #opt_pfx + ol.end_col,
+					url = ol.url,
+				})
+			end
+
 			for o_i = 2, #opt_lines do
-				table.insert(to_append, "      " .. opt_lines[o_i])
+				local clean_sub, sub_inlines, sub_links = markdown_mod.parse_inline_formatting(opt_lines[o_i])
+				local sub_pfx = "      "
+				table.insert(to_append, sub_pfx .. clean_sub)
+				local sub_rel_row = #to_append - 1
+				for _, im in ipairs(sub_inlines) do
+					table.insert(inline_extmarks, {
+						rel_row = sub_rel_row,
+						col = #sub_pfx + im.col,
+						end_col = #sub_pfx + im.end_col,
+						hl_group = im.hl_group,
+						hl_mode = "combine",
+						priority = 115,
+					})
+				end
+				for _, sl in ipairs(sub_links) do
+					table.insert(links_to_register, {
+						rel_row = sub_rel_row,
+						start_col = #sub_pfx + sl.start_col,
+						end_col = #sub_pfx + sl.end_col,
+						url = sl.url,
+					})
+				end
 			end
 		end
 		local opt_end = line_count + #to_append
@@ -3397,6 +3677,18 @@ function M.render_question_block(buf, question_list, config)
 			})
 		end
 	end
+
+	for _, em in ipairs(inline_extmarks) do
+		local actual_row = line_count + em.rel_row
+		pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, actual_row, em.col, {
+			end_col = em.end_col,
+			hl_group = em.hl_group,
+			hl_mode = em.hl_mode or "combine",
+			priority = em.priority or 115,
+		})
+	end
+
+	markdown_mod.register_links(buf, links_to_register, line_count)
 
 	local first_opt_line = (questions_meta[1] and questions_meta[1].options_start_line) or start_line
 

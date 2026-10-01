@@ -1896,28 +1896,7 @@ function M.render(buf, delta, is_final, config)
 	vim.api.nvim_buf_set_lines(buf, start_row, end_row, false, lines)
 	session.rendered_count = #lines
 
-	local buf_links = {}
-	for _, l in ipairs(links or {}) do
-		local r0 = start_row + l.rel_row
-		table.insert(buf_links, {
-			row = r0 + 1,
-			row_0 = r0,
-			start_col = l.start_col,
-			end_col = l.end_col,
-			url = l.url,
-		})
-	end
-
-	local preserved = {}
-	for _, existing in ipairs(M.links[buf] or {}) do
-		if existing.row_0 < start_row then
-			table.insert(preserved, existing)
-		end
-	end
-	for _, bl in ipairs(buf_links) do
-		table.insert(preserved, bl)
-	end
-	M.links[buf] = preserved
+	M.register_links(buf, links, start_row)
 
 	for _, em in ipairs(extmark_directives) do
 		local em_row = start_row + em.rel_row
@@ -1968,17 +1947,7 @@ function M.render_document(buf, text, config)
 	vim.api.nvim_buf_clear_namespace(buf, M.NS_MARKDOWN, 0, -1)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 
-	local buf_links = {}
-	for _, l in ipairs(links or {}) do
-		table.insert(buf_links, {
-			row = l.rel_row + 1,
-			row_0 = l.rel_row,
-			start_col = l.start_col,
-			end_col = l.end_col,
-			url = l.url,
-		})
-	end
-	M.links[buf] = buf_links
+	M.register_links(buf, links, 0)
 
 	for _, em in ipairs(extmark_directives) do
 		local em_row = em.rel_row
@@ -2031,6 +2000,45 @@ function M.get_raw_text(buf)
 		return cur
 	end
 	return prev or ""
+end
+
+---Register or update parsed markdown links for a buffer
+---@param buf number
+---@param links table[] list of { rel_row?: number, row_0?: number, start_col: number, end_col: number, url: string }
+---@param start_row number 0-indexed start row for replacement
+---@param end_row? number 0-indexed end row for replacement (optional)
+function M.register_links(buf, links, start_row, end_row)
+	assert(buf and vim.api.nvim_buf_is_valid(buf), "agy markdown: valid buffer is required")
+	assert(type(start_row) == "number", "agy markdown: start_row number is required")
+
+	local buf_links = {}
+	for _, l in ipairs(links or {}) do
+		local r0 = (l.row_0 ~= nil) and l.row_0 or (start_row + (l.rel_row or 0))
+		table.insert(buf_links, {
+			row = r0 + 1,
+			row_0 = r0,
+			start_col = l.start_col,
+			end_col = l.end_col,
+			url = l.url,
+		})
+	end
+
+	local preserved = {}
+	for _, existing in ipairs(M.links[buf] or {}) do
+		if end_row then
+			if existing.row_0 < start_row or existing.row_0 > end_row then
+				table.insert(preserved, existing)
+			end
+		else
+			if existing.row_0 < start_row then
+				table.insert(preserved, existing)
+			end
+		end
+	end
+	for _, bl in ipairs(buf_links) do
+		table.insert(preserved, bl)
+	end
+	M.links[buf] = preserved
 end
 
 ---Get link under cursor or position in buffer

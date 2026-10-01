@@ -303,6 +303,8 @@ function M.close()
     local prev_mod = vim.bo[b].modifiable
     vim.bo[b].modifiable = true
     vim.api.nvim_buf_clear_namespace(b, M.NS_HL, 0, -1)
+    local markdown_mod = require("agy.markdown")
+    markdown_mod.register_links(b, {}, start_row)
     vim.api.nvim_buf_set_lines(b, start_row, -1, false, { "" })
     vim.bo[b].modified = false
     vim.bo[b].modifiable = prev_mod
@@ -429,6 +431,8 @@ function M.render_buffer()
 
   local lines = {}
   local highlights = {}
+  local links_to_register = {}
+  local markdown_mod = require("agy.markdown")
 
   if M.is_summary_page() then
     -- Header line
@@ -461,15 +465,36 @@ function M.render_buffer()
 
     -- Summary of each question
     for q_idx, quest in ipairs(M.state.questions) do
-      local title = clean_question_text(quest.question)
-      local q_title = string.format("  %d. %s", q_idx, title ~= "" and title or quest.question)
+      local raw_title = clean_question_text(quest.question)
+      local clean_title, t_inlines, t_links = markdown_mod.parse_inline_formatting(raw_title ~= "" and raw_title or quest.question)
+      local pfx = string.format("  %d. ", q_idx)
+      local q_title = pfx .. clean_title
       table.insert(lines, q_title)
+      local cur_row = #lines - 1
       table.insert(highlights, {
-        row = #lines - 1,
+        row = cur_row,
         start_col = 2,
         end_col = #q_title,
         hl_group = "AgyQuestionPrompt",
       })
+      for _, im in ipairs(t_inlines) do
+        table.insert(highlights, {
+          row = cur_row,
+          start_col = #pfx + im.col,
+          end_col = #pfx + im.end_col,
+          hl_group = im.hl_group,
+          hl_mode = "combine",
+          priority = 115,
+        })
+      end
+      for _, tl in ipairs(t_links) do
+        table.insert(links_to_register, {
+          rel_row = cur_row,
+          start_col = #pfx + tl.start_col,
+          end_col = #pfx + tl.end_col,
+          url = tl.url,
+        })
+      end
 
       local ans_summary = ""
       if quest.is_multi_select then
@@ -477,23 +502,26 @@ function M.render_buffer()
         local opts = {}
         for opt_i, opt_text in ipairs(quest.options) do
           if sel_map[opt_i] then
-            table.insert(opts, opt_text)
+            local clean_o = markdown_mod.parse_inline_formatting(opt_text)
+            table.insert(opts, clean_o)
           end
         end
         ans_summary = table.concat(opts, ", ")
       else
         local choice = M.state.selected_answers[q_idx]
         if type(choice) == "number" and quest.options[choice] then
-          ans_summary = quest.options[choice]
+          local clean_o = markdown_mod.parse_inline_formatting(quest.options[choice])
+          ans_summary = clean_o
         end
       end
 
       local write_in = M.state.write_in_text[q_idx]
       if write_in and write_in ~= "" then
+        local clean_w = markdown_mod.parse_inline_formatting(write_in)
         if ans_summary ~= "" then
-          ans_summary = ans_summary .. ' (Notes: "' .. write_in .. '")'
+          ans_summary = ans_summary .. ' (Notes: "' .. clean_w .. '")'
         else
-          ans_summary = 'Write-in: "' .. write_in .. '"'
+          ans_summary = 'Write-in: "' .. clean_w .. '"'
         end
       end
 
@@ -634,6 +662,7 @@ function M.render_buffer()
       right_gravity = true,
       priority = 200,
     })
+    markdown_mod.register_links(b, links_to_register, start_row)
     return
   end
 
@@ -660,35 +689,61 @@ function M.render_buffer()
 
   -- Question header line
   local prog_str, prog_hls = build_progression(cfg, 2)
-  local title = clean_question_text(q.question)
-  if title == "" and prog_str == "" then
-    title = q.question
+  local raw_title = clean_question_text(q.question)
+  if raw_title == "" and prog_str == "" then
+    raw_title = q.question
   end
 
+  local clean_title, title_inlines, title_links = markdown_mod.parse_inline_formatting(raw_title)
+
   local header_text
+  local title_prefix_len = 0
   if prog_str ~= "" then
-    if title ~= "" then
-      header_text = string.format("  %s   %s", prog_str, title)
+    if clean_title ~= "" then
+      local pfx = string.format("  %s   ", prog_str)
+      title_prefix_len = #pfx
+      header_text = pfx .. clean_title
     else
       header_text = string.format("  %s", prog_str)
     end
   else
-    header_text = string.format("  %s", title)
+    local pfx = "  "
+    title_prefix_len = #pfx
+    header_text = pfx .. clean_title
   end
   table.insert(lines, header_text)
+  local header_rel_row = #lines - 1
   table.insert(highlights, {
-    row = #lines - 1,
+    row = header_rel_row,
     start_col = 0,
     end_col = #header_text,
     hl_group = "AgyQuestionHeader",
   })
   for _, ph in ipairs(prog_hls) do
     table.insert(highlights, {
-      row = #lines - 1,
+      row = header_rel_row,
       start_col = ph.start_col,
       end_col = ph.end_col,
       hl_group = ph.hl_group,
       priority = 101,
+    })
+  end
+  for _, im in ipairs(title_inlines) do
+    table.insert(highlights, {
+      row = header_rel_row,
+      start_col = title_prefix_len + im.col,
+      end_col = title_prefix_len + im.end_col,
+      hl_group = im.hl_group,
+      hl_mode = "combine",
+      priority = 115,
+    })
+  end
+  for _, tl in ipairs(title_links) do
+    table.insert(links_to_register, {
+      rel_row = header_rel_row,
+      start_col = title_prefix_len + tl.start_col,
+      end_col = title_prefix_len + tl.end_col,
+      url = tl.url,
     })
   end
 
@@ -701,17 +756,28 @@ function M.render_buffer()
     local is_sel = (i == selected_idx)
     local pointer = is_sel and "> " or "  "
     local line_str = ""
+    local opt_prefix_len = 0
+    local opt_inlines = {}
+    local opt_links = {}
 
     if it.type == "option" then
+      local opt_single = tostring(it.text):gsub("[\r\n]+", " ")
+      local clean_text, o_inlines, o_links = markdown_mod.parse_inline_formatting(opt_single)
+      opt_inlines = o_inlines
+      opt_links = o_links
       if q.is_multi_select then
         local checked = M.state.selected_answers[M.state.current_q_idx]
             and M.state.selected_answers[M.state.current_q_idx][it.opt_idx]
         local mark = checked and "[x] " or "[ ] "
-        line_str = pointer .. mark .. string.format("%d. ", it.opt_idx) .. it.text
+        local pfx = pointer .. mark .. string.format("%d. ", it.opt_idx)
+        opt_prefix_len = #pfx
+        line_str = pfx .. clean_text
       else
         local chosen = (M.state.selected_answers[M.state.current_q_idx] == it.opt_idx)
         local mark = chosen and "(•) " or "( ) "
-        line_str = pointer .. mark .. string.format("%d. ", it.opt_idx) .. it.text
+        local pfx = pointer .. mark .. string.format("%d. ", it.opt_idx)
+        opt_prefix_len = #pfx
+        line_str = pfx .. clean_text
       end
     elseif it.type == "write_in" then
       local custom = M.state.write_in_text[M.state.current_q_idx] or ""
@@ -724,7 +790,13 @@ function M.render_buffer()
         line_str = pointer .. mark .. string.format("%d. Write-in: ", #q.options + 1) .. custom
       else
         if custom ~= "" then
-          line_str = pointer .. mark .. string.format("%d. Write-in: %s", #q.options + 1, custom)
+          local custom_single = tostring(custom):gsub("[\r\n]+", " ")
+          local clean_custom, c_inlines, c_links = markdown_mod.parse_inline_formatting(custom_single)
+          opt_inlines = c_inlines
+          opt_links = c_links
+          local pfx = pointer .. mark .. string.format("%d. Write-in: ", #q.options + 1)
+          opt_prefix_len = #pfx
+          line_str = pfx .. clean_custom
         else
           line_str = pointer .. mark .. string.format("%d. Write-in response...", #q.options + 1)
         end
@@ -734,12 +806,31 @@ function M.render_buffer()
     end
 
     table.insert(lines, line_str)
+    local cur_row = #lines - 1
     table.insert(highlights, {
-      row = #lines - 1,
+      row = cur_row,
       is_sel = is_sel,
       line_str = line_str,
       item = it,
     })
+    for _, im in ipairs(opt_inlines) do
+      table.insert(highlights, {
+        row = cur_row,
+        start_col = opt_prefix_len + im.col,
+        end_col = opt_prefix_len + im.end_col,
+        hl_group = im.hl_group,
+        hl_mode = "combine",
+        priority = 115,
+      })
+    end
+    for _, ol in ipairs(opt_links) do
+      table.insert(links_to_register, {
+        rel_row = cur_row,
+        start_col = opt_prefix_len + ol.start_col,
+        end_col = opt_prefix_len + ol.end_col,
+        url = ol.url,
+      })
+    end
   end
 
   if total_count > max_visible then
@@ -806,6 +897,7 @@ function M.render_buffer()
       vim.api.nvim_buf_set_extmark(b, M.NS_HL, actual_row, hl.start_col or 0, {
         end_col = hl.end_col,
         hl_group = hl.hl_group,
+        hl_mode = hl.hl_mode,
         priority = hl.priority or 100,
       })
     elseif hl.is_sel ~= nil then
@@ -886,6 +978,8 @@ function M.render_buffer()
     right_gravity = true,
     priority = 200,
   })
+
+  markdown_mod.register_links(b, links_to_register, start_row)
 end
 
 ---Synchronize cursor position in the conversation window to the selected option line
