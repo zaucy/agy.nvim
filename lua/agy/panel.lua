@@ -108,9 +108,12 @@ function M.open(opts)
   -- If panel already open, close old one
   M.close()
 
-  local target_win = (opts.target_win and vim.api.nvim_win_is_valid(opts.target_win))
+  local cur_win = vim.api.nvim_get_current_win()
+  local cur_tab = vim.api.nvim_get_current_tabpage()
+
+  local target_win = (opts.target_win and vim.api.nvim_win_is_valid(opts.target_win) and vim.api.nvim_win_get_tabpage(opts.target_win) == cur_tab)
       and opts.target_win
-      or vim.api.nvim_get_current_win()
+      or cur_win
   local target_buf = (opts.target_buf and vim.api.nvim_buf_is_valid(opts.target_buf))
       and opts.target_buf
       or vim.api.nvim_win_get_buf(target_win)
@@ -208,7 +211,8 @@ function M.open(opts)
   -- Keybindings for navigation and closing
   local function close_and_focus_prompt(enter_insert)
     M.close()
-    if vim.api.nvim_win_is_valid(target_win) then
+    local cur_tab = vim.api.nvim_get_current_tabpage()
+    if vim.api.nvim_win_is_valid(target_win) and vim.api.nvim_win_get_tabpage(target_win) == cur_tab then
       vim.api.nvim_set_current_win(target_win)
       if pstate and pstate.prompt_start_line then
         pcall(vim.api.nvim_win_set_cursor, target_win, { pstate.prompt_start_line, 0 })

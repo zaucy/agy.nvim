@@ -921,7 +921,7 @@ function M.intercept_ask_question(buf, state, q_list)
 
   local target_win = vim.fn.bufwinid(buf)
   if target_win == -1 or not vim.api.nvim_win_is_valid(target_win) then
-    target_win = vim.api.nvim_get_current_win()
+    target_win = nil
   end
 
   question_mod.show(target_win, buf, q_list, {
@@ -1006,7 +1006,7 @@ function M.intercept_artifact_review(buf, state, filename, summary)
 
   local target_win = vim.fn.bufwinid(buf)
   if target_win == -1 or not vim.api.nvim_win_is_valid(target_win) then
-    target_win = vim.api.nvim_get_current_win()
+    target_win = nil
   end
 
   local q_text
@@ -2192,7 +2192,8 @@ function M.toggle_tool_at_cursor(buf, target_win)
   if state.active_tool_call and cur_win == state.active_tool_call.win then
     local target_tc = state.active_tool_call
     render.close_tool_window(state, target_tc)
-    if vim.api.nvim_win_is_valid(target_win) then
+    local cur_tab = vim.api.nvim_get_current_tabpage()
+    if vim.api.nvim_win_is_valid(target_win) and vim.api.nvim_win_get_tabpage(target_win) == cur_tab then
       vim.api.nvim_set_current_win(target_win)
       if target_tc.header_line_idx then
         pcall(vim.api.nvim_win_set_cursor, target_win, { target_tc.header_line_idx + 1, 0 })

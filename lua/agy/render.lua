@@ -3758,7 +3758,8 @@ function M.toggle_tool_output(buf, state, tc, target_win)
 
 	local function close_self()
 		M.close_tool_window(state, tc)
-		if target_win and vim.api.nvim_win_is_valid(target_win) then
+		local cur_tab = vim.api.nvim_get_current_tabpage()
+		if target_win and vim.api.nvim_win_is_valid(target_win) and vim.api.nvim_win_get_tabpage(target_win) == cur_tab then
 			vim.api.nvim_set_current_win(target_win)
 			if header_row then
 				pcall(vim.api.nvim_win_set_cursor, target_win, { header_row + 1, 0 })

@@ -50,7 +50,8 @@ def main [
             "tests/test_thinking_prompt_relocation.lua",
             "tests/test_question_markdown.lua",
             "tests/test_db.lua",
-            "tests/test_work_groups.lua"
+            "tests/test_work_groups.lua",
+            "tests/test_tabpage_isolation.lua"
         ]
 
         for t in $tests {
