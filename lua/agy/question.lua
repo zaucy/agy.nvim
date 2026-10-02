@@ -961,29 +961,73 @@ end
 
 ---Synchronize cursor position in the conversation window to the selected option line
 function M.sync_cursor()
-  local win = M.state.win or M.state.target_win
-  if not win or not vim.api.nvim_win_is_valid(win) then return end
+  local b = M.state.buf or M.state.target_buf
+  if not b or not vim.api.nvim_buf_is_valid(b) then return end
   if M.state.is_editing_write_in then return end
+
+  local cur_win = vim.api.nvim_get_current_win()
+  local cur_tab = vim.api.nvim_get_current_tabpage()
+
+  local win = nil
+  if cur_win and vim.api.nvim_win_is_valid(cur_win) and vim.api.nvim_win_get_buf(cur_win) == b then
+    win = cur_win
+  else
+    local tab_win = vim.fn.bufwinid(b)
+    if tab_win ~= -1 and vim.api.nvim_win_is_valid(tab_win) then
+      win = tab_win
+    end
+  end
+
+  if not win then
+    local candidate = M.state.win or M.state.target_win
+    if candidate and vim.api.nvim_win_is_valid(candidate) and vim.api.nvim_win_get_tabpage(candidate) == cur_tab then
+      win = candidate
+    end
+  end
+
+  if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_tabpage(win) ~= cur_tab then
+    return
+  end
 
   local opt_start_line = M.get_opt_start_line()
   local cursor_line = opt_start_line + (M.state.selected_idx - (M.state.scroll_offset or 1))
-  local b = M.state.buf or M.state.target_buf
-  if b and vim.api.nvim_buf_is_valid(b) then
-    local line_count = vim.api.nvim_buf_line_count(b)
-    cursor_line = math.max(1, math.min(cursor_line, line_count))
-  end
+  local line_count = vim.api.nvim_buf_line_count(b)
+  cursor_line = math.max(1, math.min(cursor_line, line_count))
   pcall(vim.api.nvim_win_set_cursor, win, { cursor_line, 0 })
 end
 
 ---Focus the target window and position cursor on the active option
 function M.focus()
-  local win = M.state.win or M.state.target_win
-  if win and vim.api.nvim_win_is_valid(win) then
-    if vim.api.nvim_get_current_win() ~= win then
-      vim.api.nvim_set_current_win(win)
+  local b = M.state.buf or M.state.target_buf
+  if not b or not vim.api.nvim_buf_is_valid(b) then return end
+
+  local cur_win = vim.api.nvim_get_current_win()
+  local cur_tab = vim.api.nvim_get_current_tabpage()
+
+  -- Find a window in the CURRENT tabpage displaying the question buffer
+  local win = nil
+  if cur_win and vim.api.nvim_win_is_valid(cur_win) and vim.api.nvim_win_get_buf(cur_win) == b then
+    win = cur_win
+  else
+    local tab_win = vim.fn.bufwinid(b)
+    if tab_win ~= -1 and vim.api.nvim_win_is_valid(tab_win) then
+      win = tab_win
     end
-    M.sync_cursor()
   end
+
+  -- If neither cur_win nor any window in the current tabpage is displaying b,
+  -- never switch tabpages under any circumstances.
+  if not win or vim.api.nvim_win_get_tabpage(win) ~= cur_tab then
+    return
+  end
+
+  M.state.win = win
+  M.state.target_win = win
+
+  if cur_win ~= win then
+    vim.api.nvim_set_current_win(win)
+  end
+  M.sync_cursor()
 end
 
 ---Select next item
@@ -1331,16 +1375,34 @@ function M.start_inline_write_in()
   M.render_buffer()
 
   local b = M.state.buf or M.state.target_buf
-  local win = M.state.win or M.state.target_win
-  if not win or not vim.api.nvim_win_is_valid(win) then return end
   if not b or not vim.api.nvim_buf_is_valid(b) then return end
+
+  local cur_win = vim.api.nvim_get_current_win()
+  local cur_tab = vim.api.nvim_get_current_tabpage()
+
+  local win = nil
+  if cur_win and vim.api.nvim_win_is_valid(cur_win) and vim.api.nvim_win_get_buf(cur_win) == b then
+    win = cur_win
+  else
+    local tab_win = vim.fn.bufwinid(b)
+    if tab_win ~= -1 and vim.api.nvim_win_is_valid(tab_win) then
+      win = tab_win
+    end
+  end
+
+  if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_tabpage(win) ~= cur_tab then
+    return
+  end
+
+  M.state.win = win
+  M.state.target_win = win
 
   local opt_start_line = M.get_opt_start_line()
   local write_line = opt_start_line + (write_in_idx - (M.state.scroll_offset or 1))
 
   vim.bo[b].modifiable = true
 
-  if vim.api.nvim_get_current_win() ~= win then
+  if cur_win ~= win then
     pcall(vim.api.nvim_set_current_win, win)
   end
 
@@ -1529,7 +1591,10 @@ function M.setup_keymaps(target_buf)
       else
         local start_line = M.get_start_line()
         local target_line = math.max(1, start_line - 1)
-        local win = M.state.win or M.state.target_win or vim.api.nvim_get_current_win()
+        local cur_win = vim.api.nvim_get_current_win()
+        local win = (cur_win and vim.api.nvim_win_is_valid(cur_win) and vim.api.nvim_win_get_buf(cur_win) == target_buf)
+            and cur_win
+            or (M.state.win or M.state.target_win or cur_win)
         local line_text = vim.api.nvim_buf_get_lines(target_buf, target_line - 1, target_line, false)[1] or ""
         pcall(vim.api.nvim_win_set_cursor, win, { target_line, math.min(0, #line_text) })
       end
@@ -1631,9 +1696,19 @@ function M.setup_keymaps(target_buf)
     callback = function()
       if not M.is_visible() then return end
       if M.state.is_editing_write_in then return end
+      local cur_win = vim.api.nvim_get_current_win()
+      local cur_tab = vim.api.nvim_get_current_tabpage()
       local win = M.state.win or M.state.target_win
-      if not win or not vim.api.nvim_win_is_valid(win) then return end
-      if vim.api.nvim_get_current_win() ~= win then return end
+      if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_tabpage(win) ~= cur_tab then
+        if cur_win and vim.api.nvim_win_is_valid(cur_win) and vim.api.nvim_win_get_buf(cur_win) == target_buf then
+          win = cur_win
+          M.state.win = cur_win
+          M.state.target_win = cur_win
+        else
+          return
+        end
+      end
+      if cur_win ~= win then return end
 
       local start_line = M.get_start_line()
       local cur = vim.api.nvim_win_get_cursor(win)
@@ -1670,11 +1745,24 @@ function M.show(target_win, target_buf, questions, opts)
   assert(questions and type(questions) == "table" and #questions > 0, "agy question: questions array is required")
   opts = opts or {}
 
-  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
-    target_win = vim.api.nvim_get_current_win()
-  end
   if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then
     target_buf = vim.api.nvim_get_current_buf()
+  end
+
+  local cur_win = vim.api.nvim_get_current_win()
+  local cur_tab = vim.api.nvim_get_current_tabpage()
+
+  if cur_win and vim.api.nvim_win_is_valid(cur_win) and vim.api.nvim_win_get_buf(cur_win) == target_buf then
+    target_win = cur_win
+  elseif target_buf and vim.api.nvim_buf_is_valid(target_buf) then
+    local tab_win = vim.fn.bufwinid(target_buf)
+    if tab_win ~= -1 and vim.api.nvim_win_is_valid(tab_win) then
+      target_win = tab_win
+    end
+  end
+
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) or vim.api.nvim_win_get_tabpage(target_win) ~= cur_tab then
+    target_win = cur_win
   end
 
   M.state.target_win = target_win
