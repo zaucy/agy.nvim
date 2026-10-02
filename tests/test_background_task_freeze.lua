@@ -12,6 +12,7 @@ local cfg = config.setup({
   app_data_dir = tmp_dir,
   ui = {
     auto_scroll = true,
+    collapse_work = false,
   },
 })
 

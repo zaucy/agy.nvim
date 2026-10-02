@@ -148,6 +148,15 @@ local function get_block_icons(cfg)
 	return upper, lower
 end
 
+local function get_work_icons(cfg)
+	local icons = get_icons(cfg)
+	local collapsed = icons.work_collapsed
+	local expanded = icons.work_expanded
+	assert(collapsed, "agy config: icon 'work_collapsed' is not defined in config.icons")
+	assert(expanded, "agy config: icon 'work_expanded' is not defined in config.icons")
+	return collapsed, expanded
+end
+
 local function get_logo_row_info(r, cfg)
 	local upper, lower = get_block_icons(cfg)
 	local top_row = LOGO_PIXELS[r * 2 + 1] or {}
@@ -215,6 +224,7 @@ function M.setup_highlights()
 		AgyPromptSign = { link = "AgyPromptArea", default = true },
 		AgyHistory = { default = true },
 		AgyToolHeader = { link = "Function", default = true, bold = true },
+		AgyWorkHeader = { link = "Function", default = true, bold = true },
 		AgyToolBadge = { link = "Comment", default = true },
 		AgyTaskRunning = { link = "DiagnosticWarn", default = true, bold = true },
 		AgyTaskSuccess = { link = "DiagnosticOk", default = true, bold = true },
@@ -2044,10 +2054,69 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		return nil, nil
 	end
 
+	local work_groups = {}
+	local current_work_group = nil
+	local function update_work_group_time(step_created_at)
+		if current_work_group and step_created_at then
+			local t = utils.parse_iso_timestamp(step_created_at)
+			if t then
+				if not current_work_group.start_time then
+					current_work_group.start_time = t
+				end
+				current_work_group.end_time = t
+			end
+		end
+	end
+
+	local function collapse_current_work_group(step_created_at)
+		if not current_work_group or not M.should_collapse_work_group(current_work_group) then
+			current_work_group = nil
+			return
+		end
+		if step_created_at then
+			update_work_group_time(step_created_at)
+		end
+		if current_work_group.duration_seconds <= 0 then
+			if current_work_group.start_time and current_work_group.end_time then
+				local elapsed = current_work_group.end_time - current_work_group.start_time
+				if elapsed > 0 then
+					current_work_group.duration_seconds = elapsed
+				end
+			end
+		end
+		if config.ui and config.ui.collapse_work == false then
+			table.insert(work_groups, current_work_group)
+			current_work_group = nil
+			return
+		end
+		M.collapse_work_group_in_place(buf, current_work_group, config)
+		table.insert(work_groups, current_work_group)
+		current_work_group = nil
+	end
+
+	local function add_to_current_work_group(item, step_created_at)
+		if not current_work_group then
+			current_work_group = {
+				id = #work_groups + 1,
+				is_open = true,
+				duration_seconds = 0,
+				items = {},
+			}
+		end
+		table.insert(current_work_group.items, item)
+		if item.duration_seconds and item.duration_seconds > 0 then
+			current_work_group.duration_seconds = current_work_group.duration_seconds + item.duration_seconds
+		end
+		if step_created_at then
+			update_work_group_time(step_created_at)
+		end
+	end
+
 	local function finish_agent_turn()
 		if not in_agent_turn then
 			return
 		end
+		collapse_current_work_group()
 		local turn_duration = nil
 		if current_agent_turn_has_explicit_duration and current_agent_turn_duration > 0 then
 			turn_duration = current_agent_turn_duration
@@ -2122,6 +2191,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		if not has_user_input_for_current_turn then
 			return
 		end
+		collapse_current_work_group()
 		M.set_divider(buf, prompt_start_line - 1, "user", nil, nil, false, prompt_extmark_id, config)
 		local line_count = vim.api.nvim_buf_line_count(buf)
 		vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { "", "" })
@@ -2132,9 +2202,10 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		has_user_input_for_current_turn = false
 	end
 
-	local function replay_tool_call(name, args, output, duration_seconds)
+	local function replay_tool_call(name, args, output, duration_seconds, step_created_at)
 		local q_list = (name == "ask_question") and M.parse_question_params(args) or {}
 		if name == "ask_question" and #q_list > 0 then
+			collapse_current_work_group(step_created_at)
 			M.render_historical_question(buf, args, output, config, cwd)
 		else
 			local tool_line, ext_id, param_str = M.append_tool_call(buf, name, args or {}, cwd, config)
@@ -2163,6 +2234,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 					end
 				end
 			end
+			add_to_current_work_group(tool_rec, step_created_at)
 		end
 	end
 
@@ -2187,18 +2259,28 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		elseif step.type == "PLANNER_RESPONSE" then
 			ensure_agent_turn(step.duration_seconds, step.created_at)
 
+			local text = step.content or step.text_delta
+			local has_tools = (step.tool_calls and #step.tool_calls > 0)
+			local has_text = (text and text ~= "")
+
+			if has_text and not has_tools then
+				collapse_current_work_group(step.created_at)
+			end
+
 			if config.ui and config.ui.show_thoughts ~= false and step.thinking and step.thinking ~= "" then
 				local tc_rec = M.append_thought_block(buf, step.thinking, step.duration_seconds, config)
 				tc_rec.id = #tool_calls + 1
 				table.insert(tool_calls, tc_rec)
+				if has_tools or not has_text then
+					add_to_current_work_group(tc_rec, step.created_at)
+				end
 			end
 
-			local text = step.content or step.text_delta
-			if text and text ~= "" then
+			if has_text then
 				M.append_text_delta(buf, text, config, true)
 			end
 
-			if step.tool_calls and #step.tool_calls > 0 then
+			if has_tools then
 				local has_ask_question = false
 				for tc_idx, tc in ipairs(step.tool_calls) do
 					local output = tc.output
@@ -2224,7 +2306,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 						end
 					end
 					local dur = tc.duration_seconds or step.duration_seconds
-					replay_tool_call(tc.name, tc.args, output, dur)
+					replay_tool_call(tc.name, tc.args, output, dur, step.created_at)
 				end
 				if has_ask_question and in_agent_turn then
 					finish_agent_turn()
@@ -2255,7 +2337,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 					end
 				end
 			end
-			replay_tool_call(name, args, output, step.duration_seconds)
+			replay_tool_call(name, args, output, step.duration_seconds, step.created_at)
 			if has_ask_question and in_agent_turn then
 				finish_agent_turn()
 			end
@@ -2272,13 +2354,14 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 	elseif has_user_input_for_current_turn then
 		archive_user_input()
 	end
+	collapse_current_work_group()
 
 	M.stop_thinking_animation(buf)
 	vim.bo[buf].modified = false
 	M._in_transcript_replay = nil
 	M._transcript_agent_line = nil
 
-	return prompt_start_line, prompt_extmark_id, tool_calls
+	return prompt_start_line, prompt_extmark_id, tool_calls, work_groups
 end
 
 ---Update title of buffer once conversation ID is known
@@ -3163,6 +3246,286 @@ function M.close_tool_window(state, tc)
 	if state and state.active_tool_call == tc then
 		state.active_tool_call = nil
 	end
+end
+
+---Check if a work group has enough items to be collapsed (at least 2 tools, or at least 2 thoughts, or > 1 task)
+---Single-task clusters (at most 1 tool and at most 1 thought) remain uncollapsed and directly visible.
+---@param group table AgyWorkGroup
+---@return boolean
+function M.should_collapse_work_group(group)
+	if not group or not group.items or #group.items <= 1 then
+		return false
+	end
+	local tool_count = 0
+	local thought_count = 0
+	for _, item in ipairs(group.items) do
+		if item.is_thought then
+			thought_count = thought_count + 1
+		else
+			tool_count = tool_count + 1
+		end
+	end
+	if tool_count <= 1 and thought_count <= 1 then
+		return false
+	end
+	return true
+end
+
+---Format the header text for a collapsible work group
+---@param group table AgyWorkGroup
+---@param is_open boolean
+---@param config? table
+---@return string header_text
+function M.format_work_summary_header(group, is_open, config)
+	local cfg = get_config(config)
+	local col_icon, exp_icon = get_work_icons(cfg)
+	local icon = is_open and exp_icon or col_icon
+
+	local dur = group.duration_seconds
+	if (not dur or dur <= 0) and group.start_time and group.end_time then
+		dur = math.max(0, (group.end_time - group.start_time) / 1e9)
+	end
+	local dur_str = (dur and dur > 0) and utils.format_duration(dur) or "0.1s"
+
+	local thoughts = 0
+	local tools = 0
+	for _, it in ipairs(group.items or {}) do
+		if it.is_thought then
+			thoughts = thoughts + 1
+		else
+			tools = tools + 1
+		end
+	end
+
+	local count_str
+	if thoughts > 0 and tools > 0 then
+		local th_word = (thoughts == 1) and "1 thought" or (thoughts .. " thoughts")
+		local tl_word = (tools == 1) and "1 tool" or (tools .. " tools")
+		count_str = th_word .. ", " .. tl_word
+	elseif tools > 0 then
+		count_str = (tools == 1) and "1 tool" or (tools .. " tools")
+	elseif thoughts > 0 then
+		count_str = (thoughts == 1) and "1 thought" or (thoughts .. " thoughts")
+	else
+		count_str = "0 tools"
+	end
+
+	return string.format("%s Worked for %s (%s)", icon, dur_str, count_str)
+end
+
+---Set extmark styling for a work group summary header line
+---@param buf number
+---@param row number 0-indexed line in buffer
+---@param header_text string
+---@param config? table
+---@param existing_id? number
+---@return number extmark_id
+function M.set_work_group_header_extmark(buf, row, header_text, config, existing_id)
+	if existing_id then
+		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, existing_id)
+	end
+	local s_val = header_text:find("Worked for ", 1, true)
+	if s_val then
+		local split_col = s_val + 10
+		local ext_id = vim.api.nvim_buf_set_extmark(buf, M.NS_UI, row, 0, {
+			end_col = split_col,
+			hl_group = "AgyWorkHeader",
+			priority = 150,
+		})
+		pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, split_col, {
+			end_col = #header_text,
+			hl_group = "AgyToolBadge",
+			priority = 150,
+		})
+		return ext_id
+	else
+		return vim.api.nvim_buf_set_extmark(buf, M.NS_UI, row, 0, {
+			end_col = #header_text,
+			hl_group = "AgyWorkHeader",
+			priority = 150,
+		})
+	end
+end
+
+---Restore the extmark and inline styling of an individual tool or thought line
+---@param buf number
+---@param item table
+---@param line_idx number 0-indexed line in buffer
+---@param line_text string
+---@param config? table
+---@return number extmark_id
+function M.restore_item_extmark(buf, item, line_idx, line_text, config)
+	local cfg = get_config(config)
+	if item.is_thought then
+		local badge = (item.duration_seconds and item.duration_seconds > 0)
+				and string.format(" %s", utils.format_duration(item.duration_seconds))
+			or ""
+		local opts = {
+			hl_group = "AgyThought",
+			priority = 150,
+		}
+		if badge ~= "" then
+			opts.virt_text = { { badge, "AgyToolBadge" } }
+			opts.virt_text_pos = "eol"
+		end
+		local ext_id = vim.api.nvim_buf_set_extmark(buf, M.NS_UI, line_idx, 0, opts)
+		item.header_extmark_id = ext_id
+		item.header_line_idx = line_idx
+		return ext_id
+	else
+		local tool_name = item.tool_name or "tool"
+		local is_run_cmd = (tool_name == "run_command" or item.is_background_task)
+		local hl_group = is_run_cmd and "AgyTaskRunning" or "AgyToolHeader"
+		local badge_hl = "AgyToolBadge"
+
+		if item.task_status == "failed" then
+			hl_group = "AgyTaskFailed"
+			badge_hl = "AgyTaskBadgeFailed"
+		elseif item.task_status == "success" then
+			hl_group = "AgyTaskSuccess"
+		end
+
+		local badge = ""
+		if item.task_status == "failed" and item.exit_code ~= nil then
+			badge = " (exit " .. item.exit_code .. ")"
+		elseif item.duration_seconds and item.duration_seconds > 0 then
+			badge = string.format(" %s", utils.format_duration(item.duration_seconds))
+		end
+
+		local s_col, e_col = line_text:find(tool_name, 1, true)
+		local start_col = is_run_cmd and 0 or (s_col and (s_col - 1) or 0)
+		local opts = {
+			hl_group = hl_group,
+			priority = 150,
+		}
+		if e_col then
+			opts.end_col = e_col
+		end
+		if badge ~= "" then
+			opts.virt_text = { { badge, badge_hl } }
+			opts.virt_text_pos = "eol"
+		end
+		local ext_id = vim.api.nvim_buf_set_extmark(buf, M.NS_UI, line_idx, start_col, opts)
+		item.header_extmark_id = ext_id
+		item.header_line_idx = line_idx
+		return ext_id
+	end
+end
+
+---Collapse a work group in-place into a single summary line
+---@param buf number
+---@param group table AgyWorkGroup
+---@param config? table
+function M.collapse_work_group_in_place(buf, group, config)
+	if not group or not M.should_collapse_work_group(group) then return end
+	local cfg = get_config(config)
+
+	local start_row, end_row
+	if group.is_open and group.header_extmark_id and group.child_lines then
+		-- Re-collapsing an already expanded group
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, group.header_extmark_id, {})
+		if pos and #pos >= 1 then
+			start_row = pos[1]
+			end_row = start_row + #group.child_lines
+		end
+	end
+
+	if not start_row then
+		-- Initial collapse of active tool cluster: find true min and max rows across all items
+		local min_row = nil
+		local max_row = nil
+		for _, it in ipairs(group.items) do
+			local pos = it.header_extmark_id and vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, it.header_extmark_id, {})
+			local row = (pos and #pos >= 1) and pos[1] or it.header_line_idx
+			if row then
+				if not min_row or row < min_row then min_row = row end
+				if not max_row or row > max_row then max_row = row end
+			end
+		end
+
+		start_row = min_row
+		end_row = max_row
+
+		if not start_row or not end_row or start_row > end_row then return end
+		group.child_lines = vim.api.nvim_buf_get_lines(buf, start_row, end_row + 1, false)
+	end
+
+	-- Clear child item extmarks from NS_UI before replacing buffer lines
+	for _, it in ipairs(group.items) do
+		if it.header_extmark_id then
+			pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, it.header_extmark_id)
+		end
+	end
+
+	local col_header = M.format_work_summary_header(group, false, cfg)
+	vim.api.nvim_buf_set_lines(buf, start_row, end_row + 1, false, { col_header })
+
+	local ext_id = M.set_work_group_header_extmark(buf, start_row, col_header, cfg, group.header_extmark_id)
+	group.header_extmark_id = ext_id
+	group.header_line_idx = start_row
+	group.is_open = false
+	vim.bo[buf].modified = false
+end
+
+---Expand a collapsed work group in-place to reveal its tools and thoughts
+---@param buf number
+---@param group table AgyWorkGroup
+---@param config? table
+function M.expand_work_group_in_place(buf, group, config)
+	if not group or not M.should_collapse_work_group(group) or not group.child_lines then return end
+	local cfg = get_config(config)
+
+	local header_row = group.header_line_idx
+	if group.header_extmark_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, group.header_extmark_id, {})
+		if pos and #pos >= 1 then
+			header_row = pos[1]
+		end
+	end
+	if not header_row then return end
+
+	local exp_header = M.format_work_summary_header(group, true, cfg)
+	local replacement = { exp_header }
+	for _, line in ipairs(group.child_lines) do
+		table.insert(replacement, line)
+	end
+
+	vim.api.nvim_buf_set_lines(buf, header_row, header_row + 1, false, replacement)
+
+	local ext_id = M.set_work_group_header_extmark(buf, header_row, exp_header, cfg, group.header_extmark_id)
+	group.header_extmark_id = ext_id
+	group.header_line_idx = header_row
+
+	for i, it in ipairs(group.items) do
+		local line_idx = header_row + i
+		local line_text = group.child_lines[i] or ""
+		M.restore_item_extmark(buf, it, line_idx, line_text, cfg)
+	end
+
+	group.is_open = true
+	vim.bo[buf].modified = false
+end
+
+---Toggle a work group between collapsed and expanded
+---@param buf number
+---@param state table
+---@param group table AgyWorkGroup
+---@return boolean success
+function M.toggle_work_group(buf, state, group)
+	if not group then return false end
+	local cfg = state and state.config or get_config()
+	if group.is_open then
+		-- Close any open inline tool preview window for items in this group
+		for _, it in ipairs(group.items or {}) do
+			if it.is_open then
+				M.close_tool_window(state, it)
+			end
+		end
+		M.collapse_work_group_in_place(buf, group, cfg)
+	else
+		M.expand_work_group_in_place(buf, group, cfg)
+	end
+	return true
 end
 
 ---Toggle display of a tool call's output in an inline window

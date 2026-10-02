@@ -23,6 +23,9 @@ local custom_cfg = config_mod.setup({
 		cancelled = "🛑",
 		view_file = "📄", -- custom tool-specific icon override
 	},
+	ui = {
+		collapse_work = false,
+	},
 })
 
 local test_buf = vim.api.nvim_create_buf(false, true)
