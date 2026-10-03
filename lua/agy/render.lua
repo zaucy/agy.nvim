@@ -865,7 +865,7 @@ function M.get_agent_boundary(buf, from_agent_row)
 			end
 		end
 
-		if agent_row then
+		if boundary_row then
 			return boundary_row, agent_row
 		end
 	end
@@ -884,17 +884,13 @@ function M.get_agent_boundary(buf, from_agent_row)
 		end
 	end
 
-	if not agent_row then
-		return nil, nil
-	end
-
 	local boundary_row = nil
 
 	-- Check queue marks in NS_QUEUE
 	local q_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_QUEUE, 0, -1, {})
 	for _, qm in ipairs(q_marks) do
 		local row = qm[2]
-		if row > agent_row then
+		if not agent_row or row > agent_row then
 			if not boundary_row or row < boundary_row then
 				boundary_row = row
 			end
@@ -905,7 +901,7 @@ function M.get_agent_boundary(buf, from_agent_row)
 	for _, m in ipairs(ui_marks) do
 		local row = m[2]
 		local opts = m[4]
-		if row > agent_row then
+		if not agent_row or row > agent_row then
 			local is_active_prompt = (opts.sign_hl_group == "AgyUserSign" or opts.number_hl_group == "AgyPromptArea")
 			if is_active_prompt then
 				if not boundary_row or row < boundary_row then
@@ -2194,8 +2190,12 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 		collapse_current_work_group()
 		M.set_divider(buf, prompt_start_line - 1, "user", nil, nil, false, prompt_extmark_id, config)
 		local line_count = vim.api.nvim_buf_line_count(buf)
-		vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { "", "" })
-		prompt_start_line = vim.api.nvim_buf_line_count(buf)
+		local last_line = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1] or ""
+		if last_line ~= "" then
+			vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { "" })
+			line_count = line_count + 1
+		end
+		prompt_start_line = line_count
 		prompt_extmark_id = M.set_divider(buf, prompt_start_line - 1, "user", nil, nil, true, nil, config)
 		M.apply_history_highlights(buf, prompt_start_line, config)
 		M.apply_prompt_highlights(buf, prompt_start_line, config)
@@ -3420,6 +3420,9 @@ function M.collapse_work_group_in_place(buf, group, config)
 	if not group or not M.should_collapse_work_group(group) then return end
 	local cfg = get_config(config)
 
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
 	local start_row, end_row
 	if group.is_open and group.header_extmark_id and group.child_lines then
 		-- Re-collapsing an already expanded group
@@ -3446,7 +3449,10 @@ function M.collapse_work_group_in_place(buf, group, config)
 		start_row = min_row
 		end_row = max_row
 
-		if not start_row or not end_row or start_row > end_row then return end
+		if not start_row or not end_row or start_row > end_row then
+			vim.bo[buf].modifiable = prev_mod
+			return
+		end
 		group.child_lines = vim.api.nvim_buf_get_lines(buf, start_row, end_row + 1, false)
 	end
 
@@ -3464,7 +3470,25 @@ function M.collapse_work_group_in_place(buf, group, config)
 	group.header_extmark_id = ext_id
 	group.header_line_idx = start_row
 	group.is_open = false
+
+	-- If the prompt extmark was pulled into start_row due to replacement boundary gravity, restore it below
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+	if state and state.prompt_extmark_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.prompt_extmark_id, {})
+		if pos and #pos >= 1 and pos[1] <= start_row then
+			local target_prompt_row = start_row + 1
+			local lc = vim.api.nvim_buf_line_count(buf)
+			if target_prompt_row >= lc then
+				vim.api.nvim_buf_set_lines(buf, lc, lc, false, { "" })
+			end
+			state.prompt_extmark_id = M.set_divider(buf, target_prompt_row, "user", nil, nil, true, state.prompt_extmark_id, cfg)
+			state.prompt_start_line = target_prompt_row + 1
+		end
+	end
+
 	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 end
 
 ---Expand a collapsed work group in-place to reveal its tools and thoughts
@@ -3475,6 +3499,9 @@ function M.expand_work_group_in_place(buf, group, config)
 	if not group or not M.should_collapse_work_group(group) or not group.child_lines then return end
 	local cfg = get_config(config)
 
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
 	local header_row = group.header_line_idx
 	if group.header_extmark_id then
 		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, group.header_extmark_id, {})
@@ -3482,7 +3509,10 @@ function M.expand_work_group_in_place(buf, group, config)
 			header_row = pos[1]
 		end
 	end
-	if not header_row then return end
+	if not header_row then
+		vim.bo[buf].modifiable = prev_mod
+		return
+	end
 
 	local exp_header = M.format_work_summary_header(group, true, cfg)
 	local replacement = { exp_header }
@@ -3504,6 +3534,7 @@ function M.expand_work_group_in_place(buf, group, config)
 
 	group.is_open = true
 	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 end
 
 ---Toggle a work group between collapsed and expanded
@@ -4230,45 +4261,55 @@ function M.finalize_turn(buf, agent_extmark_id, agent_line, result, config)
 		M.set_divider(buf, target_agent_row, "agent", badge_text, badge_hl, false, agent_extmark_id, config)
 	end)
 
-	-- Append blank line for next user prompt if not already present
-	local boundary_row = M.get_agent_boundary(buf, target_agent_row)
-	if boundary_row then
-		local prompt_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_UI, { boundary_row, 0 }, { -1, -1 }, { details = true })
-		local existing_prompt_ext = nil
-		local existing_prompt_row = nil
-		for _, em in ipairs(prompt_marks) do
-			if em[4].sign_hl_group == "AgyUserSign" or em[4].number_hl_group == "AgyPromptArea" then
+	-- Clean up any duplicate prompt extmarks in NS_UI across the entire buffer
+	local ui_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_UI, 0, -1, { details = true })
+	local existing_prompt_ext = nil
+	local existing_prompt_row = nil
+	for _, em in ipairs(ui_marks) do
+		if em[4].sign_hl_group == "AgyUserSign" or em[4].number_hl_group == "AgyPromptArea" then
+			if not existing_prompt_ext then
 				existing_prompt_ext = em[1]
 				existing_prompt_row = em[2]
-				break
+			else
+				pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, em[1])
 			end
-		end
-
-		if existing_prompt_ext and existing_prompt_row then
-			local next_prompt_line = existing_prompt_row + 1
-			M.apply_history_highlights(buf, next_prompt_line, config)
-			M.apply_prompt_highlights(buf, next_prompt_line, config)
-			vim.bo[buf].modified = false
-			pcall(function()
-				vim.cmd("let &undolevels = &undolevels")
-			end)
-			return next_prompt_line, existing_prompt_ext
 		end
 	end
 
 	local line_count = vim.api.nvim_buf_line_count(buf)
-	local last_line = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1] or ""
-	local to_append = {}
-	if last_line ~= "" then
+	local next_prompt_line
+	local prompt_extmark_id
+
+	if existing_prompt_ext and existing_prompt_row and existing_prompt_row >= line_count - 1 then
+		next_prompt_line = existing_prompt_row + 1
+		prompt_extmark_id = M.set_divider(buf, existing_prompt_row, "user", nil, nil, true, existing_prompt_ext, config)
+	else
+		-- Trim excessive blank lines so at most 1 blank line trails the content
+		while line_count > 1 do
+			local l1 = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1] or ""
+			local l2 = vim.api.nvim_buf_get_lines(buf, line_count - 2, line_count - 1, false)[1] or ""
+			if l1 == "" and l2 == "" then
+				vim.api.nvim_buf_set_lines(buf, line_count - 1, line_count, false, {})
+				line_count = line_count - 1
+			else
+				break
+			end
+		end
+
+		local last_line = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1] or ""
+		local to_append = {}
+		if last_line ~= "" then
+			table.insert(to_append, "")
+		end
 		table.insert(to_append, "")
+
+		vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, to_append)
+		next_prompt_line = vim.api.nvim_buf_line_count(buf)
+		local prompt_row = next_prompt_line - 1
+
+		-- Place active prompt divider above the bottom prompt line with sign, clearing thinking badge
+		prompt_extmark_id = M.set_divider(buf, prompt_row, "user", nil, nil, true, existing_prompt_ext, config)
 	end
-	table.insert(to_append, "")
-
-	vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, to_append)
-	local next_prompt_line = vim.api.nvim_buf_line_count(buf)
-
-	-- Place active prompt divider above the new line with sign
-	local prompt_extmark_id = M.set_divider(buf, next_prompt_line - 1, "user", nil, nil, true, nil, config)
 
 	-- Apply background tint to history
 	M.apply_history_highlights(buf, next_prompt_line, config)

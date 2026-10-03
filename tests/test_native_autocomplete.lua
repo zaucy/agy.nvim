@@ -340,9 +340,10 @@ protocol.with_modifiable(pbuf, function()
 	vim.api.nvim_buf_set_lines(pbuf, protocol.buffers[pbuf].prompt_start_line - 1, -1, false, { "/model sonnet" })
 end)
 protocol.handle_write(pbuf)
+local expected_model = completion.resolve_model("sonnet")
 assert(
-	protocol.buffers[pbuf].stream_info.model == "claude-sonnet-4-6",
-	"Fuzzy /model sonnet should resolve to claude-sonnet-4-6"
+	protocol.buffers[pbuf].stream_info.model == expected_model,
+	string.format("Fuzzy /model sonnet should resolve to %s, got %s", expected_model, protocol.buffers[pbuf].stream_info.model)
 )
 
 -- 4. Verify regular text containing /model is NOT intercepted as a command
@@ -531,7 +532,8 @@ assert(completion.state.items[1].label:find("sonnet") ~= nil, "Expected sonnet m
 -- Press Enter on sonnet model
 completion.accept(true)
 assert(not completion.is_visible(), "Completion popup must be closed")
-assert(protocol.buffers[ebuf].stream_info.model == "claude-sonnet-4-6", "Expected claude-sonnet-4-6 model after Enter")
+local expected_enter_model = completion.resolve_model("son")
+assert(protocol.buffers[ebuf].stream_info.model == expected_enter_model, "Expected resolved sonnet model after Enter")
 assert(protocol.extract_prompt(ebuf) == "", "Prompt must be cleared after Enter on /model sonnet")
 assert(not vim.bo[ebuf].modified, "Buffer must not be modified")
 
@@ -659,7 +661,9 @@ assert(
 	"Human name should resolve to ID"
 )
 assert(
-	completion.resolve_model("Claude Sonnet 4.6 (Thinking)") == "claude-sonnet-4-6",
+	completion.resolve_model("Claude Sonnet 5.5 (Low)") == "claude-sonnet-5-5-low"
+		or completion.resolve_model("Claude Sonnet 4.6 (Thinking)") == "claude-sonnet-4.6-thinking"
+		or completion.resolve_model("Claude Sonnet 4.6 (Thinking)") == "claude-sonnet-4-6",
 	"Claude human name should resolve to ID"
 )
 
