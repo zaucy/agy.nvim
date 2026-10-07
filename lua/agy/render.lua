@@ -157,6 +157,19 @@ local function get_work_icons(cfg)
 	return collapsed, expanded
 end
 
+local function get_group_icons(cfg)
+	local icons = get_icons(cfg)
+	local completed = icons.group_completed
+	local running = icons.group_running
+	local middle_dot = icons.middle_dot
+	local multiply = icons.multiply
+	assert(completed, "agy config: icon 'group_completed' is not defined in config.icons")
+	assert(running, "agy config: icon 'group_running' is not defined in config.icons")
+	assert(middle_dot, "agy config: icon 'middle_dot' is not defined in config.icons")
+	assert(multiply, "agy config: icon 'multiply' is not defined in config.icons")
+	return completed, running, middle_dot, multiply
+end
+
 local function get_logo_row_info(r, cfg)
 	local upper, lower = get_block_icons(cfg)
 	local top_row = LOGO_PIXELS[r * 2 + 1] or {}
@@ -225,6 +238,15 @@ function M.setup_highlights()
 		AgyHistory = { default = true },
 		AgyToolHeader = { link = "Function", default = true, bold = true },
 		AgyWorkHeader = { link = "Function", default = true, bold = true },
+		AgyGroupCompleted = { link = "DiagnosticOk", default = true, bold = true },
+		AgyGroupRunning = { link = "DiagnosticWarn", default = true, bold = true },
+		AgyGroupVerb = { link = "Function", default = true, bold = true },
+		AgyGroupCount = { link = "Normal", default = true },
+		AgyGroupDetails = { link = "Comment", default = true },
+		AgyGroupFailed = { link = "DiagnosticError", default = true, bold = true },
+		AgyGroupHint = { link = "Comment", default = true },
+		AgyGroupSpinner = { link = "Special", default = true },
+		AgyMoreActions = { link = "Comment", default = true },
 		AgyToolBadge = { link = "Comment", default = true },
 		AgyTaskRunning = { link = "DiagnosticWarn", default = true, bold = true },
 		AgyTaskSuccess = { link = "DiagnosticOk", default = true, bold = true },
@@ -1040,14 +1062,59 @@ end
 
 M.thinking_timers = {}
 M.current_thinking_badge = {}
+M.current_thinking_frame_idx = {}
 
----Get initial thinking badge text using spinner icon
+---Get initial thinking badge text using spinner icon and optional status text
 ---@param config? table
+---@param status_text? string
 ---@return string
-function M.get_thinking_badge(config)
+function M.get_thinking_badge(config, status_text)
 	local cfg = get_config(config)
 	local frames = get_spinner_frames(cfg)
-	return string.format("  %s Thinking...", frames[1])
+	local text = status_text or "Thinking..."
+	return string.format("  %s %s", frames[1], text)
+end
+
+---Immediately update thinking/tool status text in the divider badge
+---@param buf number
+---@param text? string
+---@param config? table
+function M.update_thinking_status(buf, text, config)
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+	if state and (state.active_question or (state.stream_info and state.stream_info.status == "question")) then
+		return
+	end
+
+	local cfg = get_config(config)
+	if not cfg.ui or cfg.ui.animate_thinking == false then
+		return
+	end
+
+	local frames = get_spinner_frames(cfg)
+	local frame_idx = M.current_thinking_frame_idx[buf] or 1
+	local frame = frames[frame_idx] or frames[1]
+	local status_text = text or (state and state.active_tool_status_text) or "Thinking..."
+	local badge = string.format("  %s %s", frame, status_text)
+	M.current_thinking_badge[buf] = badge
+
+	pcall(function()
+		local target_id = (state and state.prompt_extmark_id) or nil
+		if target_id then
+			local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, target_id, { details = true })
+			if pos and #pos >= 1 then
+				local row = pos[1]
+				local details = pos[3] or {}
+				local is_prompt = details.sign_hl_group == "AgyUserSign"
+					or details.number_hl_group == "AgyPromptArea"
+				if is_prompt then
+					M.set_divider(buf, row, "user", badge, "AgyBadgeActive", true, target_id, cfg)
+				else
+					M.set_divider(buf, row, "agent", badge, "AgyBadgeActive", false, target_id, cfg)
+				end
+			end
+		end
+	end)
 end
 
 ---Start thinking spinner animation above the prompt area
@@ -1071,7 +1138,9 @@ function M.start_thinking_animation(buf, line, extmark_id, config)
 
 	local frames = get_spinner_frames(cfg)
 	local frame_idx = 1
-	local initial_badge = string.format("  %s Thinking...", frames[1])
+	M.current_thinking_frame_idx[buf] = 1
+	local status_text = (state and state.active_tool_status_text) or "Thinking..."
+	local initial_badge = string.format("  %s %s", frames[1], status_text)
 	M.current_thinking_badge[buf] = initial_badge
 
 	pcall(function()
@@ -1113,9 +1182,11 @@ function M.start_thinking_animation(buf, line, extmark_id, config)
 				return
 			end
 
+			M.current_thinking_frame_idx[buf] = frame_idx
 			local frame = frames[frame_idx]
 			frame_idx = (frame_idx % #frames) + 1
-			local badge = string.format("  %s Thinking...", frame)
+			local cur_status = (cur_state and cur_state.active_tool_status_text) or "Thinking..."
+			local badge = string.format("  %s %s", frame, cur_status)
 			M.current_thinking_badge[buf] = badge
 
 			pcall(function()
@@ -1157,6 +1228,7 @@ function M.stop_thinking_animation(buf)
 		end)
 	end
 	M.current_thinking_badge[buf] = nil
+	M.current_thinking_frame_idx[buf] = nil
 	if buf and vim.api.nvim_buf_is_valid(buf) then
 		pcall(function()
 			local protocol = package.loaded["agy.protocol"]
@@ -2051,6 +2123,8 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 	end
 
 	local work_groups = {}
+	local middle_actions_list = {}
+	local current_agent_turn_groups = {}
 	local current_work_group = nil
 	local function update_work_group_time(step_created_at)
 		if current_work_group and step_created_at then
@@ -2080,24 +2154,38 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 				end
 			end
 		end
-		if config.ui and config.ui.collapse_work == false then
+		local is_high = config.ui and (config.ui.verbosity == "high" or config.ui.collapse_work == false)
+		if is_high then
 			table.insert(work_groups, current_work_group)
+			table.insert(current_agent_turn_groups, current_work_group)
 			current_work_group = nil
 			return
 		end
 		M.collapse_work_group_in_place(buf, current_work_group, config)
 		table.insert(work_groups, current_work_group)
+		table.insert(current_agent_turn_groups, current_work_group)
 		current_work_group = nil
 	end
 
 	local function add_to_current_work_group(item, step_created_at)
+		local verbosity = (config.ui and config.ui.verbosity) or "medium"
+		if config.ui and config.ui.collapse_work == false then
+			verbosity = "high"
+		end
+		local cat = (verbosity == "medium" and not item.is_thought) and M.get_tool_category(item.tool_name) or nil
+		if current_work_group and cat and current_work_group.category and current_work_group.category ~= cat then
+			collapse_current_work_group(step_created_at)
+		end
 		if not current_work_group then
 			current_work_group = {
 				id = #work_groups + 1,
+				category = cat,
 				is_open = true,
 				duration_seconds = 0,
 				items = {},
 			}
+		elseif cat and not current_work_group.category then
+			current_work_group.category = cat
 		end
 		table.insert(current_work_group.items, item)
 		if item.duration_seconds and item.duration_seconds > 0 then
@@ -2113,6 +2201,60 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 			return
 		end
 		collapse_current_work_group()
+		local verbosity = (config.ui and config.ui.verbosity) or "medium"
+		if config.ui and config.ui.collapse_work == false then
+			verbosity = "high"
+		end
+		if verbosity == "medium" then
+			local action_groups = {}
+			for _, g in ipairs(current_agent_turn_groups) do
+				if g.category then
+					table.insert(action_groups, g)
+				end
+			end
+			local max_visible = (config.ui and config.ui.max_visible_actions) or 4
+			if #action_groups > max_visible then
+				local head_count = 2
+				local tail_count = 2
+				local mid_start = head_count + 1
+				local mid_end = #action_groups - tail_count
+				if mid_start <= mid_end then
+					local middle_groups = {}
+					for mi = mid_start, mid_end do
+						table.insert(middle_groups, action_groups[mi])
+					end
+					local summary_text = M.format_middle_actions_summary(middle_groups, false, config)
+					local row_start = middle_groups[1].header_line_idx
+					local row_end = middle_groups[#middle_groups].header_line_idx + 1
+
+					vim.api.nvim_buf_set_lines(buf, row_start, row_end, false, { summary_text })
+					local mid_ext = M.set_middle_actions_extmark(buf, row_start, summary_text, config)
+					local mid_rec = {
+						extmark_id = mid_ext,
+						groups = middle_groups,
+						is_open = false,
+					}
+					table.insert(middle_actions_list, mid_rec)
+
+					for _, mg in ipairs(middle_groups) do
+						if mg.header_extmark_id then
+							pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, mg.header_extmark_id)
+							mg.header_extmark_id = nil
+						end
+						mg._is_in_middle = true
+					end
+
+					local deleted_lines = (row_end - row_start) - 1
+					for ti = mid_end + 1, #action_groups do
+						local tg = action_groups[ti]
+						if tg.header_line_idx then
+							tg.header_line_idx = tg.header_line_idx - deleted_lines
+						end
+					end
+				end
+			end
+		end
+		current_agent_turn_groups = {}
 		local turn_duration = nil
 		if current_agent_turn_has_explicit_duration and current_agent_turn_duration > 0 then
 			turn_duration = current_agent_turn_duration
@@ -2361,7 +2503,7 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 	M._in_transcript_replay = nil
 	M._transcript_agent_line = nil
 
-	return prompt_start_line, prompt_extmark_id, tool_calls, work_groups
+	return prompt_start_line, prompt_extmark_id, tool_calls, work_groups, middle_actions_list
 end
 
 ---Update title of buffer once conversation ID is known
@@ -3248,12 +3390,329 @@ function M.close_tool_window(state, tc)
 	end
 end
 
+---Get human-friendly status text for an active tool
+---@param tool_name? string
+---@return string status_text
+function M.get_tool_status_text(tool_name)
+	if not tool_name then return "Thinking..." end
+	local name = tool_name:lower()
+	if name == "view_file" or name == "read_file" or name == "list_dir" or name == "find_files"
+		or name == "file_search" or name == "read_directory" or name == "get_file" then
+		return "Reading file..."
+	elseif name == "replace_file_content" or name == "write_to_file" or name == "edit_file"
+		or name == "notebook_edit" or name == "apply_diff" then
+		return "Editing file..."
+	elseif name == "run_command" or name == "execute_command" or name == "terminal" or name == "shell" then
+		return "Running command..."
+	elseif name == "search_web" or name == "code_search" or name == "search" or name == "web_search" then
+		return "Searching..."
+	elseif name == "read_url_content" or name == "browser" or name == "browse" or name == "fetch_web_page"
+		or name == "read_browser_page" then
+		return "Browsing web..."
+	elseif name == "invoke_subagent" or name == "define_subagent" or name == "send_message"
+		or name == "manage_subagents" then
+		return "Running subagent..."
+	elseif name == "schedule" or name == "manage_task" then
+		return "Scheduling task..."
+	elseif name == "image-generator" or name == "generate_image" then
+		return "Generating image..."
+	else
+		return "Thinking..."
+	end
+end
+
+---Determine semantic category for a tool name
+---@param tool_name? string
+---@return string category "explore" | "edit" | "command" | "search" | "browse" | "subagent" | "task" | "image" | "other"
+function M.get_tool_category(tool_name)
+	if not tool_name then return "other" end
+	local name = tool_name:lower()
+	if name == "view_file" or name == "read_file" or name == "list_dir" or name == "find_files"
+		or name == "file_search" or name == "read_directory" or name == "get_file" then
+		return "explore"
+	elseif name == "replace_file_content" or name == "write_to_file" or name == "edit_file"
+		or name == "notebook_edit" or name == "apply_diff" then
+		return "edit"
+	elseif name == "run_command" or name == "execute_command" or name == "terminal" or name == "shell" then
+		return "command"
+	elseif name == "search_web" or name == "code_search" or name == "search" or name == "web_search" then
+		return "search"
+	elseif name == "read_url_content" or name == "browser" or name == "browse" or name == "fetch_web_page"
+		or name == "read_browser_page" then
+		return "browse"
+	elseif name == "invoke_subagent" or name == "define_subagent" or name == "send_message"
+		or name == "manage_subagents" then
+		return "subagent"
+	elseif name == "schedule" or name == "manage_task" then
+		return "task"
+	elseif name == "image-generator" or name == "generate_image" then
+		return "image"
+	else
+		return "other"
+	end
+end
+
+local function get_file_target(item)
+	local params = item.params or item.args or {}
+	local path = params.AbsolutePath or params.TargetFile or params.target_file or params.path or params.file_path or params.file or item.param_str
+	if not path or path == "" then return "file" end
+	local base = path:match("([^/\\]+)$")
+	return (base and base ~= "") and base or path
+end
+
+local function get_command_target(item)
+	local params = item.params or item.args or {}
+	local cmd = params.CommandLine or params.cmd or params.command or item.param_str or ""
+	cmd = cmd:gsub("[\r\n]+", " "):gsub("%s+", " ")
+	cmd = vim.trim(cmd)
+	if #cmd > 28 then
+		cmd = cmd:sub(1, 25) .. "..."
+	end
+	local is_failed = (item.task_status == "failed") or (item.exit_code ~= nil and item.exit_code ~= 0)
+	return cmd, is_failed
+end
+
+local function format_command_items(items, cfg)
+	local _, _, middle_dot, multiply = get_group_icons(cfg)
+	local runs = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local cmd, failed = get_command_target(it)
+			if #runs > 0 and runs[#runs].cmd == cmd and runs[#runs].failed == failed then
+				runs[#runs].count = runs[#runs].count + 1
+			else
+				table.insert(runs, { cmd = cmd, failed = failed, count = 1 })
+			end
+		end
+	end
+
+	local formatted = {}
+	for _, run in ipairs(runs) do
+		local str = run.cmd
+		if run.failed then
+			str = str .. ": failed"
+		end
+		if run.count > 1 then
+			str = str .. " " .. multiply .. run.count
+		end
+		table.insert(formatted, str)
+	end
+
+	if #formatted == 0 then
+		return "()"
+	end
+
+	local sep = " " .. middle_dot .. " "
+	local detail = table.concat(formatted, sep)
+	if #detail > 100 then
+		detail = detail:sub(1, 97) .. "..."
+	end
+	return string.format("(%s)", detail)
+end
+
+local function format_search_items(items)
+	local queries = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local params = it.params or it.args or {}
+			local q = params.query or params.search_query or params.query_string or it.param_str or ""
+			q = vim.trim(q:gsub("[\r\n]+", " "):gsub("%s+", " "))
+			if #q > 55 then
+				q = q:sub(1, 52) .. "..."
+			end
+			if q ~= "" then
+				table.insert(queries, string.format('"%s"', q))
+			end
+		end
+	end
+	if #queries == 0 then return "" end
+	return string.format("(%s)", table.concat(queries, ", "))
+end
+
+local function format_browse_items(items)
+	local urls = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local params = it.params or it.args or {}
+			local url = params.Url or params.url or it.param_str or ""
+			url = vim.trim(url:gsub("[\r\n]+", " "))
+			if #url > 50 then
+				url = url:sub(1, 47) .. "..."
+			end
+			if url ~= "" then
+				table.insert(urls, url)
+			end
+		end
+	end
+	if #urls == 0 then return "" end
+	return string.format("(%s)", table.concat(urls, ", "))
+end
+
+local function format_subagent_items(items)
+	local names = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local params = it.params or it.args or {}
+			local name = params.Role or params.TypeName or params.name or it.tool_name or "subagent"
+			table.insert(names, name)
+		end
+	end
+	if #names == 0 then return "" end
+	return string.format("(%s)", table.concat(names, ", "))
+end
+
+local function format_generic_items(items)
+	local names = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			table.insert(names, it.tool_name or "tool")
+		end
+	end
+	if #names == 0 then return "" end
+	return string.format("(%s)", table.concat(names, ", "))
+end
+
+---Format the header text for a named semantic milestone group
+---@param group table AgyWorkGroup
+---@param is_open boolean
+---@param is_running? boolean
+---@param config? table
+---@return string header_text
+function M.format_named_group_header(group, is_open, is_running, config)
+	local cfg = get_config(config)
+	local col_bullet, run_bullet = get_group_icons(cfg)
+	local bullet = is_running and run_bullet or col_bullet
+
+	local category = group.category or "other"
+	local tool_count = 0
+	local thought_count = 0
+	for _, it in ipairs(group.items or {}) do
+		if it.is_thought then
+			thought_count = thought_count + 1
+		else
+			tool_count = tool_count + 1
+		end
+	end
+
+	if tool_count == 0 and thought_count > 0 then
+		local dur = group.duration_seconds
+		local dur_str = (dur and dur > 0) and utils.format_duration(dur) or "0.1s"
+		local verb = is_running and "Thinking" or "Thought"
+		return string.format("%s %s for %s", bullet, verb, dur_str)
+	end
+
+	local verb, singular_unit, plural_unit
+	if category == "explore" then
+		verb = is_running and "Exploring" or "Explored"
+		singular_unit = "file"
+		plural_unit = "files"
+	elseif category == "edit" then
+		verb = is_running and "Editing" or "Edited"
+		singular_unit = "file"
+		plural_unit = "files"
+	elseif category == "command" then
+		verb = is_running and "Running" or "Ran"
+		singular_unit = "command"
+		plural_unit = "commands"
+	elseif category == "search" then
+		verb = is_running and "Exploring" or "Explored"
+		singular_unit = "search"
+		plural_unit = "searches"
+	elseif category == "browse" then
+		verb = is_running and "Browsing" or "Browsed"
+		singular_unit = "page"
+		plural_unit = "pages"
+	elseif category == "subagent" then
+		verb = is_running and "Running" or "Ran"
+		singular_unit = "subagent"
+		plural_unit = "subagents"
+	elseif category == "task" then
+		verb = is_running and "Scheduling" or "Scheduled"
+		singular_unit = "task"
+		plural_unit = "tasks"
+	elseif category == "image" then
+		verb = is_running and "Generating" or "Generated"
+		singular_unit = "image"
+		plural_unit = "images"
+	else
+		verb = is_running and "Running" or "Ran"
+		singular_unit = "tool"
+		plural_unit = "tools"
+	end
+
+	local count = tool_count
+	local details = ""
+	if category == "explore" or category == "edit" then
+		local unique_targets = {}
+		local seen_targets = {}
+		for _, it in ipairs(group.items or {}) do
+			if not it.is_thought then
+				local t = get_file_target(it)
+				if t and t ~= "" and not seen_targets[t] then
+					seen_targets[t] = true
+					table.insert(unique_targets, t)
+				end
+			end
+		end
+		if #unique_targets > 0 then
+			count = #unique_targets
+			local d = table.concat(unique_targets, ", ")
+			if #d > 75 then d = d:sub(1, 72) .. "..." end
+			details = string.format("(%s)", d)
+		else
+			count = math.max(1, tool_count)
+		end
+	elseif category == "command" then
+		details = format_command_items(group.items or {}, cfg)
+	elseif category == "search" then
+		details = format_search_items(group.items or {})
+	elseif category == "browse" then
+		details = format_browse_items(group.items or {})
+	elseif category == "subagent" then
+		details = format_subagent_items(group.items or {})
+	else
+		details = format_generic_items(group.items or {})
+	end
+
+	local count_unit = (count == 1) and (count .. " " .. singular_unit) or (count .. " " .. plural_unit)
+
+	local keymap = (cfg.keymaps and cfg.keymaps.toggle_tool) or "<CR>"
+	local hint = ""
+	if is_open then
+		hint = string.format(" (%s to collapse)", keymap)
+	elseif is_running then
+		hint = string.format(" (%s to expand)", keymap)
+	end
+
+	local parts
+	if category == "command" and count == 1 and details ~= "" then
+		parts = { bullet, verb }
+	else
+		parts = { bullet, verb, count_unit }
+	end
+	if details ~= "" then
+		table.insert(parts, details)
+	end
+	local line = table.concat(parts, " ")
+	if hint ~= "" then
+		line = line .. hint
+	end
+	return line
+end
+
 ---Check if a work group has enough items to be collapsed (at least 2 tools, or at least 2 thoughts, or > 1 task)
----Single-task clusters (at most 1 tool and at most 1 thought) remain uncollapsed and directly visible.
+---Named semantic milestone groups collapse even with 1 item (matching agy CLI 1.3.0).
+---Legacy clusters without category remain uncollapsed if <= 1 tool and <= 1 thought.
 ---@param group table AgyWorkGroup
 ---@return boolean
 function M.should_collapse_work_group(group)
-	if not group or not group.items or #group.items <= 1 then
+	if not group or not group.items or #group.items <= 0 then
+		return false
+	end
+	if group.category then
+		return true
+	end
+	if #group.items <= 1 then
 		return false
 	end
 	local tool_count = 0
@@ -3278,6 +3737,9 @@ end
 ---@return string header_text
 function M.format_work_summary_header(group, is_open, config)
 	local cfg = get_config(config)
+	if group.category then
+		return M.format_named_group_header(group, is_open, group.is_running or false, cfg)
+	end
 	local col_icon, exp_icon = get_work_icons(cfg)
 	local icon = is_open and exp_icon or col_icon
 
@@ -3319,11 +3781,112 @@ end
 ---@param header_text string
 ---@param config? table
 ---@param existing_id? number
+---@param is_running? boolean
 ---@return number extmark_id
-function M.set_work_group_header_extmark(buf, row, header_text, config, existing_id)
+function M.set_work_group_header_extmark(buf, row, header_text, config, existing_id, is_running)
 	if existing_id then
 		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, existing_id)
 	end
+	local cfg = get_config(config)
+	local comp_bullet, run_bullet = get_group_icons(cfg)
+
+	local is_named_group = (header_text:sub(1, #comp_bullet) == comp_bullet or header_text:sub(1, #run_bullet) == run_bullet)
+	if is_named_group then
+		local active_bullet = (header_text:sub(1, #run_bullet) == run_bullet and (is_running or header_text:find("to expand", 1, true))) and run_bullet or comp_bullet
+		local bullet_hl = (active_bullet == run_bullet and (is_running or header_text:find("to expand", 1, true))) and "AgyGroupRunning" or "AgyGroupCompleted"
+
+		local ext_id = vim.api.nvim_buf_set_extmark(buf, M.NS_UI, row, 0, {
+			end_col = #active_bullet,
+			hl_group = bullet_hl,
+			priority = 150,
+		})
+
+		-- Hint detection
+		local hint_open = nil
+		local h_idx = header_text:find("to expand)", 1, true) or header_text:find("to collapse)", 1, true)
+		if h_idx then
+			local prefix = header_text:sub(1, h_idx)
+			hint_open = prefix:match(".*()%(")
+		end
+
+		local v_start = #active_bullet + 1
+		local verb_start_idx = header_text:find("%S", v_start)
+		if verb_start_idx then
+			local verb_end_idx = header_text:find(" ", verb_start_idx, true)
+			if verb_end_idx then
+				pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, verb_start_idx - 1, {
+					end_col = verb_end_idx - 1,
+					hl_group = "AgyGroupVerb",
+					priority = 150,
+				})
+
+				local next_idx = header_text:find("%S", verb_end_idx)
+				if next_idx then
+					if header_text:sub(next_idx, next_idx) == "(" and not (hint_open and next_idx == hint_open) then
+						local p_close = header_text:find(")", next_idx + 1, true)
+						if p_close then
+							pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, next_idx - 1, {
+								end_col = p_close,
+								hl_group = "AgyGroupDetails",
+								priority = 150,
+							})
+
+							local f_idx = header_text:find(": failed", next_idx, true)
+							if f_idx and f_idx < p_close then
+								pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, f_idx - 1, {
+									end_col = f_idx + 7,
+									hl_group = "AgyGroupFailed",
+									priority = 160,
+								})
+							end
+						end
+					else
+						local p_start = header_text:find(" (", verb_end_idx, true)
+						local count_end_idx = p_start and (p_start - 1) or #header_text
+						pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, next_idx - 1, {
+							end_col = count_end_idx,
+							hl_group = "AgyGroupCount",
+							priority = 150,
+						})
+
+						if p_start then
+							local p_open = p_start + 1
+							if not (hint_open and p_open == hint_open) then
+								local p_close = header_text:find(")", p_open, true)
+								if p_close then
+									pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, p_open - 1, {
+										end_col = p_close,
+										hl_group = "AgyGroupDetails",
+										priority = 150,
+									})
+
+									local f_idx = header_text:find(": failed", p_open, true)
+									if f_idx and f_idx < p_close then
+										pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, f_idx - 1, {
+											end_col = f_idx + 7,
+											hl_group = "AgyGroupFailed",
+											priority = 160,
+										})
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
+		if hint_open then
+			pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, hint_open - 1, {
+				end_col = #header_text,
+				hl_group = "AgyGroupHint",
+				priority = 150,
+			})
+		end
+
+		return ext_id
+	end
+
 	local s_val = header_text:find("Worked for ", 1, true)
 	if s_val then
 		local split_col = s_val + 10
@@ -3345,6 +3908,108 @@ function M.set_work_group_header_extmark(buf, row, header_text, config, existing
 			priority = 150,
 		})
 	end
+end
+
+---Format a child tool line for display inside a work group
+---@param tool_name string
+---@param params table
+---@param cwd? string|string[]
+---@param config? table
+---@return string
+function M.format_child_tool_line(tool_name, params, cwd, config)
+	local is_run_cmd = (tool_name == "run_command")
+	local icon = is_run_cmd and get_icon("run_command", config) or get_tool_icon(tool_name, config)
+	local p_str = M.format_tool_params(params, cwd)
+	if p_str ~= "" then
+		return string.format("%s %s `%s`", icon, tool_name, p_str)
+	else
+		return string.format("%s %s", icon, tool_name)
+	end
+end
+
+---Insert a new named group header line into the buffer above the agent boundary
+---@param buf number
+---@param header_text string
+---@param config? table
+---@param is_running? boolean
+---@return number row 0-indexed line where header was inserted
+---@return number extmark_id
+function M.insert_named_group_header(buf, header_text, config, is_running)
+	pcall(require("agy.markdown").finalize, buf, config)
+	local cfg = get_config(config)
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
+	local boundary_row, agent_row = M.get_agent_boundary(buf)
+	local target_row
+	if boundary_row then
+		local sep_row = boundary_row - 1
+		local prev_row = sep_row - 1
+		if not agent_row or prev_row <= agent_row then
+			vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { header_text })
+			target_row = sep_row
+		else
+			local prev_line = vim.api.nvim_buf_get_lines(buf, prev_row, prev_row + 1, false)[1] or ""
+			local is_tight = M.is_compact_header_line(prev_line, cfg)
+			if is_tight then
+				vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { header_text })
+				target_row = sep_row
+			else
+				vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { "", header_text })
+				target_row = sep_row + 1
+			end
+		end
+	else
+		local line_count = vim.api.nvim_buf_line_count(buf)
+		local last_line = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1] or ""
+		local is_tight = M.is_compact_header_line(last_line, cfg)
+		if last_line == "" then
+			vim.api.nvim_buf_set_lines(buf, line_count - 1, line_count, false, { header_text })
+			target_row = line_count - 1
+		elseif is_tight then
+			vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { header_text })
+			target_row = line_count
+		else
+			vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { "", header_text })
+			target_row = line_count + 1
+		end
+	end
+
+	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
+	local ext_id = M.set_work_group_header_extmark(buf, target_row, header_text, cfg, nil, is_running or false)
+	return target_row, ext_id
+end
+
+---Update an existing named group header line in-place in the buffer
+---@param buf number
+---@param group table AgyWorkGroup
+---@param config? table
+---@param is_running? boolean
+function M.update_named_group_header(buf, group, config, is_running)
+	if not group or not group.header_extmark_id then
+		return
+	end
+	local cfg = get_config(config)
+	local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, group.header_extmark_id, {})
+	local header_row = (pos and #pos >= 1) and pos[1] or group.header_line_idx
+	if not header_row then
+		return
+	end
+
+	local is_open = group.is_open or false
+	local running = (is_running ~= nil) and is_running or (group.is_running or false)
+	group.is_running = running
+	local header_text = M.format_named_group_header(group, is_open, running, cfg)
+
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+	vim.api.nvim_buf_set_lines(buf, header_row, header_row + 1, false, { header_text })
+	local ext_id = M.set_work_group_header_extmark(buf, header_row, header_text, cfg, group.header_extmark_id, running)
+	group.header_extmark_id = ext_id
+	group.header_line_idx = header_row
+	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 end
 
 ---Restore the extmark and inline styling of an individual tool or thought line
@@ -3556,6 +4221,267 @@ function M.toggle_work_group(buf, state, group)
 	else
 		M.expand_work_group_in_place(buf, group, cfg)
 	end
+	return true
+end
+
+local CATEGORY_ACTION_NAMES = {
+	explore = { singular = "read", plural = "reads" },
+	edit = { singular = "edit", plural = "edits" },
+	command = { singular = "command", plural = "commands" },
+	search = { singular = "search", plural = "searches" },
+	browse = { singular = "page", plural = "pages" },
+	subagent = { singular = "subagent", plural = "subagents" },
+	task = { singular = "task", plural = "tasks" },
+	image = { singular = "image", plural = "images" },
+	other = { singular = "action", plural = "actions" },
+}
+
+---Format the summary line for collapsed middle actions
+---@param middle_groups table[]
+---@param is_open? boolean
+---@param config? table
+---@return string
+function M.format_middle_actions_summary(middle_groups, is_open, config)
+	local cfg = get_config(config)
+	local total_count = 0
+	local cat_counts = {}
+	local cat_order = {}
+
+	for _, g in ipairs(middle_groups or {}) do
+		local cat = g.category or "other"
+		for _, it in ipairs(g.items or {}) do
+			if not it.is_thought then
+				total_count = total_count + 1
+				if not cat_counts[cat] then
+					cat_counts[cat] = 0
+					table.insert(cat_order, cat)
+				end
+				cat_counts[cat] = cat_counts[cat] + 1
+			end
+		end
+	end
+
+	local breakdown_parts = {}
+	for _, cat in ipairs(cat_order) do
+		local cnt = cat_counts[cat]
+		local names = CATEGORY_ACTION_NAMES[cat] or { singular = "action", plural = "actions" }
+		local unit = (cnt == 1) and names.singular or names.plural
+		table.insert(breakdown_parts, string.format("%d %s", cnt, unit))
+	end
+
+	local action_word = (total_count == 1) and "action" or "actions"
+	local breakdown = table.concat(breakdown_parts, ", ")
+	local summary
+	if breakdown ~= "" then
+		summary = string.format("... %d more %s (%s) ...", total_count, action_word, breakdown)
+	else
+		summary = string.format("... %d more %s ...", total_count, action_word)
+	end
+
+	if is_open then
+		local keymap = (cfg.keymaps and cfg.keymaps.toggle_tool) or "<CR>"
+		summary = summary .. string.format(" (%s to collapse)", keymap)
+	end
+
+	return summary
+end
+
+---Set extmark styling for middle actions summary line
+---@param buf number
+---@param row number 0-indexed line
+---@param text string
+---@param config? table
+---@param existing_id? number
+---@return number extmark_id
+function M.set_middle_actions_extmark(buf, row, text, config, existing_id)
+	if existing_id then
+		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, existing_id)
+	end
+	return vim.api.nvim_buf_set_extmark(buf, M.NS_UI, row, 0, {
+		end_col = #text,
+		hl_group = "AgyMoreActions",
+		priority = 150,
+	})
+end
+
+---Reconcile middle actions collapsing in buffer for the active turn
+---@param buf number
+---@param state table
+---@param config? table
+function M.reconcile_middle_actions(buf, state, config)
+	if not state or not state.turn_work_groups then return end
+	local cfg = get_config(config)
+	local verbosity = (cfg.ui and cfg.ui.verbosity) or "medium"
+	if cfg.ui and cfg.ui.collapse_work == false then
+		verbosity = "high"
+	end
+	if verbosity ~= "medium" then return end
+
+	-- Filter to action groups (with tools)
+	local action_groups = {}
+	for _, g in ipairs(state.turn_work_groups) do
+		if g.category then
+			table.insert(action_groups, g)
+		end
+	end
+
+	local total = #action_groups
+	local max_visible = (cfg.ui and cfg.ui.max_visible_actions) or 4
+	if total <= max_visible then return end
+
+	local head_count = 2
+	local tail_count = 2
+	local mid_start = head_count + 1
+	local mid_end = total - tail_count
+	if mid_start > mid_end then return end
+
+	local middle_groups = {}
+	for i = mid_start, mid_end do
+		table.insert(middle_groups, action_groups[i])
+	end
+
+	-- If user expanded middle actions, don't re-collapse
+	if state.middle_actions and state.middle_actions.is_open then
+		state.middle_actions.groups = middle_groups
+		return
+	end
+
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
+	-- Remove newly entered middle groups from the buffer
+	for _, g in ipairs(middle_groups) do
+		if not g._is_in_middle then
+			if g.header_extmark_id then
+				local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, g.header_extmark_id, {})
+				if pos and #pos >= 1 then
+					local row = pos[1]
+					local end_row = row + 1
+					if g.is_open and g.child_lines and #g.child_lines > 0 then
+						end_row = end_row + #g.child_lines
+					end
+					vim.api.nvim_buf_set_lines(buf, row, end_row, false, {})
+				end
+				pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, g.header_extmark_id)
+				g.header_extmark_id = nil
+			end
+			g._is_in_middle = true
+		end
+	end
+
+	local summary_text = M.format_middle_actions_summary(middle_groups, false, cfg)
+
+	if state.middle_actions and state.middle_actions.extmark_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.middle_actions.extmark_id, {})
+		if pos and #pos >= 1 then
+			local mid_row = pos[1]
+			vim.api.nvim_buf_set_lines(buf, mid_row, mid_row + 1, false, { summary_text })
+			state.middle_actions.extmark_id = M.set_middle_actions_extmark(buf, mid_row, summary_text, cfg, state.middle_actions.extmark_id)
+			state.middle_actions.groups = middle_groups
+			vim.bo[buf].modified = false
+			vim.bo[buf].modifiable = prev_mod
+			return
+		end
+	end
+
+	-- Find insertion position: right after head group 2
+	local head_g2 = action_groups[head_count]
+	local insert_row = nil
+	if head_g2 and head_g2.header_extmark_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, head_g2.header_extmark_id, {})
+		if pos and #pos >= 1 then
+			insert_row = pos[1] + 1
+			if head_g2.is_open and head_g2.child_lines and #head_g2.child_lines > 0 then
+				insert_row = insert_row + #head_g2.child_lines
+			end
+		end
+	end
+
+	if not insert_row then
+		local tail_g1 = action_groups[mid_end + 1]
+		if tail_g1 and tail_g1.header_extmark_id then
+			local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, tail_g1.header_extmark_id, {})
+			if pos and #pos >= 1 then
+				insert_row = pos[1]
+			end
+		end
+	end
+
+	if not insert_row then
+		insert_row = vim.api.nvim_buf_line_count(buf)
+	end
+
+	vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { summary_text })
+	local ext_id = M.set_middle_actions_extmark(buf, insert_row, summary_text, cfg)
+	state.middle_actions = {
+		extmark_id = ext_id,
+		groups = middle_groups,
+		is_open = false,
+	}
+
+	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
+end
+
+---Toggle middle actions between collapsed and expanded
+---@param buf number
+---@param state table
+---@param mid table Middle action record { extmark_id, groups, is_open }
+---@param config? table
+---@return boolean success
+function M.toggle_middle_actions(buf, state, mid, config)
+	if not mid or not mid.groups or #mid.groups == 0 then return false end
+	local cfg = get_config(config)
+	local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, mid.extmark_id, {})
+	if not pos or #pos < 1 then return false end
+	local mid_row = pos[1]
+
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
+	if not mid.is_open then
+		-- Expand
+		mid.is_open = true
+		local summary_text = M.format_middle_actions_summary(mid.groups, true, cfg)
+		vim.api.nvim_buf_set_lines(buf, mid_row, mid_row + 1, false, { summary_text })
+		mid.extmark_id = M.set_middle_actions_extmark(buf, mid_row, summary_text, cfg, mid.extmark_id)
+
+		local lines_to_insert = {}
+		for _, g in ipairs(mid.groups) do
+			local h_text = M.format_named_group_header(g, g.is_open or false, g.is_running or false, cfg)
+			table.insert(lines_to_insert, h_text)
+		end
+		vim.api.nvim_buf_set_lines(buf, mid_row + 1, mid_row + 1, false, lines_to_insert)
+
+		for idx, g in ipairs(mid.groups) do
+			local g_row = mid_row + idx
+			g.header_extmark_id = M.set_work_group_header_extmark(buf, g_row, lines_to_insert[idx], cfg, nil, g.is_running or false)
+			g.header_line_idx = g_row
+		end
+	else
+		-- Collapse
+		mid.is_open = false
+		local summary_text = M.format_middle_actions_summary(mid.groups, false, cfg)
+
+		local lines_count = 0
+		for _, g in ipairs(mid.groups) do
+			lines_count = lines_count + 1
+			if g.is_open and g.child_lines then
+				lines_count = lines_count + #g.child_lines
+			end
+			if g.header_extmark_id then
+				pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, g.header_extmark_id)
+				g.header_extmark_id = nil
+			end
+		end
+
+		vim.api.nvim_buf_set_lines(buf, mid_row + 1, mid_row + 1 + lines_count, false, {})
+		vim.api.nvim_buf_set_lines(buf, mid_row, mid_row + 1, false, { summary_text })
+		mid.extmark_id = M.set_middle_actions_extmark(buf, mid_row, summary_text, cfg, mid.extmark_id)
+	end
+
+	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 	return true
 end
 

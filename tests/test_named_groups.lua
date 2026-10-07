@@ -1,0 +1,1105 @@
+local utils = require("agy.utils")
+local render = require("agy.render")
+local protocol = require("agy.protocol")
+local config_mod = require("agy.config")
+
+print("=== Running Collapsible Named Tool Groups & Verbosity Tests ===")
+
+-- =========================================================================
+-- TEST 1: Configuration defaults, validation, and fail-fast assertions
+-- =========================================================================
+print("\n[Test 1] Testing configuration defaults and assertions...")
+
+local cfg = config_mod.setup()
+assert(cfg.ui.verbosity == "medium", "Default ui.verbosity should be 'medium'")
+assert(cfg.ui.collapse_work == true, "Default ui.collapse_work should be true")
+assert(cfg.icons.group_completed == "●", "Default group_completed icon should be '●'")
+assert(cfg.icons.group_running == "●", "Default group_running icon should be '●'")
+assert(cfg.icons.middle_dot == "·", "Default middle_dot icon should be '·'")
+assert(cfg.icons.multiply == "×", "Default multiply icon should be '×'")
+
+-- Fail-fast assertion on invalid verbosity
+local ok_bad, err_bad = pcall(function()
+  config_mod.setup({ ui = { verbosity = "super-verbose" } })
+end)
+assert(not ok_bad, "Expected assertion failure when ui.verbosity is invalid")
+assert(err_bad:find("'ui.verbosity' must be 'high', 'medium', or 'low'"), "Error message should mention valid verbosity: " .. tostring(err_bad))
+
+-- Fail-fast assertion on missing group_completed icon
+local broken_cfg = { icons = { group_running = "●", middle_dot = "·", multiply = "×" } }
+local ok_missing, err_missing = pcall(function()
+  render.format_named_group_header({ category = "explore", items = {} }, false, false, broken_cfg)
+end)
+assert(not ok_missing, "Expected assertion failure when group_completed icon is missing")
+assert(err_missing:find("icon 'group_completed' is not defined"), "Error message should mention missing group_completed: " .. tostring(err_missing))
+
+print("✓ Configuration defaults, validation, and fail-fast assertions verified")
+
+-- =========================================================================
+-- TEST 2: get_tool_category mapping
+-- =========================================================================
+print("\n[Test 2] Testing get_tool_category mapping...")
+
+assert(render.get_tool_category("view_file") == "explore")
+assert(render.get_tool_category("read_file") == "explore")
+assert(render.get_tool_category("list_dir") == "explore")
+assert(render.get_tool_category("run_command") == "command")
+assert(render.get_tool_category("execute_command") == "command")
+assert(render.get_tool_category("replace_file_content") == "edit")
+assert(render.get_tool_category("write_to_file") == "edit")
+assert(render.get_tool_category("search_web") == "search")
+assert(render.get_tool_category("code_search") == "search")
+assert(render.get_tool_category("read_url_content") == "browse")
+assert(render.get_tool_category("invoke_subagent") == "subagent")
+assert(render.get_tool_category("send_message") == "subagent")
+assert(render.get_tool_category("schedule") == "task")
+assert(render.get_tool_category("manage_task") == "task")
+assert(render.get_tool_category("image-generator") == "image")
+assert(render.get_tool_category("custom_mcp_tool") == "other")
+
+print("✓ get_tool_category maps tool names to canonical categories verified")
+
+-- =========================================================================
+-- TEST 3: format_named_group_header categories & formatting
+-- =========================================================================
+print("\n[Test 3] Testing format_named_group_header formatting...")
+
+-- 3a. Explore single file
+local group_single_file = {
+  category = "explore",
+  items = {
+    { tool_name = "view_file", params = { AbsolutePath = "C:/projects/settings.json" } }
+  }
+}
+local h_single_file = render.format_named_group_header(group_single_file, false, false, cfg)
+assert(h_single_file == "● Explored 1 file (settings.json)", "Got: " .. h_single_file)
+
+-- 3b. Explore multiple files
+local group_multi_files = {
+  category = "explore",
+  items = {
+    { tool_name = "view_file", params = { AbsolutePath = "SKILL.md" } },
+    { tool_name = "view_file", params = { AbsolutePath = "cli.md" } },
+    { tool_name = "view_file", params = { AbsolutePath = "SKILL.md" } },
+  }
+}
+local h_multi_files = render.format_named_group_header(group_multi_files, false, false, cfg)
+assert(h_multi_files == "● Explored 2 files (SKILL.md, cli.md)", "Got: " .. h_multi_files)
+
+-- Test multiple views of SAME single file
+local group_same_file = {
+  category = "explore",
+  items = {
+    { tool_name = "view_file", params = { AbsolutePath = "SKILL.md" } },
+    { tool_name = "view_file", params = { AbsolutePath = "SKILL.md" } },
+  }
+}
+local h_same_file = render.format_named_group_header(group_same_file, false, false, cfg)
+assert(h_same_file == "● Explored 1 file (SKILL.md)", "Got: " .. h_same_file)
+
+-- 3c. Ran commands with repetitions and failures
+local group_cmds = {
+  category = "command",
+  items = {
+    { tool_name = "run_command", params = { CommandLine = "python -c 'import sys'" }, task_status = "failed", exit_code = 1 },
+    { tool_name = "run_command", params = { CommandLine = "Get-ChildItem -Path ..." } },
+    { tool_name = "run_command", params = { CommandLine = "Get-ChildItem -Path ..." } },
+    { tool_name = "run_command", params = { CommandLine = "Get-ChildItem -Path ..." } },
+    { tool_name = "run_command", params = { CommandLine = "powershell -Command ..." } },
+    { tool_name = "run_command", params = { CommandLine = "powershell -Command ..." } },
+  }
+}
+local h_cmds = render.format_named_group_header(group_cmds, false, false, cfg)
+assert(h_cmds:find("^● Ran 6 commands"), "Must start with '● Ran 6 commands': " .. h_cmds)
+assert(h_cmds:find(": failed"), "Must flag failed command: " .. h_cmds)
+assert(h_cmds:find("×3"), "Must coalesce 3 repetitions with ×3: " .. h_cmds)
+assert(h_cmds:find("×2"), "Must coalesce 2 repetitions with ×2: " .. h_cmds)
+assert(h_cmds:find(" · "), "Must use middle dot separator: " .. h_cmds)
+
+-- 3d. Running search with hint
+local group_search_running = {
+  category = "search",
+  is_running = true,
+  items = {
+    { tool_name = "search_web", params = { query = "antigravity memory context" } }
+  }
+}
+local h_search_run = render.format_named_group_header(group_search_running, false, true, cfg)
+assert(h_search_run:find("^● Exploring 1 search"), "Must say 'Exploring 1 search': " .. h_search_run)
+assert(h_search_run:find('%("antigravity memory context"%)'), "Must format query inside parens: " .. h_search_run)
+assert(h_search_run:find("%(<CR> to expand%)"), "Must show expand keymap hint: " .. h_search_run)
+
+-- 3e. Expanded group with collapse hint
+local h_expanded = render.format_named_group_header(group_multi_files, true, false, cfg)
+assert(h_expanded:find("%(<CR> to collapse%)"), "Must show collapse hint when open: " .. h_expanded)
+
+-- 3f. Browsed pages
+local group_browse = {
+  category = "browse",
+  items = {
+    { tool_name = "read_url_content", params = { Url = "https://example.com/api" } },
+    { tool_name = "read_url_content", params = { Url = "https://docs.antigravity.google" } },
+  }
+}
+local h_browse = render.format_named_group_header(group_browse, false, false, cfg)
+assert(h_browse == "● Browsed 2 pages (https://example.com/api, https://docs.antigravity.google)", "Got: " .. h_browse)
+
+-- 3g. Edited files
+local group_edit = {
+  category = "edit",
+  items = {
+    { tool_name = "replace_file_content", params = { TargetFile = "lua/agy/render.lua" } }
+  }
+}
+local h_edit = render.format_named_group_header(group_edit, false, false, cfg)
+assert(h_edit == "● Edited 1 file (render.lua)", "Got: " .. h_edit)
+
+print("✓ format_named_group_header formatting across all categories verified")
+
+-- =========================================================================
+-- TEST 4: Extmark styling & highlight groups
+-- =========================================================================
+print("\n[Test 4] Testing extmark styling and highlight groups...")
+
+local buf4 = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_lines(buf4, 0, -1, false, { h_single_file, h_search_run, h_cmds })
+
+local ext1 = render.set_work_group_header_extmark(buf4, 0, h_single_file, cfg, nil, false)
+assert(ext1 ~= nil, "Extmark id should be returned for row 0")
+
+local marks0 = vim.api.nvim_buf_get_extmarks(buf4, render.NS_UI, { 0, 0 }, { 0, -1 }, { details = true })
+assert(#marks0 >= 3, "Row 0 should have extmarks for bullet, verb, count, details")
+
+local found_comp = false
+local found_verb = false
+local found_count = false
+local found_details = false
+for _, m in ipairs(marks0) do
+  local hl = m[4].hl_group
+  if hl == "AgyGroupCompleted" then found_comp = true end
+  if hl == "AgyGroupVerb" then found_verb = true end
+  if hl == "AgyGroupCount" then found_count = true end
+  if hl == "AgyGroupDetails" then found_details = true end
+end
+assert(found_comp, "AgyGroupCompleted highlight must be present")
+assert(found_verb, "AgyGroupVerb highlight must be present")
+assert(found_count, "AgyGroupCount highlight must be present")
+assert(found_details, "AgyGroupDetails highlight must be present")
+
+-- Check running search row (row 1)
+render.set_work_group_header_extmark(buf4, 1, h_search_run, cfg, nil, true)
+local marks1 = vim.api.nvim_buf_get_extmarks(buf4, render.NS_UI, { 1, 0 }, { 1, -1 }, { details = true })
+local found_run_hl = false
+local found_hint_hl = false
+for _, m in ipairs(marks1) do
+  local hl = m[4].hl_group
+  if hl == "AgyGroupRunning" then found_run_hl = true end
+  if hl == "AgyGroupHint" then found_hint_hl = true end
+end
+assert(found_run_hl, "AgyGroupRunning highlight must be present on running group")
+assert(found_hint_hl, "AgyGroupHint highlight must be present for expand hint")
+
+-- Check command row with failure (row 2)
+render.set_work_group_header_extmark(buf4, 2, h_cmds, cfg, nil, false)
+local marks2 = vim.api.nvim_buf_get_extmarks(buf4, render.NS_UI, { 2, 0 }, { 2, -1 }, { details = true })
+local found_failed_hl = false
+for _, m in ipairs(marks2) do
+  if m[4].hl_group == "AgyGroupFailed" then found_failed_hl = true end
+end
+assert(found_failed_hl, "AgyGroupFailed highlight must be present on failed command")
+
+print("✓ Extmark highlights (Completed, Running, Verb, Count, Details, Failed, Hint) verified")
+
+-- =========================================================================
+-- TEST 5: In-place collapse and expansion of named groups
+-- =========================================================================
+print("\n[Test 5] Testing in-place collapse and expansion of named groups...")
+
+local buf5 = vim.api.nvim_create_buf(false, true)
+render.render_new_session(buf5, cfg)
+
+local t5_1_line, t5_1_ext, p5_1 = render.append_tool_call(buf5, "view_file", { AbsolutePath = "file1.lua" }, nil, cfg)
+local tl5_1 = {
+  id = 1,
+  tool_name = "view_file",
+  params = { AbsolutePath = "file1.lua" },
+  param_str = p5_1,
+  duration_seconds = 0.2,
+  output = "content1",
+  header_extmark_id = t5_1_ext,
+  header_line_idx = t5_1_line,
+}
+render.complete_tool_call(buf5, tl5_1, 0.2, "content1", cfg)
+
+local t5_2_line, t5_2_ext, p5_2 = render.append_tool_call(buf5, "view_file", { AbsolutePath = "file2.lua" }, nil, cfg)
+local tl5_2 = {
+  id = 2,
+  tool_name = "view_file",
+  params = { AbsolutePath = "file2.lua" },
+  param_str = p5_2,
+  duration_seconds = 0.3,
+  output = "content2",
+  header_extmark_id = t5_2_ext,
+  header_line_idx = t5_2_line,
+}
+render.complete_tool_call(buf5, tl5_2, 0.3, "content2", cfg)
+
+local named_group5 = {
+  id = 1,
+  category = "explore",
+  is_open = true,
+  duration_seconds = 0.5,
+  items = { tl5_1, tl5_2 },
+}
+
+-- Collapse
+render.collapse_work_group_in_place(buf5, named_group5, cfg)
+assert(named_group5.is_open == false, "Group should be collapsed")
+
+local lines5_col = vim.api.nvim_buf_get_lines(buf5, 0, -1, false)
+local found_named_header = false
+for _, l in ipairs(lines5_col) do
+  if l:find("^● Explored 2 files %(file1%.lua, file2%.lua%)") then
+    found_named_header = true
+  end
+  assert(not l:find("`file1%.lua`"), "Individual file line 1 should be collapsed")
+  assert(not l:find("`file2%.lua`"), "Individual file line 2 should be collapsed")
+end
+assert(found_named_header, "Named collapsed header must exist in buffer")
+
+-- Expand
+render.expand_work_group_in_place(buf5, named_group5, cfg)
+assert(named_group5.is_open == true, "Group should be open")
+
+local lines5_exp = vim.api.nvim_buf_get_lines(buf5, 0, -1, false)
+local found_exp_header = false
+local found_f1 = false
+local found_f2 = false
+for _, l in ipairs(lines5_exp) do
+  if l:find("^● Explored 2 files") and l:find("%(<CR> to collapse%)") then
+    found_exp_header = true
+  elseif l:find("file1%.lua") then
+    found_f1 = true
+  elseif l:find("file2%.lua") then
+    found_f2 = true
+  end
+end
+assert(found_exp_header, "Expanded header with collapse hint must exist")
+assert(found_f1, "Child tool 1 must be restored")
+assert(found_f2, "Child tool 2 must be restored")
+
+-- Toggle back via toggle_work_group
+render.toggle_work_group(buf5, { config = cfg }, named_group5)
+assert(named_group5.is_open == false, "Group should be closed again")
+
+print("✓ In-place collapse, expand, and toggle of named group verified")
+
+-- =========================================================================
+-- TEST 6: Child tool output preview inside expanded named group
+-- =========================================================================
+print("\n[Test 6] Testing child tool preview inside expanded named group...")
+
+local cur_win = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_buf(cur_win, buf5)
+render.expand_work_group_in_place(buf5, named_group5, cfg)
+assert(named_group5.is_open == true)
+
+local state5 = {
+  buf = buf5,
+  config = cfg,
+  tool_calls = { tl5_1, tl5_2 },
+  work_groups = { named_group5 },
+}
+protocol.buffers[buf5] = state5
+
+-- Cursor on child tool 1
+vim.api.nvim_win_set_cursor(cur_win, { tl5_1.header_line_idx + 1, 0 })
+local tool_handled = protocol.toggle_tool_at_cursor(buf5, cur_win)
+assert(tool_handled == true, "toggle_tool_at_cursor should open preview")
+assert(tl5_1.is_open == true, "Tool 1 should be open")
+assert(tl5_1.win ~= nil and vim.api.nvim_win_is_valid(tl5_1.win), "Window should be valid")
+
+-- Cursor on group header, collapse group
+vim.api.nvim_win_set_cursor(cur_win, { named_group5.header_line_idx + 1, 0 })
+local collapse_handled = protocol.toggle_work_group_at_cursor(buf5)
+assert(collapse_handled == true, "Group toggle should handle header")
+assert(named_group5.is_open == false, "Group should be closed")
+assert(tl5_1.is_open == false, "Child tool should be closed")
+assert(tl5_1.win == nil, "Child window should be destroyed")
+
+print("✓ Child tool output preview and automatic cleanup on group collapse verified")
+
+-- =========================================================================
+-- TEST 7: Transcript replay with medium verbosity (default)
+-- =========================================================================
+print("\n[Test 7] Testing transcript replay with medium verbosity (default)...")
+
+local trans_steps = {
+  { type = "USER_INPUT", content = "Examine files and test" },
+  {
+    type = "PLANNER_RESPONSE",
+    thinking = "Let me look at the code first.",
+    duration_seconds = 0.3,
+    tool_calls = {
+      { name = "view_file", args = { TargetFile = "SKILL.md" }, output = "skill code", duration_seconds = 0.2 },
+      { name = "view_file", args = { TargetFile = "cli.md" }, output = "cli code", duration_seconds = 0.2 },
+    }
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    tool_calls = {
+      { name = "run_command", args = { CommandLine = "git status" }, output = "clean", duration_seconds = 0.4 },
+    }
+  },
+  {
+    type = "PLANNER_RESPONSE",
+    content = "Everything is examined and clean.",
+    duration_seconds = 0.1,
+  }
+}
+
+local trans_buf7 = vim.api.nvim_create_buf(false, true)
+local _, _, tcs7, wgs7 = render.render_transcript(trans_buf7, "test-conv-named", trans_steps, cfg, vim.fn.getcwd())
+
+assert(wgs7 and #wgs7 == 2, "Expected 2 named groups (1 explore + 1 command), got: " .. tostring(wgs7 and #wgs7))
+assert(wgs7[1].category == "explore", "First group should be category 'explore'")
+assert(wgs7[2].category == "command", "Second group should be category 'command'")
+assert(wgs7[1].is_open == false, "Group 1 should be collapsed")
+assert(wgs7[2].is_open == false, "Group 2 should be collapsed")
+
+local t7_lines = vim.api.nvim_buf_get_lines(trans_buf7, 0, -1, false)
+print("Transcript buffer lines:")
+for i, l in ipairs(t7_lines) do
+  print(string.format("  [%d] %s", i, l))
+end
+
+local found_explored_line = false
+local found_ran_line = false
+local found_final_text7 = false
+for _, l in ipairs(t7_lines) do
+  if l:find("^● Explored 2 files %(SKILL%.md, cli%.md%)") then
+    found_explored_line = true
+  elseif l:find("^● Ran %(git status%)") then
+    found_ran_line = true
+  elseif l:find("Everything is examined and clean") then
+    found_final_text7 = true
+  end
+  assert(not l:find("`SKILL%.md`"), "view_file should be collapsed")
+  assert(not l:find("`git status`"), "run_command should be collapsed")
+end
+assert(found_explored_line, "Explored files header must exist")
+assert(found_ran_line, "Ran commands header must exist")
+assert(found_final_text7, "Final assistant text response must exist")
+
+print("✓ Transcript replay partitions consecutive categories into distinct named groups")
+
+-- =========================================================================
+-- TEST 8: Transcript replay with high verbosity (uncollapsed)
+-- =========================================================================
+print("\n[Test 8] Testing transcript replay with high verbosity...")
+
+local high_cfg = config_mod.setup({ ui = { verbosity = "high" } })
+local high_buf = vim.api.nvim_create_buf(false, true)
+local _, _, _, high_wgs = render.render_transcript(high_buf, "test-conv-high", trans_steps, high_cfg, vim.fn.getcwd())
+
+local high_lines = vim.api.nvim_buf_get_lines(high_buf, 0, -1, false)
+local found_raw_skill = false
+local found_raw_cmd = false
+for _, l in ipairs(high_lines) do
+  if l:find("view_file") and l:find("SKILL%.md") then found_raw_skill = true end
+  if l:find("run_command") and l:find("git status") then found_raw_cmd = true end
+  assert(not l:find("^● Explored"), "No collapsed group header should exist in high verbosity")
+  assert(not l:find("^● Ran"), "No collapsed command header should exist in high verbosity")
+end
+assert(found_raw_skill, "view_file should be rendered uncollapsed in high verbosity")
+assert(found_raw_cmd, "run_command should be rendered uncollapsed in high verbosity")
+
+print("✓ High verbosity renders all tools and thoughts directly without collapsing")
+
+-- =========================================================================
+-- TEST 9: Live streaming category transitions and auto-collapse
+-- =========================================================================
+print("\n[Test 9] Testing live streaming category transition auto-collapse...")
+
+cfg = config_mod.setup() -- medium verbosity
+local live_buf9 = vim.api.nvim_create_buf(false, false)
+render.render_new_session(live_buf9, cfg)
+
+local state9 = {
+  buf = live_buf9,
+  config = cfg,
+  tool_calls = {},
+  work_groups = {},
+  current_work_group = nil,
+  active_agent_started_output = false,
+  follow_bottom = false,
+  stream_info = { status = "ready" },
+}
+protocol.buffers[live_buf9] = state9
+
+-- 1. Tool 1: view_file (explore)
+local t9_1_line, t9_1_ext, p9_1 = render.append_tool_call(live_buf9, "view_file", { AbsolutePath = "foo.lua" }, nil, cfg)
+local tc9_1 = {
+  id = 1,
+  tool_name = "view_file",
+  params = { AbsolutePath = "foo.lua" },
+  param_str = p9_1,
+  duration_seconds = 0.2,
+  header_extmark_id = t9_1_ext,
+  header_line_idx = t9_1_line,
+}
+protocol.add_item_to_current_work_group(live_buf9, tc9_1)
+render.complete_tool_call(live_buf9, tc9_1, 0.2, "foo", cfg)
+
+-- 2. Tool 2: run_command (command) -> category transition!
+local t9_2_line, t9_2_ext, p9_2 = render.append_tool_call(live_buf9, "run_command", { CommandLine = "make build" }, nil, cfg)
+local tc9_2 = {
+  id = 2,
+  tool_name = "run_command",
+  params = { CommandLine = "make build" },
+  param_str = p9_2,
+  duration_seconds = 0.5,
+  header_extmark_id = t9_2_ext,
+  header_line_idx = t9_2_line,
+}
+-- Adding Tool 2 should auto-collapse Tool 1's explore group!
+protocol.add_item_to_current_work_group(live_buf9, tc9_2)
+render.complete_tool_call(live_buf9, tc9_2, 0.5, "ok", cfg)
+
+assert(#state9.work_groups == 1, "Explore group should have auto-collapsed upon category change")
+assert(state9.work_groups[1].category == "explore", "First group should be category 'explore'")
+assert(state9.current_work_group ~= nil, "Current group should be active for command")
+assert(state9.current_work_group.category == "command", "Current group should be category 'command'")
+
+-- 3. Agent text response delta arrives -> collapses command group
+protocol.collapse_active_work_group(live_buf9)
+render.append_text_delta(live_buf9, "Done with build.", cfg)
+
+assert(#state9.work_groups == 2, "Command group should have collapsed upon text response")
+assert(state9.work_groups[2].category == "command", "Second group should be category 'command'")
+
+local lines9 = vim.api.nvim_buf_get_lines(live_buf9, 0, -1, false)
+print("Live buffer lines after run:")
+for i, l in ipairs(lines9) do
+  print(string.format("  [%d] %s", i, l))
+end
+
+local found_live_exp = false
+local found_live_cmd = false
+local found_live_txt = false
+for _, l in ipairs(lines9) do
+  if l:find("^● Explored 1 file %(foo%.lua%)") then found_live_exp = true end
+  if l:find("^● Ran %(make build%)") then found_live_cmd = true end
+  if l:find("Done with build") then found_live_txt = true end
+end
+assert(found_live_exp, "Live buffer must contain collapsed '● Explored 1 file (foo.lua)'")
+assert(found_live_cmd, "Live buffer must contain collapsed '● Ran (make build)'")
+assert(found_live_txt, "Live buffer must contain streamed assistant text")
+
+print("✓ Live streaming category transitions and auto-collapse verified")
+
+-- =========================================================================
+-- TEST 10: Live in-place group header updates as tools arrive
+-- =========================================================================
+print("\n[Test 10] Testing live in-place group header updates as tools arrive...")
+
+local live_buf10 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf10, file = "agy://test-conv-live-update" })
+local state10 = protocol.buffers[live_buf10]
+assert(state10 ~= nil, "State must exist for live_buf10")
+
+vim.api.nvim_buf_set_lines(live_buf10, state10.prompt_start_line - 1, -1, false, { "Explore files" })
+protocol.handle_write(live_buf10)
+local session10 = state10.session
+assert(session10 ~= nil, "Session must exist for live_buf10")
+
+-- 1. Tool 1: view_file file1.lua ACTIVE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "file1.lua" } },
+})
+
+local lines10_1 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_exploring_1 = false
+for _, l in ipairs(lines10_1) do
+  if l:find("^● Exploring 1 file %(file1%.lua%)") and l:find("to expand") then
+    found_exploring_1 = true
+  end
+end
+assert(found_exploring_1, "Buffer must show '● Exploring 1 file (file1.lua) (<CR> to expand)': " .. vim.inspect(lines10_1))
+
+-- 2. Tool 1 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.2,
+  tool_info = { parameters = { AbsolutePath = "file1.lua" }, output = "content1" },
+})
+
+local lines10_2 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_explored_1 = false
+for _, l in ipairs(lines10_2) do
+  if l:find("^● Explored 1 file %(file1%.lua%)") and not l:find("to expand") then
+    found_explored_1 = true
+  end
+end
+assert(found_explored_1, "Buffer must update in-place to '● Explored 1 file (file1.lua)': " .. vim.inspect(lines10_2))
+
+-- 3. Tool 2: view_file file2.lua ACTIVE (same category, different file)
+local line_count_before = #lines10_2
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "file2.lua" } },
+})
+
+local lines10_3 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+assert(#lines10_3 == line_count_before, "Line count must NOT increase when second tool arrives (updates in-place)")
+local found_exploring_2 = false
+for _, l in ipairs(lines10_3) do
+  if l:find("^● Exploring 2 files %(file1%.lua, file2%.lua%)") and l:find("to expand") then
+    found_exploring_2 = true
+  end
+end
+assert(found_exploring_2, "Buffer must update in-place to '● Exploring 2 files (file1.lua, file2.lua) (<CR> to expand)': " .. vim.inspect(lines10_3))
+
+-- 4. Tool 2 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.3,
+  tool_info = { parameters = { AbsolutePath = "file2.lua" }, output = "content2" },
+})
+
+local lines10_4 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_explored_2 = false
+for _, l in ipairs(lines10_4) do
+  if l:find("^● Explored 2 files %(file1%.lua, file2%.lua%)") and not l:find("to expand") then
+    found_explored_2 = true
+  end
+end
+assert(found_explored_2, "Buffer must update in-place to '● Explored 2 files (file1.lua, file2.lua)': " .. vim.inspect(lines10_4))
+
+print("✓ Live in-place group header updates verified")
+
+-- =========================================================================
+-- TEST 11: Duplicate file views only count as 1 file during live execution
+-- =========================================================================
+print("\n[Test 11] Testing duplicate file views only count as 1 file during live execution...")
+
+-- 5. Tool 3: view_file file1.lua ACTIVE (SAME file viewed again)
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "file1.lua" } },
+})
+
+local lines11_1 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_still_2 = false
+for _, l in ipairs(lines11_1) do
+  if l:find("^● Exploring 2 files %(file1%.lua, file2%.lua%)") then
+    found_still_2 = true
+  end
+  assert(not l:find("3 files"), "Must NOT count duplicate view as a 3rd file: " .. l)
+end
+assert(found_still_2, "Count must remain 2 files when re-visiting file1.lua: " .. vim.inspect(lines11_1))
+
+-- Tool 3 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.1,
+  tool_info = { parameters = { AbsolutePath = "file1.lua" }, output = "content1_again" },
+})
+
+-- 6. Category change: Tool 4: run_command git status
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = { parameters = { CommandLine = "git status" } },
+})
+
+local lines11_2 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_exp_completed = false
+local found_cmd_running = false
+for _, l in ipairs(lines11_2) do
+  if l:find("^● Explored 2 files %(file1%.lua, file2%.lua%)") and not l:find("to expand") then
+    found_exp_completed = true
+  end
+  if l:find("^● Running %(git status%)") and l:find("to expand") then
+    found_cmd_running = true
+  end
+end
+assert(found_exp_completed, "Explore group must be finalized to '● Explored 2 files': " .. vim.inspect(lines11_2))
+assert(found_cmd_running, "New command group must start as '● Running (git status)': " .. vim.inspect(lines11_2))
+
+-- Tool 4 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "DONE",
+  duration_seconds = 0.4,
+  tool_info = { parameters = { CommandLine = "git status" }, output = "clean" },
+})
+
+local lines11_3 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_cmd_done = false
+for _, l in ipairs(lines11_3) do
+  if l:find("^● Ran %(git status%)") and not l:find("to expand") then
+    found_cmd_done = true
+  end
+end
+assert(found_cmd_done, "Command group must be completed to '● Ran (git status)': " .. vim.inspect(lines11_3))
+
+print("✓ Duplicate file unique counting and category transition in live execution verified")
+
+-- =========================================================================
+-- TEST 12: Live streaming with preceding thoughts, missing step.tool_name, intermediate thoughts, and repeated files
+-- =========================================================================
+print("\n[Test 12] Testing live streaming with preceding thought, missing tool_name, intermediate thought, and repeated files...")
+
+local live_buf12 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf12, file = "agy://test-conv-live-thoughts" })
+local state12 = protocol.buffers[live_buf12]
+assert(state12 ~= nil, "State must exist for live_buf12")
+
+vim.api.nvim_buf_set_lines(live_buf12, state12.prompt_start_line - 1, -1, false, { "Examine crude providers" })
+protocol.handle_write(live_buf12)
+local session12 = state12.session
+assert(session12 ~= nil, "Session must exist for live_buf12")
+
+-- 1. Preceding thought arrives before any tool
+-- Simulate append_thought_block via check_and_render_pending_thoughts fallback
+local t_rec
+protocol.with_modifiable(live_buf12, function()
+  t_rec = render.append_thought_block(live_buf12, "I need to inspect the crude fs provider first", 1.5, state12.config)
+  t_rec.id = #state12.tool_calls + 1
+  table.insert(state12.tool_calls, t_rec)
+  protocol.add_item_to_current_work_group(live_buf12, t_rec)
+end)
+
+local lines12_thought = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_raw_thought = false
+for _, l in ipairs(lines12_thought) do
+  if l:find("Thought") then found_raw_thought = true end
+end
+assert(found_raw_thought, "Preceding thought should be rendered initially before tools arrive")
+
+-- 2. Tool 1: view_file fs.lua arrives WITHOUT step.tool_name (tool name in step.tool_info.name)
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "ACTIVE",
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/fs.lua" },
+  },
+})
+
+local lines12_t1_active = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_exploring_fs = false
+for _, l in ipairs(lines12_t1_active) do
+  if l:find("^● Exploring 1 file %(fs%.lua%)") and l:find("to expand") then
+    found_exploring_fs = true
+  end
+  assert(not l:find("Thought"), "Preceding thought must be absorbed into group header and removed from raw lines: " .. l)
+  assert(not l:find("^%s*view_file"), "Tool line must NOT be printed as raw line: " .. l)
+end
+assert(found_exploring_fs, "Buffer must show '● Exploring 1 file (fs.lua)': " .. vim.inspect(lines12_t1_active))
+
+-- 3. Tool 1 DONE
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "DONE",
+  duration_seconds = 0.2,
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/fs.lua" },
+    output = "fs code",
+  },
+})
+
+local lines12_t1_done = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_explored_fs = false
+for _, l in ipairs(lines12_t1_done) do
+  if l:find("^● Explored 1 file %(fs%.lua%)") and not l:find("to expand") then
+    found_explored_fs = true
+  end
+end
+assert(found_explored_fs, "Must be finalized to '● Explored 1 file (fs.lua)': " .. vim.inspect(lines12_t1_done))
+
+-- 4. Intermediate thought arrives during active turn
+-- Since state12.current_work_group exists and has header_extmark_id, check_and_render_pending_thoughts will absorb it
+local dur_inter = 4.3
+local tc_thought2 = {
+  id = #state12.tool_calls + 1,
+  is_thought = true,
+  thinking = "Now investigating git provider worktrees",
+  duration_seconds = dur_inter,
+  _in_work_group = true,
+}
+table.insert(state12.tool_calls, tc_thought2)
+table.insert(state12.current_work_group.items, tc_thought2)
+local t_icon = state12.config.icons and state12.config.icons.thought or "💭"
+table.insert(state12.current_work_group.child_lines, string.format("%s Thought %s", t_icon, utils.format_duration(dur_inter)))
+render.update_named_group_header(live_buf12, state12.current_work_group, state12.config, false)
+
+local lines12_inter = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+assert(#lines12_inter == #lines12_t1_done, "Buffer lines must NOT increase when intermediate thought is absorbed")
+
+-- 5. Tool 2: view_file git.lua arrives
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "ACTIVE",
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+  },
+})
+
+local lines12_t2_active = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_exploring_2 = false
+for _, l in ipairs(lines12_t2_active) do
+  if l:find("^● Exploring 2 files %(fs%.lua, git%.lua%)") and l:find("to expand") then
+    found_exploring_2 = true
+  end
+  assert(not l:find("^%s*view_file"), "Must not leak raw tool lines: " .. l)
+end
+assert(found_exploring_2, "Must show '● Exploring 2 files (fs.lua, git.lua)': " .. vim.inspect(lines12_t2_active))
+
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "DONE",
+  duration_seconds = 0.1,
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+    output = "git code",
+  },
+})
+
+-- 6. Tools 3, 4, 5 arrive with the SAME file (git.lua)
+for repeat_idx = 1, 3 do
+  session12.on_step_update(session12, {
+    step_type = "tool",
+    state = "ACTIVE",
+    tool_info = {
+      name = "view_file",
+      parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+    },
+  })
+  local lines_repeat = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+  for _, l in ipairs(lines_repeat) do
+    if l:find("^● Exploring") then
+      assert(l:find("2 files"), "Repeated view of git.lua must NOT increment file count: " .. l)
+    end
+  end
+
+  session12.on_step_update(session12, {
+    step_type = "tool",
+    state = "DONE",
+    duration_seconds = 0.1,
+    tool_info = {
+      name = "view_file",
+      parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+      output = "git code repeat",
+    },
+  })
+end
+
+local lines12_final = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_final_2 = false
+for _, l in ipairs(lines12_final) do
+  if l:find("^● Explored 2 files %(fs%.lua, git%.lua%)") then
+    found_final_2 = true
+  end
+  assert(not l:find("^%s*view_file"), "No raw tool lines must exist in buffer: " .. l)
+end
+assert(found_final_2, "Final group must be '● Explored 2 files (fs.lua, git.lua)': " .. vim.inspect(lines12_final))
+
+-- 7. Test expansion of the active group via toggle_work_group_at_cursor
+local target_row = state12.current_work_group.header_line_idx
+local win12 = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_buf(win12, live_buf12)
+vim.api.nvim_win_set_cursor(win12, { target_row + 1, 0 })
+
+local toggled_open = protocol.toggle_work_group_at_cursor(live_buf12)
+assert(toggled_open, "Should successfully toggle active work group open")
+local lines_expanded = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_expanded_thought = false
+local found_expanded_tool = false
+for _, l in ipairs(lines_expanded) do
+  if l:find("Thought") then found_expanded_thought = true end
+  if l:find("view_file") then found_expanded_tool = true end
+end
+assert(found_expanded_thought, "Expanded group should show child thoughts")
+assert(found_expanded_tool, "Expanded group should show child tool calls")
+
+-- Re-collapse
+local toggled_closed = protocol.toggle_work_group_at_cursor(live_buf12)
+assert(toggled_closed, "Should successfully toggle active work group closed")
+local lines_recollapsed = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+for _, l in ipairs(lines_recollapsed) do
+  assert(not l:find("^%s*view_file"), "Re-collapsed group should hide child tool calls: " .. l)
+end
+
+print("✓ Live streaming with preceding thoughts, missing tool_name, intermediate thoughts, and repeated files verified")
+
+-- =========================================================================
+-- TEST 13: Dynamic Thinking / Spinner Status Text
+-- =========================================================================
+print("\n[Test 13] Testing dynamic thinking / spinner status text...")
+
+assert(render.get_tool_status_text("view_file") == "Reading file...")
+assert(render.get_tool_status_text("read_file") == "Reading file...")
+assert(render.get_tool_status_text("list_dir") == "Reading file...")
+assert(render.get_tool_status_text("run_command") == "Running command...")
+assert(render.get_tool_status_text("replace_file_content") == "Editing file...")
+assert(render.get_tool_status_text("write_to_file") == "Editing file...")
+assert(render.get_tool_status_text("search_web") == "Searching...")
+assert(render.get_tool_status_text("read_url_content") == "Browsing web...")
+assert(render.get_tool_status_text("invoke_subagent") == "Running subagent...")
+assert(render.get_tool_status_text("schedule") == "Scheduling task...")
+assert(render.get_tool_status_text("image-generator") == "Generating image...")
+assert(render.get_tool_status_text("unknown") == "Thinking...")
+assert(render.get_tool_status_text(nil) == "Thinking...")
+
+local badge_read = render.get_thinking_badge(cfg, "Reading file...")
+assert(badge_read:find("Reading file%.%.%."), "Badge should contain 'Reading file...': " .. badge_read)
+
+-- Test live streaming updates divider badge with active tool status
+local live_buf13 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf13, file = "agy://test-conv-dynamic-status" })
+local state13 = protocol.buffers[live_buf13]
+local session13 = state13.session
+
+-- 1. Prompt submitted: thinking animation starts with 'Thinking...'
+render.start_thinking_animation(live_buf13, nil, nil, state13.config)
+assert(render.current_thinking_badge[live_buf13]:find("Thinking%.%.%."), "Initial badge must be 'Thinking...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 2. Tool view_file starts (ACTIVE): status text immediately becomes 'Reading file...'
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "main.lua" } },
+})
+assert(state13.active_tool_status_text == "Reading file...", "active_tool_status_text should be 'Reading file...'")
+assert(render.current_thinking_badge[live_buf13]:find("Reading file%.%.%."), "Thinking badge must immediately show 'Reading file...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 3. Tool completes (DONE): status text resets to nil / 'Thinking...'
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.2,
+  tool_info = { parameters = { AbsolutePath = "main.lua" }, output = "content" },
+})
+assert(state13.active_tool_status_text == nil, "active_tool_status_text should be reset to nil on DONE")
+assert(render.current_thinking_badge[live_buf13]:find("Thinking%.%.%."), "Thinking badge should return to 'Thinking...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 4. Tool run_command starts (ACTIVE): status text becomes 'Running command...'
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = { parameters = { CommandLine = "echo hello" } },
+})
+assert(state13.active_tool_status_text == "Running command...", "active_tool_status_text should be 'Running command...'")
+assert(render.current_thinking_badge[live_buf13]:find("Running command%.%.%."), "Thinking badge must show 'Running command...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 5. Tool completes (DONE)
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "DONE",
+  duration_seconds = 0.1,
+  tool_info = { parameters = { CommandLine = "echo hello" }, output = "hello" },
+})
+assert(render.current_thinking_badge[live_buf13]:find("Thinking%.%.%."), "Thinking badge should return to 'Thinking...'")
+
+render.stop_thinking_animation(live_buf13)
+print("✓ Dynamic thinking / spinner status text verified")
+
+-- =========================================================================
+-- TEST 14: Middle Actions Collapsing & Single Command Formatting
+-- =========================================================================
+print("\n[Test 14] Testing middle actions collapsing and single command format...")
+
+-- 14a. Test single command format: '● Ran (<cmd>)' (omits '1 command')
+local single_cmd_group = {
+  category = "command",
+  items = {
+    { tool_name = "run_command", params = { CommandLine = "git grep -n \"nvim_view\" src/" } }
+  }
+}
+local h_single_cmd = render.format_named_group_header(single_cmd_group, false, false, cfg)
+assert(h_single_cmd == '● Ran (git grep -n "nvim_view" src/)', "Single command must format as '● Ran (<cmd>)': " .. h_single_cmd)
+
+local multi_cmd_group = {
+  category = "command",
+  items = {
+    { tool_name = "run_command", params = { CommandLine = "git status" } },
+    { tool_name = "run_command", params = { CommandLine = "git diff" } },
+  }
+}
+local h_multi_cmd = render.format_named_group_header(multi_cmd_group, false, false, cfg)
+assert(h_multi_cmd:find("^● Ran 2 commands"), "Multi-command must retain count: " .. h_multi_cmd)
+
+-- 14b. Test format_middle_actions_summary
+local mock_middle_groups = {
+  { category = "explore", items = { { tool_name = "view_file" }, { tool_name = "view_file" }, { tool_name = "view_file" } } },
+  { category = "command", items = { { tool_name = "run_command" }, { tool_name = "run_command" }, { tool_name = "run_command" }, { tool_name = "run_command" }, { tool_name = "run_command" } } },
+}
+local mid_summary = render.format_middle_actions_summary(mock_middle_groups, false, cfg)
+assert(mid_summary == "... 8 more actions (3 reads, 5 commands) ...", "Got: " .. mid_summary)
+
+local mock_single_mid = {
+  { category = "explore", items = { { tool_name = "view_file" } } }
+}
+local single_mid_summary = render.format_middle_actions_summary(mock_single_mid, false, cfg)
+assert(single_mid_summary == "... 1 more action (1 read) ...", "Got: " .. single_mid_summary)
+
+local mid_open_summary = render.format_middle_actions_summary(mock_middle_groups, true, cfg)
+assert(mid_open_summary:find("%(<CR> to collapse%)"), "Open middle actions should include collapse hint: " .. mid_open_summary)
+
+-- 14c. Test live streaming with 6 distinct milestone groups (> 4 max visible)
+local live_buf14 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf14, file = "agy://test-conv-middle-actions" })
+local state14 = protocol.buffers[live_buf14]
+local session14 = state14.session
+
+local test_steps = {
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f1.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git status" } },
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f2.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "make test" } },
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f3.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git diff" } },
+}
+
+for _, step in ipairs(test_steps) do
+  session14.on_step_update(session14, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "ACTIVE",
+    tool_info = { parameters = step.params },
+  })
+  session14.on_step_update(session14, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "DONE",
+    duration_seconds = 0.2,
+    tool_info = { parameters = step.params, output = "ok" },
+  })
+end
+
+local lines14 = vim.api.nvim_buf_get_lines(live_buf14, 0, -1, false)
+
+-- Head groups (first 2 groups) must be visible:
+local found_head_1 = false
+local found_head_2 = false
+-- Middle summary line must be visible:
+local found_mid_summary = false
+-- Tail groups (last 2 groups) must be visible:
+local found_tail_1 = false
+local found_tail_2 = false
+
+-- Groups 3 and 4 should be collapsed (NOT directly visible as individual headers):
+local found_mid_g3_header = false
+local found_mid_g4_header = false
+
+local mid_line_idx = nil
+
+for idx, l in ipairs(lines14) do
+  if l:find("^● Explored 1 file %(f1%.lua%)") then found_head_1 = true end
+  if l:find("^● Ran %(git status%)") then found_head_2 = true end
+  if l:find("^%.%.%. 2 more actions %(1 read, 1 command%) %.%.%.$") then
+    found_mid_summary = true
+    mid_line_idx = idx - 1 -- 0-indexed
+  end
+  if l:find("^● Explored 1 file %(f3%.lua%)") then found_tail_1 = true end
+  if l:find("^● Ran %(git diff%)") then found_tail_2 = true end
+  if l:find("^● Explored 1 file %(f2%.lua%)") then found_mid_g3_header = true end
+  if l:find("^● Ran %(make test%)") then found_mid_g4_header = true end
+end
+
+assert(found_head_1, "Head group 1 must be visible: " .. vim.inspect(lines14))
+assert(found_head_2, "Head group 2 must be visible: " .. vim.inspect(lines14))
+assert(found_mid_summary, "Middle actions summary must be visible: " .. vim.inspect(lines14))
+assert(found_tail_1, "Tail group 1 must be visible: " .. vim.inspect(lines14))
+assert(found_tail_2, "Tail group 2 must be visible: " .. vim.inspect(lines14))
+assert(not found_mid_g3_header, "Group 3 must be collapsed into middle summary: " .. vim.inspect(lines14))
+assert(not found_mid_g4_header, "Group 4 must be collapsed into middle summary: " .. vim.inspect(lines14))
+
+-- 14d. Test interactive toggle on the middle summary line
+assert(mid_line_idx ~= nil, "mid_line_idx must be known")
+local win14 = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_buf(win14, live_buf14)
+vim.api.nvim_win_set_cursor(win14, { mid_line_idx + 1, 0 })
+
+local toggled_mid_open = protocol.toggle_work_group_at_cursor(live_buf14)
+assert(toggled_mid_open, "Toggling middle actions should succeed")
+
+local lines14_expanded = vim.api.nvim_buf_get_lines(live_buf14, 0, -1, false)
+local found_g3_expanded = false
+local found_g4_expanded = false
+for _, l in ipairs(lines14_expanded) do
+  if l:find("^● Explored 1 file %(f2%.lua%)") then found_g3_expanded = true end
+  if l:find("^● Ran %(make test%)") then found_g4_expanded = true end
+end
+assert(found_g3_expanded, "Expanded middle actions must show Group 3 header: " .. vim.inspect(lines14_expanded))
+assert(found_g4_expanded, "Expanded middle actions must show Group 4 header: " .. vim.inspect(lines14_expanded))
+
+-- Re-collapse middle actions
+vim.api.nvim_win_set_cursor(win14, { mid_line_idx + 1, 0 })
+local toggled_mid_close = protocol.toggle_work_group_at_cursor(live_buf14)
+assert(toggled_mid_close, "Re-collapsing middle actions should succeed")
+
+local lines14_recollapsed = vim.api.nvim_buf_get_lines(live_buf14, 0, -1, false)
+local found_g3_recol = false
+local found_g4_recol = false
+for _, l in ipairs(lines14_recollapsed) do
+  if l:find("^● Explored 1 file %(f2%.lua%)") then found_g3_recol = true end
+  if l:find("^● Ran %(make test%)") then found_g4_recol = true end
+end
+assert(not found_g3_recol, "Re-collapsed middle actions must hide Group 3: " .. vim.inspect(lines14_recollapsed))
+assert(not found_g4_recol, "Re-collapsed middle actions must hide Group 4: " .. vim.inspect(lines14_recollapsed))
+
+-- 14e. Test transcript replay with 6 tool steps in a turn
+local t14_buf = vim.api.nvim_create_buf(false, false)
+local t14_steps = {
+  { type = "USER_INPUT", content = "Run many actions", created_at = "2026-10-06T10:00:00Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "view_file", args = { AbsolutePath = "f1.lua" }, output = "ok", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:01Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "run_command", args = { CommandLine = "git status" }, output = "clean", duration_seconds = 0.2 } }, created_at = "2026-10-06T10:00:02Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "view_file", args = { AbsolutePath = "f2.lua" }, output = "ok", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:03Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "run_command", args = { CommandLine = "make test" }, output = "passed", duration_seconds = 0.3 } }, created_at = "2026-10-06T10:00:04Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "view_file", args = { AbsolutePath = "f3.lua" }, output = "ok", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:05Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "run_command", args = { CommandLine = "git diff" }, output = "none", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:06Z" },
+  { type = "PLANNER_RESPONSE", content = "All 6 actions done.", created_at = "2026-10-06T10:00:07Z" },
+}
+
+local _, _, _, t14_groups, t14_mid_list = render.render_transcript(t14_buf, "test-conv-replay-mid", t14_steps, cfg)
+local t14_lines = vim.api.nvim_buf_get_lines(t14_buf, 0, -1, false)
+local found_t14_mid = false
+for _, l in ipairs(t14_lines) do
+  if l:find("^%.%.%. 2 more actions %(1 read, 1 command%) %.%.%.$") then
+    found_t14_mid = true
+  end
+end
+assert(found_t14_mid, "Transcript replay must collapse middle actions: " .. vim.inspect(t14_lines))
+assert(t14_mid_list and #t14_mid_list >= 1, "Transcript replay must return middle_actions_list")
+
+print("✓ Middle actions collapsing and single command format verified")
+
+-- Reset config back to clean defaults
+config_mod.setup()
+
+print("\nALL COLLAPSIBLE NAMED TOOL GROUPS TESTS PASSED PERFECTLY!")

@@ -14,6 +14,8 @@ local M = {}
 ---@field auto_scroll? boolean Automatically scroll to bottom as streaming responses arrive (default: true)
 ---@field fold_tool_output? boolean Automatically fold verbose tool output blocks (deprecated, default: false)
 ---@field collapse_work? boolean Automatically collapse tool & thought groups into summary headers (default: true)
+---@field verbosity? "high" | "medium" | "low" Tool execution & thought verbosity (default: "medium")
+---@field max_visible_actions? number Maximum number of visible action groups per turn before middle actions collapse (default: 4)
 ---@field wrap? boolean Enable line wrapping in agy buffers (default: true)
 ---@field linebreak? boolean Enable linebreak in agy buffers (default: true)
 ---@field conceallevel? number Markdown conceallevel in agy buffers (default: 2)
@@ -80,6 +82,10 @@ local M = {}
 ---@field step_line? string Icon for connecting line in question progression (default: "─")
 ---@field work_collapsed? string Icon for collapsed work group (default: "▶")
 ---@field work_expanded? string Icon for expanded work group (default: "▼")
+---@field group_completed? string Bullet icon for completed named tool group (default: "●")
+---@field group_running? string Bullet icon for running named tool group (default: "●")
+---@field middle_dot? string Middle dot separator for group details (default: "·")
+---@field multiply? string Multiplication symbol for repeated commands (default: "×")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -117,6 +123,10 @@ M.defaults = {
 		write_to_file = " ",
 		work_collapsed = "▶",
 		work_expanded = "▼",
+		group_completed = "●",
+		group_running = "●",
+		middle_dot = "·",
+		multiply = "×",
 		spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
 		table = {
 			top_left = "╭",
@@ -163,6 +173,8 @@ M.defaults = {
 		auto_scroll = true,
 		fold_tool_output = false,
 		collapse_work = true,
+		verbosity = "medium",
+		max_visible_actions = 4,
 		wrap = true,
 		linebreak = true,
 		conceallevel = 0,
@@ -207,11 +219,29 @@ function M.setup(opts)
 				"agy config: 'ui.render_markdown' must be a function"
 			)
 		end
+		if opts.ui and opts.ui.verbosity ~= nil then
+			assert(
+				opts.ui.verbosity == "high" or opts.ui.verbosity == "medium" or opts.ui.verbosity == "low",
+				"agy config: 'ui.verbosity' must be 'high', 'medium', or 'low'"
+			)
+		end
+		if opts.ui and opts.ui.max_visible_actions ~= nil then
+			assert(
+				type(opts.ui.max_visible_actions) == "number" and opts.ui.max_visible_actions >= 2,
+				"agy config: 'ui.max_visible_actions' must be a number >= 2"
+			)
+		end
 		if opts.ui and opts.ui.collapse_work ~= nil then
 			assert(
 				type(opts.ui.collapse_work) == "boolean",
 				"agy config: 'ui.collapse_work' must be a boolean"
 			)
+			if opts.ui.collapse_work == false and opts.ui.verbosity == nil then
+				opts.ui.verbosity = "high"
+			end
+		end
+		if opts.ui and opts.ui.verbosity == "high" and opts.ui.collapse_work == nil then
+			opts.ui.collapse_work = false
 		end
 		M.values = vim.tbl_deep_extend("force", M.defaults, opts)
 	else

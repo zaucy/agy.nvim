@@ -37,10 +37,11 @@ M._internal_guard = false
 function M.with_modifiable(buf, fn)
   local old_guard = M._internal_guard
   M._internal_guard = true
-  local prev = vim.bo[buf].modifiable
   vim.bo[buf].modifiable = true
   local ok, res = pcall(fn)
-  M.update_modifiable(buf)
+  if not old_guard then
+    M.update_modifiable(buf)
+  end
   M._internal_guard = old_guard
   if not ok then
     error(res)
@@ -843,13 +844,38 @@ function M.check_and_render_pending_thoughts(buf)
         end
 
         M.with_modifiable(buf, function()
-          local tc_rec = render.append_thought_block(buf, step.thinking, dur, state.config)
-          tc_rec.id = #state.tool_calls + 1
-          table.insert(state.tool_calls, tc_rec)
-          M.add_item_to_current_work_group(buf, tc_rec)
-          M.ensure_prompt_line(buf)
-          if state.follow_bottom then
-            render.scroll_to_bottom(buf, true)
+          local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
+          if state.config and state.config.ui and state.config.ui.collapse_work == false then
+            verbosity = "high"
+          end
+
+          if verbosity == "medium" and state.current_work_group and state.current_work_group.header_extmark_id and not state.current_work_group.is_open then
+            local t_icon = (state.config and state.config.icons and state.config.icons.thought) or "💭"
+            local dur_str = (dur and dur > 0) and string.format(" %s", utils.format_duration(dur)) or ""
+            local child_line = string.format("%s Thought%s", t_icon, dur_str)
+            local tc_rec = {
+              id = #state.tool_calls + 1,
+              is_thought = true,
+              thinking = step.thinking,
+              duration_seconds = dur,
+              _in_work_group = true,
+            }
+            table.insert(state.tool_calls, tc_rec)
+            table.insert(state.current_work_group.items, tc_rec)
+            table.insert(state.current_work_group.child_lines, child_line)
+            if dur and dur > 0 then
+              state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + dur
+            end
+            render.update_named_group_header(buf, state.current_work_group, state.config, state.current_work_group.is_running or false)
+          else
+            local tc_rec = render.append_thought_block(buf, step.thinking, dur, state.config)
+            tc_rec.id = #state.tool_calls + 1
+            table.insert(state.tool_calls, tc_rec)
+            M.add_item_to_current_work_group(buf, tc_rec)
+            M.ensure_prompt_line(buf)
+            if state.follow_bottom then
+              render.scroll_to_bottom(buf, true)
+            end
           end
         end)
       end
@@ -1832,6 +1858,9 @@ function M.handle_write(buf)
   state.reengage_follow_bottom = nil
   state.current_work_group = nil
   state.work_groups = state.work_groups or {}
+  state.turn_work_groups = {}
+  state.middle_actions = nil
+  state.active_tool_status_text = nil
 
   M.with_modifiable(buf, function()
     -- Prepare buffer: append agent response placeholder and active thinking divider
@@ -2154,18 +2183,43 @@ function M.add_item_to_current_work_group(buf, item)
   local state = M.buffers[buf]
   if not state then return end
   state.work_groups = state.work_groups or {}
+
+  local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
+  if state.config and state.config.ui and state.config.ui.collapse_work == false then
+    verbosity = "high"
+  end
+
+  local is_thought = item.is_thought
+  local cat = (verbosity == "medium" and not is_thought) and render.get_tool_category(item.tool_name) or nil
+
+  if verbosity == "medium" and is_thought and not state.current_work_group then
+    return
+  end
+
+  if state.current_work_group and cat and state.current_work_group.category and state.current_work_group.category ~= cat then
+    M.collapse_active_work_group(buf)
+  end
+
   if not state.current_work_group then
     state.current_work_group = {
       id = #state.work_groups + 1,
-      is_open = true,
+      category = cat,
+      is_open = false,
       start_time = vim.uv.hrtime(),
       duration_seconds = 0,
       items = {},
+      child_lines = {},
     }
+  elseif cat and not state.current_work_group.category then
+    state.current_work_group.category = cat
   end
   table.insert(state.current_work_group.items, item)
   if item.duration_seconds and item.duration_seconds > 0 then
     state.current_work_group.duration_seconds = state.current_work_group.duration_seconds + item.duration_seconds
+  end
+
+  if verbosity == "medium" and state.current_work_group.header_extmark_id then
+    render.update_named_group_header(buf, state.current_work_group, state.config, state.current_work_group.is_running or false)
   end
 end
 
@@ -2179,7 +2233,8 @@ function M.collapse_active_work_group(buf)
     state.current_work_group = nil
     return
   end
-  if state.config and state.config.ui and state.config.ui.collapse_work == false then
+  local is_high = state.config and state.config.ui and (state.config.ui.verbosity == "high" or state.config.ui.collapse_work == false)
+  if is_high then
     table.insert(state.work_groups, group)
     state.current_work_group = nil
     return
@@ -2193,7 +2248,19 @@ function M.collapse_active_work_group(buf)
   group.duration_seconds = math.max(0.1, dur)
 
   M.with_modifiable(buf, function()
-    render.collapse_work_group_in_place(buf, group, state.config)
+    if group.category and group.header_extmark_id then
+      group.is_running = false
+      render.update_named_group_header(buf, group, state.config, false)
+      render.reconcile_middle_actions(buf, state, state.config)
+      if state.middle_actions then
+        state.middle_actions_list = state.middle_actions_list or {}
+        if not vim.tbl_contains(state.middle_actions_list, state.middle_actions) then
+          table.insert(state.middle_actions_list, state.middle_actions)
+        end
+      end
+    else
+      render.collapse_work_group_in_place(buf, group, state.config)
+    end
     M.ensure_prompt_line(buf)
     if state.follow_bottom then
       render.scroll_to_bottom(buf, true)
@@ -2209,7 +2276,16 @@ end
 ---@return boolean handled
 function M.toggle_work_group_at_cursor(buf)
   local state = M.buffers[buf]
-  if not state or not state.work_groups or #state.work_groups == 0 then return false end
+  if not state then return false end
+  local groups = {}
+  if state.work_groups then
+    for _, g in ipairs(state.work_groups) do
+      table.insert(groups, g)
+    end
+  end
+  if state.current_work_group then
+    table.insert(groups, state.current_work_group)
+  end
 
   local cur_win = vim.api.nvim_get_current_win()
   if vim.api.nvim_win_get_buf(cur_win) ~= buf then
@@ -2219,7 +2295,34 @@ function M.toggle_work_group_at_cursor(buf)
 
   local cur_row = vim.api.nvim_win_get_cursor(cur_win)[1] - 1 -- 0-indexed
 
-  for _, group in ipairs(state.work_groups) do
+  local mid_list = state.middle_actions_list or {}
+  if state.middle_actions and not vim.tbl_contains(mid_list, state.middle_actions) then
+    table.insert(mid_list, state.middle_actions)
+  end
+  for _, mid in ipairs(mid_list) do
+    if mid.extmark_id then
+      local pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, mid.extmark_id, {})
+      if pos and #pos >= 1 and pos[1] == cur_row then
+        M.with_modifiable(buf, function()
+          render.toggle_middle_actions(buf, state, mid, state.config)
+          M.ensure_prompt_line(buf)
+          M.update_prompt_divider(buf)
+          M.update_footer(buf)
+        end)
+        M.update_modifiable(buf)
+        return true
+      end
+    end
+    if mid.is_open and mid.groups then
+      for _, g in ipairs(mid.groups) do
+        table.insert(groups, g)
+      end
+    end
+  end
+
+  if #groups == 0 then return false end
+
+  for _, group in ipairs(groups) do
     if group.header_extmark_id then
       local pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, group.header_extmark_id, {})
       if pos and #pos >= 1 then
@@ -2433,18 +2536,19 @@ function M.handle_buf_read(args)
     vim.bo[buf].bufhidden = "hide"
 
     local steps = nil
-    local prompt_line, prompt_ext_id, tool_calls, work_groups
+    local prompt_line, prompt_ext_id, tool_calls, work_groups, middle_actions
     M.with_modifiable(buf, function()
       if target_id == "" or target_id == "new" then
         prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
         tool_calls = {}
         work_groups = {}
+        middle_actions = {}
       else
         steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
         local ws = existing_state.workspaces
           or (existing_state.session and (existing_state.session.workspaces or existing_state.session.cwd))
           or vim.fn.getcwd()
-        prompt_line, prompt_ext_id, tool_calls, work_groups = render.render_transcript(buf, target_id, steps, cfg, ws)
+        prompt_line, prompt_ext_id, tool_calls, work_groups, middle_actions = render.render_transcript(buf, target_id, steps, cfg, ws)
       end
     end)
 
@@ -2452,6 +2556,7 @@ function M.handle_buf_read(args)
     existing_state.prompt_extmark_id = prompt_ext_id
     existing_state.tool_calls = tool_calls or {}
     existing_state.work_groups = work_groups or {}
+    existing_state.middle_actions_list = middle_actions or {}
     existing_state.current_work_group = nil
     existing_state.active_tool_record = nil
     existing_state.footer_extmark_id = nil
@@ -2539,7 +2644,7 @@ function M.handle_buf_read(args)
   M._setup_buffer(buf, conv_id)
 
   local is_new = (conv_id == "new")
-  local prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups
+  local prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups, initial_middle_actions
   local rendered_thinking = {}
 
   local workspaces = nil
@@ -2581,6 +2686,7 @@ function M.handle_buf_read(args)
       prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
       initial_tool_calls = {}
       initial_work_groups = {}
+      initial_middle_actions = {}
     else
       for idx, s in ipairs(steps) do
         if s.type == "PLANNER_RESPONSE" and s.thinking and s.thinking ~= "" then
@@ -2588,7 +2694,7 @@ function M.handle_buf_read(args)
           rendered_thinking[key] = true
         end
       end
-      prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups = render.render_transcript(buf, conv_id, steps, cfg, render_workspaces)
+      prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups, initial_middle_actions = render.render_transcript(buf, conv_id, steps, cfg, render_workspaces)
     end
   end)
 
@@ -2627,6 +2733,7 @@ function M.handle_buf_read(args)
     workspaces = render_workspaces,
     tool_calls = initial_tool_calls or {},
     work_groups = initial_work_groups or {},
+    middle_actions_list = initial_middle_actions or {},
     current_work_group = nil,
     active_tool_record = nil,
     rendered_thinking = rendered_thinking,
@@ -2764,7 +2871,7 @@ function M.handle_buf_read(args)
         end
 
         if step.state == "ACTIVE" then
-          local tool_name = step.tool_name or (step.tool_info and step.tool_info.name)
+          local tool_name = step.tool_name or (step.tool_info and step.tool_info.name) or "tool"
           local is_feedback, fname, summary = check_artifact_feedback_request(tool_name, step.tool_info and step.tool_info.parameters)
           if is_feedback then
             state.pending_artifact_feedback = {
@@ -2776,29 +2883,153 @@ function M.handle_buf_read(args)
           M.reconcile_background_tasks(buf, state, state.conversation_id)
           M.handle_post_task_bottom_visibility(buf, state)
           M.check_and_render_pending_thoughts(buf)
-          state.stream_info.status = "tool:" .. (step.tool_name or "tool")
+          state.stream_info.status = "tool:" .. tool_name
+          local status_text = render.get_tool_status_text(tool_name)
+          state.active_tool_status_text = status_text
+          render.update_thinking_status(buf, status_text, state.config)
           M.update_footer(buf)
           M.with_modifiable(buf, function()
             local ws = (state.workspaces and #state.workspaces > 0) and state.workspaces or ((s.workspaces and #s.workspaces > 0) and s.workspaces or s.cwd)
-            local tool_line, ext_id, param_str = render.append_tool_call(buf, step.tool_name or "tool", step.tool_info and step.tool_info.parameters, ws, state.config)
-            local tool_rec = {
-              id = #state.tool_calls + 1,
-              buf = buf,
-              tool_name = step.tool_name or "tool",
-              params = step.tool_info and step.tool_info.parameters,
-              param_str = param_str,
-              output = nil,
-              duration_seconds = nil,
-              start_time = vim.uv.hrtime(),
-              status = "running",
-              is_open = false,
-              header_extmark_id = ext_id,
-              header_line_idx = tool_line,
-              output_lines_count = 0,
-            }
-            table.insert(state.tool_calls, tool_rec)
-            state.active_tool_record = tool_rec
-            M.add_item_to_current_work_group(buf, tool_rec)
+            local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
+            if state.config and state.config.ui and state.config.ui.collapse_work == false then
+              verbosity = "high"
+            end
+
+            if verbosity == "medium" then
+              local cat = render.get_tool_category(tool_name)
+              if state.current_work_group and state.current_work_group.category and state.current_work_group.category ~= cat then
+                M.collapse_active_work_group(buf)
+              end
+
+              local param_str = render.format_tool_params(step.tool_info and step.tool_info.parameters, ws)
+              local child_line = render.format_child_tool_line(tool_name, step.tool_info and step.tool_info.parameters, ws, state.config)
+              local tool_rec = {
+                id = #state.tool_calls + 1,
+                buf = buf,
+                tool_name = tool_name,
+                params = step.tool_info and step.tool_info.parameters,
+                param_str = param_str,
+                output = nil,
+                duration_seconds = nil,
+                start_time = vim.uv.hrtime(),
+                status = "running",
+                is_open = false,
+                header_extmark_id = nil,
+                header_line_idx = nil,
+                output_lines_count = 0,
+              }
+              table.insert(state.tool_calls, tool_rec)
+              state.active_tool_record = tool_rec
+
+              if not state.current_work_group or not state.current_work_group.header_extmark_id then
+                -- Check for preceding thoughts from this turn to absorb
+                local preceding_thoughts = {}
+                local thought_lines = {}
+                local min_thought_row = nil
+                local max_thought_row = nil
+                for i = #state.tool_calls - 1, 1, -1 do
+                  local prev_it = state.tool_calls[i]
+                  if prev_it and prev_it.is_thought and not prev_it._in_work_group then
+                    table.insert(preceding_thoughts, 1, prev_it)
+                    local t_icon = state.config.icons and state.config.icons.thought or "💭"
+                    table.insert(thought_lines, 1, string.format("%s Thought", t_icon))
+                    if prev_it.header_line_idx then
+                      if not min_thought_row or prev_it.header_line_idx < min_thought_row then
+                        min_thought_row = prev_it.header_line_idx
+                      end
+                      if not max_thought_row or prev_it.header_line_idx > max_thought_row then
+                        max_thought_row = prev_it.header_line_idx
+                      end
+                    end
+                  else
+                    break
+                  end
+                end
+
+                local items = {}
+                local child_lines = {}
+                if state.current_work_group and state.current_work_group.items then
+                  for _, it in ipairs(state.current_work_group.items) do
+                    table.insert(items, it)
+                  end
+                end
+                for _, pt in ipairs(preceding_thoughts) do
+                  pt._in_work_group = true
+                  local already = false
+                  for _, existing in ipairs(items) do
+                    if existing == pt then already = true break end
+                  end
+                  if not already then
+                    table.insert(items, pt)
+                  end
+                  if pt.header_extmark_id then
+                    pcall(vim.api.nvim_buf_del_extmark, buf, render.NS_UI, pt.header_extmark_id)
+                  end
+                end
+                for _, tl in ipairs(thought_lines) do
+                  table.insert(child_lines, tl)
+                end
+                table.insert(items, tool_rec)
+                table.insert(child_lines, child_line)
+
+                state.current_work_group = {
+                  id = (state.work_groups and #state.work_groups or 0) + 1,
+                  category = cat,
+                  is_open = false,
+                  is_running = true,
+                  start_time = vim.uv.hrtime(),
+                  duration_seconds = 0,
+                  items = items,
+                  child_lines = child_lines,
+                }
+                state.turn_work_groups = state.turn_work_groups or {}
+                table.insert(state.turn_work_groups, state.current_work_group)
+                local header_text = render.format_named_group_header(state.current_work_group, false, true, state.config)
+
+                local target_row, ext_id
+                if min_thought_row and max_thought_row then
+                  vim.api.nvim_buf_set_lines(buf, min_thought_row, max_thought_row + 1, false, { header_text })
+                  ext_id = render.set_work_group_header_extmark(buf, min_thought_row, header_text, state.config, nil, true)
+                  target_row = min_thought_row
+                else
+                  target_row, ext_id = render.insert_named_group_header(buf, header_text, state.config, true)
+                end
+
+                state.current_work_group.header_line_idx = target_row
+                state.current_work_group.header_extmark_id = ext_id
+                tool_rec.header_line_idx = target_row
+                tool_rec.header_extmark_id = ext_id
+                render.reconcile_middle_actions(buf, state, state.config)
+              else
+                table.insert(state.current_work_group.items, tool_rec)
+                table.insert(state.current_work_group.child_lines, child_line)
+                state.current_work_group.is_running = true
+                render.update_named_group_header(buf, state.current_work_group, state.config, true)
+                tool_rec.header_line_idx = state.current_work_group.header_line_idx
+                tool_rec.header_extmark_id = state.current_work_group.header_extmark_id
+              end
+            else
+              local tool_line, ext_id, param_str = render.append_tool_call(buf, tool_name, step.tool_info and step.tool_info.parameters, ws, state.config)
+              local tool_rec = {
+                id = #state.tool_calls + 1,
+                buf = buf,
+                tool_name = tool_name,
+                params = step.tool_info and step.tool_info.parameters,
+                param_str = param_str,
+                output = nil,
+                duration_seconds = nil,
+                start_time = vim.uv.hrtime(),
+                status = "running",
+                is_open = false,
+                header_extmark_id = ext_id,
+                header_line_idx = tool_line,
+                output_lines_count = 0,
+              }
+              table.insert(state.tool_calls, tool_rec)
+              state.active_tool_record = tool_rec
+              M.add_item_to_current_work_group(buf, tool_rec)
+            end
+
             M.ensure_prompt_line(buf)
             if state.follow_bottom then
               render.scroll_to_bottom(buf, true)
@@ -2808,13 +3039,13 @@ function M.handle_buf_read(args)
         elseif step.state == "DONE" then
           local is_feedback = false
           local fname, summary
+          local tool_name = step.tool_name or (step.tool_info and step.tool_info.name) or "tool"
           if state.pending_artifact_feedback then
             is_feedback = true
             fname = state.pending_artifact_feedback.filename
             summary = state.pending_artifact_feedback.summary
             state.pending_artifact_feedback = nil
           else
-            local tool_name = step.tool_name or (step.tool_info and step.tool_info.name)
             is_feedback, fname, summary = check_artifact_feedback_request(tool_name, step.tool_info and step.tool_info.parameters)
           end
 
@@ -2822,16 +3053,40 @@ function M.handle_buf_read(args)
             state.stream_info.status = "thinking"
             state.last_thought_start_time = vim.uv.hrtime()
           end
+          state.active_tool_status_text = nil
+          render.update_thinking_status(buf, nil, state.config)
           M.update_footer(buf)
           if state.active_tool_record then
             M.with_modifiable(buf, function()
-              render.complete_tool_call(buf, state.active_tool_record, step.duration_seconds, step.tool_info and step.tool_info.output, state.config)
-              if state.active_tool_record and state.active_tool_record.is_background_task then
-                state.had_background_task = true
+              local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
+              if state.config and state.config.ui and state.config.ui.collapse_work == false then
+                verbosity = "high"
               end
-              if state.current_work_group and step.duration_seconds and step.duration_seconds > 0 then
-                state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + step.duration_seconds
+
+              if verbosity == "medium" and state.current_work_group and state.current_work_group.header_extmark_id then
+                state.active_tool_record.status = "done"
+                state.active_tool_record.duration_seconds = step.duration_seconds
+                state.active_tool_record.output = step.tool_info and step.tool_info.output
+                if state.active_tool_record.is_background_task then
+                  state.had_background_task = true
+                end
+                if step.duration_seconds and step.duration_seconds > 0 then
+                  state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + step.duration_seconds
+                end
+
+                state.current_work_group.is_running = false
+                render.update_named_group_header(buf, state.current_work_group, state.config, false)
+                render.reconcile_middle_actions(buf, state, state.config)
+              else
+                render.complete_tool_call(buf, state.active_tool_record, step.duration_seconds, step.tool_info and step.tool_info.output, state.config)
+                if state.active_tool_record and state.active_tool_record.is_background_task then
+                  state.had_background_task = true
+                end
+                if state.current_work_group and step.duration_seconds and step.duration_seconds > 0 then
+                  state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + step.duration_seconds
+                end
               end
+
               M.ensure_prompt_line(buf)
               if state.follow_bottom then
                 render.scroll_to_bottom(buf, true)
@@ -2847,7 +3102,7 @@ function M.handle_buf_read(args)
           end
 
           -- Handle manage_task with Action == "kill"
-          if step.tool_name == "manage_task" and step.tool_info and step.tool_info.parameters then
+          if tool_name == "manage_task" and step.tool_info and step.tool_info.parameters then
             local p = step.tool_info.parameters
             if p.Action == "kill" and p.TaskId then
               local tasks_mod = require("agy.tasks")
