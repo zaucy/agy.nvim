@@ -283,13 +283,18 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             link = "🔗",
             upper_block = "▀",       -- Upper half block for inverted V logo
             lower_block = "▄",       -- Lower half block for inverted V logo
+            group_completed = "●",   -- Bullet icon for completed named tool group
+            group_running = "●",     -- Bullet icon for actively running named tool group
+            middle_dot = "·",        -- Middle dot separator in tool details
+            multiply = "×",          -- Multiplication symbol for repeated commands
         },
 
         -- UI settings
         ui = {
             virtual_text = true,     -- Show live badges for status & tools
             auto_scroll = true,      -- Follow streaming response
-            collapse_work = true,    -- Auto-collapse tools and thoughts into 'Worked for X seconds' groups
+            collapse_work = true,    -- Auto-collapse tools and thoughts (legacy alias for verbosity)
+            verbosity = "medium",    -- Tool verbosity: "medium" (named groups), "high" (full output), "low" (compact)
             wrap = true,             -- Line wrapping
             linebreak = true,        -- Break lines at word boundaries
             conceallevel = 2,        -- Conceal markdown syntax characters
@@ -309,9 +314,16 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
 
 Highlight Groups:                                              *agy-highlights*
 The following highlight groups are used for styling and can be customized:
-- `AgyHeaderTitle`: Bold title on header banner line 1 (e.g. "Antigravity CLI 1.2.8").
+- `AgyHeaderTitle`: Bold title on header banner line 1 (e.g. "Antigravity CLI 1.3.0").
 - `AgyHeaderSub`: Secondary text on header banner line 2 (e.g. "agy://<conversation_id>").
-- `AgyWorkHeader`: Header title for 'Worked for X seconds' collapsible work groups.
+- `AgyWorkHeader`: Header title for collapsible work groups.
+- `AgyGroupCompleted`: Bullet marker for completed named tool groups (green).
+- `AgyGroupRunning`: Bullet marker for running named tool groups (amber).
+- `AgyGroupVerb`: Highlight for action verbs (e.g. "Explored", "Ran", "Exploring").
+- `AgyGroupCount`: Highlight for item counts (e.g. "3 files", "10 commands").
+- `AgyGroupDetails`: Dimmed/comment highlight for group details inside parentheses.
+- `AgyGroupFailed`: Highlight for failed command indicator (": failed").
+- `AgyGroupHint`: Subtle hint highlight for expansion keybindings (e.g. "(<CR> to expand)").
 - `AgyPromptArea`: Background for active prompt input area.
 - `AgyUserSign`: User sign column icon highlight.
 - `AgyToolInline`: Subtle background for inline tool details and virtual lines.

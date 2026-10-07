@@ -14,6 +14,7 @@ local cfg = config_mod.setup()
 assert(cfg.icons.work_collapsed == "▶", "Default work_collapsed icon should be '▶'")
 assert(cfg.icons.work_expanded == "▼", "Default work_expanded icon should be '▼'")
 assert(cfg.ui.collapse_work == true, "Default ui.collapse_work should be true")
+assert(cfg.ui.verbosity == "medium", "Default ui.verbosity should be 'medium'")
 
 -- Test type check assertion on collapse_work
 local ok_bad, err_bad = pcall(function()
@@ -295,9 +296,11 @@ assert(tl4.win == nil, "Child tool inline window should be destroyed")
 print("✓ Child tool output preview and automatic cleanup on group collapse verified")
 
 -- =========================================================================
--- TEST 6: render_transcript with default collapse_work = true
+-- TEST 6: render_transcript with verbosity = "low" (legacy duration work groups)
 -- =========================================================================
-print("\n[Test 6] Testing render_transcript default collapse_work = true...")
+print("\n[Test 6] Testing render_transcript with verbosity = 'low'...")
+
+cfg = config_mod.setup({ ui = { verbosity = "low" } })
 
 local steps = {
   { type = "USER_INPUT", content = "Run tests please" },
@@ -558,8 +561,8 @@ assert(has_raw_run, "run_command should be rendered directly when collapse_work 
 
 print("✓ ui.collapse_work = false successfully leaves all tools and thoughts expanded")
 
--- Reset config back to clean defaults after test 9
-cfg = config_mod.setup()
+-- Reset config to low verbosity for single-item duration group tests
+cfg = config_mod.setup({ ui = { verbosity = "low" } })
 
 -- =========================================================================
 -- TEST 10: Single item in work group is not collapsed (shows item directly)
@@ -846,11 +849,11 @@ for i, l in ipairs(live11_lines) do
 end
 local found_header11 = false
 for _, l in ipairs(live11_lines) do
-  if l:find("Worked for") and l:find("tools") then
+  if (l:find("Worked for") or l:find("Ran %d+ commands")) and (l:find("tools") or l:find("commands")) then
     found_header11 = true
   end
 end
-assert(found_header11, "Live buffer must contain collapsed '▶ Worked for ... (2 tools)' header")
+assert(found_header11, "Live buffer must contain collapsed tool group header")
 print("✓ Live streaming with intermediate agent_response steps properly creates collapsed work group")
 
 -- Reset config back to clean defaults

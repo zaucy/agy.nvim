@@ -157,6 +157,19 @@ local function get_work_icons(cfg)
 	return collapsed, expanded
 end
 
+local function get_group_icons(cfg)
+	local icons = get_icons(cfg)
+	local completed = icons.group_completed
+	local running = icons.group_running
+	local middle_dot = icons.middle_dot
+	local multiply = icons.multiply
+	assert(completed, "agy config: icon 'group_completed' is not defined in config.icons")
+	assert(running, "agy config: icon 'group_running' is not defined in config.icons")
+	assert(middle_dot, "agy config: icon 'middle_dot' is not defined in config.icons")
+	assert(multiply, "agy config: icon 'multiply' is not defined in config.icons")
+	return completed, running, middle_dot, multiply
+end
+
 local function get_logo_row_info(r, cfg)
 	local upper, lower = get_block_icons(cfg)
 	local top_row = LOGO_PIXELS[r * 2 + 1] or {}
@@ -225,6 +238,14 @@ function M.setup_highlights()
 		AgyHistory = { default = true },
 		AgyToolHeader = { link = "Function", default = true, bold = true },
 		AgyWorkHeader = { link = "Function", default = true, bold = true },
+		AgyGroupCompleted = { link = "DiagnosticOk", default = true, bold = true },
+		AgyGroupRunning = { link = "DiagnosticWarn", default = true, bold = true },
+		AgyGroupVerb = { link = "Function", default = true, bold = true },
+		AgyGroupCount = { link = "Normal", default = true },
+		AgyGroupDetails = { link = "Comment", default = true },
+		AgyGroupFailed = { link = "DiagnosticError", default = true, bold = true },
+		AgyGroupHint = { link = "Comment", default = true },
+		AgyGroupSpinner = { link = "Special", default = true },
 		AgyToolBadge = { link = "Comment", default = true },
 		AgyTaskRunning = { link = "DiagnosticWarn", default = true, bold = true },
 		AgyTaskSuccess = { link = "DiagnosticOk", default = true, bold = true },
@@ -2080,7 +2101,8 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 				end
 			end
 		end
-		if config.ui and config.ui.collapse_work == false then
+		local is_high = config.ui and (config.ui.verbosity == "high" or config.ui.collapse_work == false)
+		if is_high then
 			table.insert(work_groups, current_work_group)
 			current_work_group = nil
 			return
@@ -2091,13 +2113,24 @@ function M.render_transcript(buf, conversation_id, steps, config, cwd)
 	end
 
 	local function add_to_current_work_group(item, step_created_at)
+		local verbosity = (config.ui and config.ui.verbosity) or "medium"
+		if config.ui and config.ui.collapse_work == false then
+			verbosity = "high"
+		end
+		local cat = (verbosity == "medium" and not item.is_thought) and M.get_tool_category(item.tool_name) or nil
+		if current_work_group and cat and current_work_group.category and current_work_group.category ~= cat then
+			collapse_current_work_group(step_created_at)
+		end
 		if not current_work_group then
 			current_work_group = {
 				id = #work_groups + 1,
+				category = cat,
 				is_open = true,
 				duration_seconds = 0,
 				items = {},
 			}
+		elseif cat and not current_work_group.category then
+			current_work_group.category = cat
 		end
 		table.insert(current_work_group.items, item)
 		if item.duration_seconds and item.duration_seconds > 0 then
@@ -3248,12 +3281,284 @@ function M.close_tool_window(state, tc)
 	end
 end
 
+---Determine semantic category for a tool name
+---@param tool_name? string
+---@return string category "explore" | "edit" | "command" | "search" | "browse" | "subagent" | "task" | "image" | "other"
+function M.get_tool_category(tool_name)
+	if not tool_name then return "other" end
+	local name = tool_name:lower()
+	if name == "view_file" or name == "read_file" or name == "list_dir" or name == "find_files"
+		or name == "file_search" or name == "read_directory" or name == "get_file" then
+		return "explore"
+	elseif name == "replace_file_content" or name == "write_to_file" or name == "edit_file"
+		or name == "notebook_edit" or name == "apply_diff" then
+		return "edit"
+	elseif name == "run_command" or name == "execute_command" or name == "terminal" or name == "shell" then
+		return "command"
+	elseif name == "search_web" or name == "code_search" or name == "search" or name == "web_search" then
+		return "search"
+	elseif name == "read_url_content" or name == "browser" or name == "browse" or name == "fetch_web_page"
+		or name == "read_browser_page" then
+		return "browse"
+	elseif name == "invoke_subagent" or name == "define_subagent" or name == "send_message"
+		or name == "manage_subagents" then
+		return "subagent"
+	elseif name == "schedule" or name == "manage_task" then
+		return "task"
+	elseif name == "image-generator" or name == "generate_image" then
+		return "image"
+	else
+		return "other"
+	end
+end
+
+local function get_file_target(item)
+	local params = item.params or item.args or {}
+	local path = params.AbsolutePath or params.TargetFile or params.target_file or params.path or params.file_path or params.file or item.param_str
+	if not path or path == "" then return "file" end
+	local base = path:match("([^/\\]+)$")
+	return (base and base ~= "") and base or path
+end
+
+local function get_command_target(item)
+	local params = item.params or item.args or {}
+	local cmd = params.CommandLine or params.cmd or params.command or item.param_str or ""
+	cmd = cmd:gsub("[\r\n]+", " "):gsub("%s+", " ")
+	cmd = vim.trim(cmd)
+	if #cmd > 28 then
+		cmd = cmd:sub(1, 25) .. "..."
+	end
+	local is_failed = (item.task_status == "failed") or (item.exit_code ~= nil and item.exit_code ~= 0)
+	return cmd, is_failed
+end
+
+local function format_command_items(items, cfg)
+	local _, _, middle_dot, multiply = get_group_icons(cfg)
+	local runs = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local cmd, failed = get_command_target(it)
+			if #runs > 0 and runs[#runs].cmd == cmd and runs[#runs].failed == failed then
+				runs[#runs].count = runs[#runs].count + 1
+			else
+				table.insert(runs, { cmd = cmd, failed = failed, count = 1 })
+			end
+		end
+	end
+
+	local formatted = {}
+	for _, run in ipairs(runs) do
+		local str = run.cmd
+		if run.failed then
+			str = str .. ": failed"
+		end
+		if run.count > 1 then
+			str = str .. " " .. multiply .. run.count
+		end
+		table.insert(formatted, str)
+	end
+
+	if #formatted == 0 then
+		return "()"
+	end
+
+	local sep = " " .. middle_dot .. " "
+	local detail = table.concat(formatted, sep)
+	if #detail > 100 then
+		detail = detail:sub(1, 97) .. "..."
+	end
+	return string.format("(%s)", detail)
+end
+
+local function format_search_items(items)
+	local queries = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local params = it.params or it.args or {}
+			local q = params.query or params.search_query or params.query_string or it.param_str or ""
+			q = vim.trim(q:gsub("[\r\n]+", " "):gsub("%s+", " "))
+			if #q > 55 then
+				q = q:sub(1, 52) .. "..."
+			end
+			if q ~= "" then
+				table.insert(queries, string.format('"%s"', q))
+			end
+		end
+	end
+	if #queries == 0 then return "" end
+	return string.format("(%s)", table.concat(queries, ", "))
+end
+
+local function format_browse_items(items)
+	local urls = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local params = it.params or it.args or {}
+			local url = params.Url or params.url or it.param_str or ""
+			url = vim.trim(url:gsub("[\r\n]+", " "))
+			if #url > 50 then
+				url = url:sub(1, 47) .. "..."
+			end
+			if url ~= "" then
+				table.insert(urls, url)
+			end
+		end
+	end
+	if #urls == 0 then return "" end
+	return string.format("(%s)", table.concat(urls, ", "))
+end
+
+local function format_subagent_items(items)
+	local names = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			local params = it.params or it.args or {}
+			local name = params.Role or params.TypeName or params.name or it.tool_name or "subagent"
+			table.insert(names, name)
+		end
+	end
+	if #names == 0 then return "" end
+	return string.format("(%s)", table.concat(names, ", "))
+end
+
+local function format_generic_items(items)
+	local names = {}
+	for _, it in ipairs(items) do
+		if not it.is_thought then
+			table.insert(names, it.tool_name or "tool")
+		end
+	end
+	if #names == 0 then return "" end
+	return string.format("(%s)", table.concat(names, ", "))
+end
+
+---Format the header text for a named semantic milestone group
+---@param group table AgyWorkGroup
+---@param is_open boolean
+---@param is_running? boolean
+---@param config? table
+---@return string header_text
+function M.format_named_group_header(group, is_open, is_running, config)
+	local cfg = get_config(config)
+	local col_bullet, run_bullet = get_group_icons(cfg)
+	local bullet = is_running and run_bullet or col_bullet
+
+	local category = group.category or "other"
+	local tool_count = 0
+	local thought_count = 0
+	for _, it in ipairs(group.items or {}) do
+		if it.is_thought then
+			thought_count = thought_count + 1
+		else
+			tool_count = tool_count + 1
+		end
+	end
+
+	if tool_count == 0 and thought_count > 0 then
+		local dur = group.duration_seconds
+		local dur_str = (dur and dur > 0) and utils.format_duration(dur) or "0.1s"
+		local verb = is_running and "Thinking" or "Thought"
+		return string.format("%s %s for %s", bullet, verb, dur_str)
+	end
+
+	local verb, singular_unit, plural_unit
+	if category == "explore" then
+		verb = is_running and "Exploring" or "Explored"
+		singular_unit = "file"
+		plural_unit = "files"
+	elseif category == "edit" then
+		verb = is_running and "Editing" or "Edited"
+		singular_unit = "file"
+		plural_unit = "files"
+	elseif category == "command" then
+		verb = is_running and "Running" or "Ran"
+		singular_unit = "command"
+		plural_unit = "commands"
+	elseif category == "search" then
+		verb = is_running and "Exploring" or "Explored"
+		singular_unit = "search"
+		plural_unit = "searches"
+	elseif category == "browse" then
+		verb = is_running and "Browsing" or "Browsed"
+		singular_unit = "page"
+		plural_unit = "pages"
+	elseif category == "subagent" then
+		verb = is_running and "Running" or "Ran"
+		singular_unit = "subagent"
+		plural_unit = "subagents"
+	elseif category == "task" then
+		verb = is_running and "Scheduling" or "Scheduled"
+		singular_unit = "task"
+		plural_unit = "tasks"
+	elseif category == "image" then
+		verb = is_running and "Generating" or "Generated"
+		singular_unit = "image"
+		plural_unit = "images"
+	else
+		verb = is_running and "Running" or "Ran"
+		singular_unit = "tool"
+		plural_unit = "tools"
+	end
+
+	local count_unit = (tool_count == 1) and (tool_count .. " " .. singular_unit) or (tool_count .. " " .. plural_unit)
+
+	local details = ""
+	if category == "explore" or category == "edit" then
+		local targets = {}
+		for _, it in ipairs(group.items or {}) do
+			if not it.is_thought then
+				table.insert(targets, get_file_target(it))
+			end
+		end
+		if #targets > 0 then
+			local d = table.concat(targets, ", ")
+			if #d > 75 then d = d:sub(1, 72) .. "..." end
+			details = string.format("(%s)", d)
+		end
+	elseif category == "command" then
+		details = format_command_items(group.items or {}, cfg)
+	elseif category == "search" then
+		details = format_search_items(group.items or {})
+	elseif category == "browse" then
+		details = format_browse_items(group.items or {})
+	elseif category == "subagent" then
+		details = format_subagent_items(group.items or {})
+	else
+		details = format_generic_items(group.items or {})
+	end
+
+	local keymap = (cfg.keymaps and cfg.keymaps.toggle_tool) or "<CR>"
+	local hint = ""
+	if is_open then
+		hint = string.format(" (%s to collapse)", keymap)
+	elseif is_running then
+		hint = string.format(" (%s to expand)", keymap)
+	end
+
+	local parts = { bullet, verb, count_unit }
+	if details ~= "" then
+		table.insert(parts, details)
+	end
+	local line = table.concat(parts, " ")
+	if hint ~= "" then
+		line = line .. hint
+	end
+	return line
+end
+
 ---Check if a work group has enough items to be collapsed (at least 2 tools, or at least 2 thoughts, or > 1 task)
----Single-task clusters (at most 1 tool and at most 1 thought) remain uncollapsed and directly visible.
+---Named semantic milestone groups collapse even with 1 item (matching agy CLI 1.3.0).
+---Legacy clusters without category remain uncollapsed if <= 1 tool and <= 1 thought.
 ---@param group table AgyWorkGroup
 ---@return boolean
 function M.should_collapse_work_group(group)
-	if not group or not group.items or #group.items <= 1 then
+	if not group or not group.items or #group.items <= 0 then
+		return false
+	end
+	if group.category then
+		return true
+	end
+	if #group.items <= 1 then
 		return false
 	end
 	local tool_count = 0
@@ -3278,6 +3583,9 @@ end
 ---@return string header_text
 function M.format_work_summary_header(group, is_open, config)
 	local cfg = get_config(config)
+	if group.category then
+		return M.format_named_group_header(group, is_open, group.is_running or false, cfg)
+	end
 	local col_icon, exp_icon = get_work_icons(cfg)
 	local icon = is_open and exp_icon or col_icon
 
@@ -3319,11 +3627,92 @@ end
 ---@param header_text string
 ---@param config? table
 ---@param existing_id? number
+---@param is_running? boolean
 ---@return number extmark_id
-function M.set_work_group_header_extmark(buf, row, header_text, config, existing_id)
+function M.set_work_group_header_extmark(buf, row, header_text, config, existing_id, is_running)
 	if existing_id then
 		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, existing_id)
 	end
+	local cfg = get_config(config)
+	local comp_bullet, run_bullet = get_group_icons(cfg)
+
+	local is_named_group = (header_text:sub(1, #comp_bullet) == comp_bullet or header_text:sub(1, #run_bullet) == run_bullet)
+	if is_named_group then
+		local active_bullet = (header_text:sub(1, #run_bullet) == run_bullet and (is_running or header_text:find("to expand", 1, true))) and run_bullet or comp_bullet
+		local bullet_hl = (active_bullet == run_bullet and (is_running or header_text:find("to expand", 1, true))) and "AgyGroupRunning" or "AgyGroupCompleted"
+
+		local ext_id = vim.api.nvim_buf_set_extmark(buf, M.NS_UI, row, 0, {
+			end_col = #active_bullet,
+			hl_group = bullet_hl,
+			priority = 150,
+		})
+
+		-- Hint detection
+		local hint_open = nil
+		local h_idx = header_text:find("to expand)", 1, true) or header_text:find("to collapse)", 1, true)
+		if h_idx then
+			local prefix = header_text:sub(1, h_idx)
+			hint_open = prefix:match(".*()%(")
+		end
+
+		local v_start = #active_bullet + 1
+		local verb_start_idx = header_text:find("%S", v_start)
+		if verb_start_idx then
+			local verb_end_idx = header_text:find(" ", verb_start_idx, true)
+			if verb_end_idx then
+				pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, verb_start_idx - 1, {
+					end_col = verb_end_idx - 1,
+					hl_group = "AgyGroupVerb",
+					priority = 150,
+				})
+
+				local count_start_idx = header_text:find("%S", verb_end_idx)
+				if count_start_idx then
+					local p_start = header_text:find(" (", verb_end_idx, true)
+					local count_end_idx = p_start and (p_start - 1) or #header_text
+					pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, count_start_idx - 1, {
+						end_col = count_end_idx,
+						hl_group = "AgyGroupCount",
+						priority = 150,
+					})
+
+					if p_start then
+						local p_open = p_start + 1
+						if not (hint_open and p_open == hint_open) then
+							local p_close = header_text:find(")", p_open, true)
+							if p_close then
+								pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, p_open - 1, {
+									end_col = p_close,
+									hl_group = "AgyGroupDetails",
+									priority = 150,
+								})
+
+								local f_idx = header_text:find(": failed", p_open, true)
+								if f_idx and f_idx < p_close then
+									pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, f_idx - 1, {
+										end_col = f_idx + 7,
+										hl_group = "AgyGroupFailed",
+										priority = 160,
+									})
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
+		if hint_open then
+			pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_UI, row, hint_open - 1, {
+				end_col = #header_text,
+				hl_group = "AgyGroupHint",
+				priority = 150,
+			})
+		end
+
+		return ext_id
+	end
+
 	local s_val = header_text:find("Worked for ", 1, true)
 	if s_val then
 		local split_col = s_val + 10

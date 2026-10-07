@@ -51,6 +51,7 @@ def main [
             "tests/test_question_markdown.lua",
             "tests/test_db.lua",
             "tests/test_work_groups.lua",
+            "tests/test_named_groups.lua",
             "tests/test_tabpage_isolation.lua"
         ]
 

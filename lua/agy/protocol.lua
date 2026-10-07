@@ -2154,14 +2154,30 @@ function M.add_item_to_current_work_group(buf, item)
   local state = M.buffers[buf]
   if not state then return end
   state.work_groups = state.work_groups or {}
+
+  local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
+  if state.config and state.config.ui and state.config.ui.collapse_work == false then
+    verbosity = "high"
+  end
+
+  local is_thought = item.is_thought
+  local cat = (verbosity == "medium" and not is_thought) and render.get_tool_category(item.tool_name) or nil
+
+  if state.current_work_group and cat and state.current_work_group.category and state.current_work_group.category ~= cat then
+    M.collapse_active_work_group(buf)
+  end
+
   if not state.current_work_group then
     state.current_work_group = {
       id = #state.work_groups + 1,
+      category = cat,
       is_open = true,
       start_time = vim.uv.hrtime(),
       duration_seconds = 0,
       items = {},
     }
+  elseif cat and not state.current_work_group.category then
+    state.current_work_group.category = cat
   end
   table.insert(state.current_work_group.items, item)
   if item.duration_seconds and item.duration_seconds > 0 then
@@ -2179,7 +2195,8 @@ function M.collapse_active_work_group(buf)
     state.current_work_group = nil
     return
   end
-  if state.config and state.config.ui and state.config.ui.collapse_work == false then
+  local is_high = state.config and state.config.ui and (state.config.ui.verbosity == "high" or state.config.ui.collapse_work == false)
+  if is_high then
     table.insert(state.work_groups, group)
     state.current_work_group = nil
     return
