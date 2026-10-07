@@ -37,10 +37,11 @@ M._internal_guard = false
 function M.with_modifiable(buf, fn)
   local old_guard = M._internal_guard
   M._internal_guard = true
-  local prev = vim.bo[buf].modifiable
   vim.bo[buf].modifiable = true
   local ok, res = pcall(fn)
-  M.update_modifiable(buf)
+  if not old_guard then
+    M.update_modifiable(buf)
+  end
   M._internal_guard = old_guard
   if not ok then
     error(res)
@@ -2171,10 +2172,11 @@ function M.add_item_to_current_work_group(buf, item)
     state.current_work_group = {
       id = #state.work_groups + 1,
       category = cat,
-      is_open = true,
+      is_open = false,
       start_time = vim.uv.hrtime(),
       duration_seconds = 0,
       items = {},
+      child_lines = {},
     }
   elseif cat and not state.current_work_group.category then
     state.current_work_group.category = cat
@@ -2182,6 +2184,10 @@ function M.add_item_to_current_work_group(buf, item)
   table.insert(state.current_work_group.items, item)
   if item.duration_seconds and item.duration_seconds > 0 then
     state.current_work_group.duration_seconds = state.current_work_group.duration_seconds + item.duration_seconds
+  end
+
+  if verbosity == "medium" and cat and state.current_work_group.header_extmark_id then
+    render.update_named_group_header(buf, state.current_work_group, state.config, state.current_work_group.is_running or false)
   end
 end
 
@@ -2210,7 +2216,12 @@ function M.collapse_active_work_group(buf)
   group.duration_seconds = math.max(0.1, dur)
 
   M.with_modifiable(buf, function()
-    render.collapse_work_group_in_place(buf, group, state.config)
+    if group.category and group.header_extmark_id then
+      group.is_running = false
+      render.update_named_group_header(buf, group, state.config, false)
+    else
+      render.collapse_work_group_in_place(buf, group, state.config)
+    end
     M.ensure_prompt_line(buf)
     if state.follow_bottom then
       render.scroll_to_bottom(buf, true)
@@ -2797,25 +2808,132 @@ function M.handle_buf_read(args)
           M.update_footer(buf)
           M.with_modifiable(buf, function()
             local ws = (state.workspaces and #state.workspaces > 0) and state.workspaces or ((s.workspaces and #s.workspaces > 0) and s.workspaces or s.cwd)
-            local tool_line, ext_id, param_str = render.append_tool_call(buf, step.tool_name or "tool", step.tool_info and step.tool_info.parameters, ws, state.config)
-            local tool_rec = {
-              id = #state.tool_calls + 1,
-              buf = buf,
-              tool_name = step.tool_name or "tool",
-              params = step.tool_info and step.tool_info.parameters,
-              param_str = param_str,
-              output = nil,
-              duration_seconds = nil,
-              start_time = vim.uv.hrtime(),
-              status = "running",
-              is_open = false,
-              header_extmark_id = ext_id,
-              header_line_idx = tool_line,
-              output_lines_count = 0,
-            }
-            table.insert(state.tool_calls, tool_rec)
-            state.active_tool_record = tool_rec
-            M.add_item_to_current_work_group(buf, tool_rec)
+            local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
+            if state.config and state.config.ui and state.config.ui.collapse_work == false then
+              verbosity = "high"
+            end
+
+            if verbosity == "medium" then
+              local cat = render.get_tool_category(step.tool_name or "tool")
+              if state.current_work_group and state.current_work_group.category and state.current_work_group.category ~= cat then
+                M.collapse_active_work_group(buf)
+              end
+
+              local param_str = render.format_tool_params(step.tool_info and step.tool_info.parameters, ws)
+              local child_line = render.format_child_tool_line(step.tool_name or "tool", step.tool_info and step.tool_info.parameters, ws, state.config)
+              local tool_rec = {
+                id = #state.tool_calls + 1,
+                buf = buf,
+                tool_name = step.tool_name or "tool",
+                params = step.tool_info and step.tool_info.parameters,
+                param_str = param_str,
+                output = nil,
+                duration_seconds = nil,
+                start_time = vim.uv.hrtime(),
+                status = "running",
+                is_open = false,
+                header_extmark_id = nil,
+                header_line_idx = nil,
+                output_lines_count = 0,
+              }
+              table.insert(state.tool_calls, tool_rec)
+              state.active_tool_record = tool_rec
+
+              if not state.current_work_group then
+                -- Check for preceding thoughts from this turn to absorb
+                local preceding_thoughts = {}
+                local thought_lines = {}
+                local min_thought_row = nil
+                local max_thought_row = nil
+                for i = #state.tool_calls - 1, 1, -1 do
+                  local prev_it = state.tool_calls[i]
+                  if prev_it and prev_it.is_thought and not prev_it._in_work_group then
+                    table.insert(preceding_thoughts, 1, prev_it)
+                    local t_icon = state.config.icons and state.config.icons.thought or "💭"
+                    table.insert(thought_lines, 1, string.format("%s Thought", t_icon))
+                    if prev_it.header_line_idx then
+                      if not min_thought_row or prev_it.header_line_idx < min_thought_row then
+                        min_thought_row = prev_it.header_line_idx
+                      end
+                      if not max_thought_row or prev_it.header_line_idx > max_thought_row then
+                        max_thought_row = prev_it.header_line_idx
+                      end
+                    end
+                  else
+                    break
+                  end
+                end
+
+                local items = {}
+                local child_lines = {}
+                for _, pt in ipairs(preceding_thoughts) do
+                  pt._in_work_group = true
+                  table.insert(items, pt)
+                  if pt.header_extmark_id then
+                    pcall(vim.api.nvim_buf_del_extmark, buf, render.NS_UI, pt.header_extmark_id)
+                  end
+                end
+                for _, tl in ipairs(thought_lines) do
+                  table.insert(child_lines, tl)
+                end
+                table.insert(items, tool_rec)
+                table.insert(child_lines, child_line)
+
+                state.current_work_group = {
+                  id = (state.work_groups and #state.work_groups or 0) + 1,
+                  category = cat,
+                  is_open = false,
+                  is_running = true,
+                  start_time = vim.uv.hrtime(),
+                  duration_seconds = 0,
+                  items = items,
+                  child_lines = child_lines,
+                }
+                local header_text = render.format_named_group_header(state.current_work_group, false, true, state.config)
+
+                local target_row, ext_id
+                if min_thought_row and max_thought_row then
+                  vim.api.nvim_buf_set_lines(buf, min_thought_row, max_thought_row + 1, false, { header_text })
+                  ext_id = render.set_work_group_header_extmark(buf, min_thought_row, header_text, state.config, nil, true)
+                  target_row = min_thought_row
+                else
+                  target_row, ext_id = render.insert_named_group_header(buf, header_text, state.config, true)
+                end
+
+                state.current_work_group.header_line_idx = target_row
+                state.current_work_group.header_extmark_id = ext_id
+                tool_rec.header_line_idx = target_row
+                tool_rec.header_extmark_id = ext_id
+              else
+                table.insert(state.current_work_group.items, tool_rec)
+                table.insert(state.current_work_group.child_lines, child_line)
+                state.current_work_group.is_running = true
+                render.update_named_group_header(buf, state.current_work_group, state.config, true)
+                tool_rec.header_line_idx = state.current_work_group.header_line_idx
+                tool_rec.header_extmark_id = state.current_work_group.header_extmark_id
+              end
+            else
+              local tool_line, ext_id, param_str = render.append_tool_call(buf, step.tool_name or "tool", step.tool_info and step.tool_info.parameters, ws, state.config)
+              local tool_rec = {
+                id = #state.tool_calls + 1,
+                buf = buf,
+                tool_name = step.tool_name or "tool",
+                params = step.tool_info and step.tool_info.parameters,
+                param_str = param_str,
+                output = nil,
+                duration_seconds = nil,
+                start_time = vim.uv.hrtime(),
+                status = "running",
+                is_open = false,
+                header_extmark_id = ext_id,
+                header_line_idx = tool_line,
+                output_lines_count = 0,
+              }
+              table.insert(state.tool_calls, tool_rec)
+              state.active_tool_record = tool_rec
+              M.add_item_to_current_work_group(buf, tool_rec)
+            end
+
             M.ensure_prompt_line(buf)
             if state.follow_bottom then
               render.scroll_to_bottom(buf, true)
@@ -2842,13 +2960,34 @@ function M.handle_buf_read(args)
           M.update_footer(buf)
           if state.active_tool_record then
             M.with_modifiable(buf, function()
-              render.complete_tool_call(buf, state.active_tool_record, step.duration_seconds, step.tool_info and step.tool_info.output, state.config)
-              if state.active_tool_record and state.active_tool_record.is_background_task then
-                state.had_background_task = true
+              local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
+              if state.config and state.config.ui and state.config.ui.collapse_work == false then
+                verbosity = "high"
               end
-              if state.current_work_group and step.duration_seconds and step.duration_seconds > 0 then
-                state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + step.duration_seconds
+
+              if verbosity == "medium" and state.current_work_group and state.current_work_group.category then
+                state.active_tool_record.status = "done"
+                state.active_tool_record.duration_seconds = step.duration_seconds
+                state.active_tool_record.output = step.tool_info and step.tool_info.output
+                if state.active_tool_record.is_background_task then
+                  state.had_background_task = true
+                end
+                if step.duration_seconds and step.duration_seconds > 0 then
+                  state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + step.duration_seconds
+                end
+
+                state.current_work_group.is_running = false
+                render.update_named_group_header(buf, state.current_work_group, state.config, false)
+              else
+                render.complete_tool_call(buf, state.active_tool_record, step.duration_seconds, step.tool_info and step.tool_info.output, state.config)
+                if state.active_tool_record and state.active_tool_record.is_background_task then
+                  state.had_background_task = true
+                end
+                if state.current_work_group and step.duration_seconds and step.duration_seconds > 0 then
+                  state.current_work_group.duration_seconds = (state.current_work_group.duration_seconds or 0) + step.duration_seconds
+                end
               end
+
               M.ensure_prompt_line(buf)
               if state.follow_bottom then
                 render.scroll_to_bottom(buf, true)

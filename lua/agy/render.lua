@@ -3500,20 +3500,27 @@ function M.format_named_group_header(group, is_open, is_running, config)
 		plural_unit = "tools"
 	end
 
-	local count_unit = (tool_count == 1) and (tool_count .. " " .. singular_unit) or (tool_count .. " " .. plural_unit)
-
+	local count = tool_count
 	local details = ""
 	if category == "explore" or category == "edit" then
-		local targets = {}
+		local unique_targets = {}
+		local seen_targets = {}
 		for _, it in ipairs(group.items or {}) do
 			if not it.is_thought then
-				table.insert(targets, get_file_target(it))
+				local t = get_file_target(it)
+				if t and t ~= "" and not seen_targets[t] then
+					seen_targets[t] = true
+					table.insert(unique_targets, t)
+				end
 			end
 		end
-		if #targets > 0 then
-			local d = table.concat(targets, ", ")
+		if #unique_targets > 0 then
+			count = #unique_targets
+			local d = table.concat(unique_targets, ", ")
 			if #d > 75 then d = d:sub(1, 72) .. "..." end
 			details = string.format("(%s)", d)
+		else
+			count = math.max(1, tool_count)
 		end
 	elseif category == "command" then
 		details = format_command_items(group.items or {}, cfg)
@@ -3526,6 +3533,8 @@ function M.format_named_group_header(group, is_open, is_running, config)
 	else
 		details = format_generic_items(group.items or {})
 	end
+
+	local count_unit = (count == 1) and (count .. " " .. singular_unit) or (count .. " " .. plural_unit)
 
 	local keymap = (cfg.keymaps and cfg.keymaps.toggle_tool) or "<CR>"
 	local hint = ""
@@ -3734,6 +3743,106 @@ function M.set_work_group_header_extmark(buf, row, header_text, config, existing
 			priority = 150,
 		})
 	end
+end
+
+---Format a child tool line for display inside a work group
+---@param tool_name string
+---@param params table
+---@param cwd? string|string[]
+---@param config? table
+---@return string
+function M.format_child_tool_line(tool_name, params, cwd, config)
+	local is_run_cmd = (tool_name == "run_command")
+	local icon = is_run_cmd and get_icon("run_command", config) or get_tool_icon(tool_name, config)
+	local p_str = M.format_tool_params(params, cwd)
+	if p_str ~= "" then
+		return string.format("%s %s `%s`", icon, tool_name, p_str)
+	else
+		return string.format("%s %s", icon, tool_name)
+	end
+end
+
+---Insert a new named group header line into the buffer above the agent boundary
+---@param buf number
+---@param header_text string
+---@param config? table
+---@param is_running? boolean
+---@return number row 0-indexed line where header was inserted
+---@return number extmark_id
+function M.insert_named_group_header(buf, header_text, config, is_running)
+	pcall(require("agy.markdown").finalize, buf, config)
+	local cfg = get_config(config)
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
+	local boundary_row, agent_row = M.get_agent_boundary(buf)
+	local target_row
+	if boundary_row then
+		local sep_row = boundary_row - 1
+		local prev_row = sep_row - 1
+		if not agent_row or prev_row <= agent_row then
+			vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { header_text })
+			target_row = sep_row
+		else
+			local prev_line = vim.api.nvim_buf_get_lines(buf, prev_row, prev_row + 1, false)[1] or ""
+			local is_tight = M.is_compact_header_line(prev_line, cfg)
+			if is_tight then
+				vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { header_text })
+				target_row = sep_row
+			else
+				vim.api.nvim_buf_set_lines(buf, sep_row, sep_row, false, { "", header_text })
+				target_row = sep_row + 1
+			end
+		end
+	else
+		local line_count = vim.api.nvim_buf_line_count(buf)
+		local last_line = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1] or ""
+		local is_tight = M.is_compact_header_line(last_line, cfg)
+		if last_line == "" then
+			vim.api.nvim_buf_set_lines(buf, line_count - 1, line_count, false, { header_text })
+			target_row = line_count - 1
+		elseif is_tight then
+			vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { header_text })
+			target_row = line_count
+		else
+			vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { "", header_text })
+			target_row = line_count + 1
+		end
+	end
+
+	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
+	local ext_id = M.set_work_group_header_extmark(buf, target_row, header_text, cfg, nil, is_running or false)
+	return target_row, ext_id
+end
+
+---Update an existing named group header line in-place in the buffer
+---@param buf number
+---@param group table AgyWorkGroup
+---@param config? table
+---@param is_running? boolean
+function M.update_named_group_header(buf, group, config, is_running)
+	if not group or not group.header_extmark_id then
+		return
+	end
+	local cfg = get_config(config)
+	local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, group.header_extmark_id, {})
+	local header_row = (pos and #pos >= 1) and pos[1] or group.header_line_idx
+	if not header_row then
+		return
+	end
+
+	local is_open = group.is_open or false
+	local running = (is_running ~= nil) and is_running or (group.is_running or false)
+	local header_text = M.format_named_group_header(group, is_open, running, cfg)
+
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+	vim.api.nvim_buf_set_lines(buf, header_row, header_row + 1, false, { header_text })
+	M.set_work_group_header_extmark(buf, header_row, header_text, cfg, group.header_extmark_id, running)
+	group.header_line_idx = header_row
+	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 end
 
 ---Restore the extmark and inline styling of an individual tool or thought line

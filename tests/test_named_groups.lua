@@ -84,7 +84,18 @@ local group_multi_files = {
   }
 }
 local h_multi_files = render.format_named_group_header(group_multi_files, false, false, cfg)
-assert(h_multi_files == "● Explored 3 files (SKILL.md, cli.md, SKILL.md)", "Got: " .. h_multi_files)
+assert(h_multi_files == "● Explored 2 files (SKILL.md, cli.md)", "Got: " .. h_multi_files)
+
+-- Test multiple views of SAME single file
+local group_same_file = {
+  category = "explore",
+  items = {
+    { tool_name = "view_file", params = { AbsolutePath = "SKILL.md" } },
+    { tool_name = "view_file", params = { AbsolutePath = "SKILL.md" } },
+  }
+}
+local h_same_file = render.format_named_group_header(group_same_file, false, false, cfg)
+assert(h_same_file == "● Explored 1 file (SKILL.md)", "Got: " .. h_same_file)
 
 -- 3c. Ran commands with repetitions and failures
 local group_cmds = {
@@ -486,6 +497,169 @@ assert(found_live_cmd, "Live buffer must contain collapsed '● Ran 1 command (m
 assert(found_live_txt, "Live buffer must contain streamed assistant text")
 
 print("✓ Live streaming category transitions and auto-collapse verified")
+
+-- =========================================================================
+-- TEST 10: Live in-place group header updates as tools arrive
+-- =========================================================================
+print("\n[Test 10] Testing live in-place group header updates as tools arrive...")
+
+local live_buf10 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf10, file = "agy://test-conv-live-update" })
+local state10 = protocol.buffers[live_buf10]
+assert(state10 ~= nil, "State must exist for live_buf10")
+
+vim.api.nvim_buf_set_lines(live_buf10, state10.prompt_start_line - 1, -1, false, { "Explore files" })
+protocol.handle_write(live_buf10)
+local session10 = state10.session
+assert(session10 ~= nil, "Session must exist for live_buf10")
+
+-- 1. Tool 1: view_file file1.lua ACTIVE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "file1.lua" } },
+})
+
+local lines10_1 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_exploring_1 = false
+for _, l in ipairs(lines10_1) do
+  if l:find("^● Exploring 1 file %(file1%.lua%)") and l:find("to expand") then
+    found_exploring_1 = true
+  end
+end
+assert(found_exploring_1, "Buffer must show '● Exploring 1 file (file1.lua) (<CR> to expand)': " .. vim.inspect(lines10_1))
+
+-- 2. Tool 1 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.2,
+  tool_info = { parameters = { AbsolutePath = "file1.lua" }, output = "content1" },
+})
+
+local lines10_2 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_explored_1 = false
+for _, l in ipairs(lines10_2) do
+  if l:find("^● Explored 1 file %(file1%.lua%)") and not l:find("to expand") then
+    found_explored_1 = true
+  end
+end
+assert(found_explored_1, "Buffer must update in-place to '● Explored 1 file (file1.lua)': " .. vim.inspect(lines10_2))
+
+-- 3. Tool 2: view_file file2.lua ACTIVE (same category, different file)
+local line_count_before = #lines10_2
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "file2.lua" } },
+})
+
+local lines10_3 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+assert(#lines10_3 == line_count_before, "Line count must NOT increase when second tool arrives (updates in-place)")
+local found_exploring_2 = false
+for _, l in ipairs(lines10_3) do
+  if l:find("^● Exploring 2 files %(file1%.lua, file2%.lua%)") and l:find("to expand") then
+    found_exploring_2 = true
+  end
+end
+assert(found_exploring_2, "Buffer must update in-place to '● Exploring 2 files (file1.lua, file2.lua) (<CR> to expand)': " .. vim.inspect(lines10_3))
+
+-- 4. Tool 2 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.3,
+  tool_info = { parameters = { AbsolutePath = "file2.lua" }, output = "content2" },
+})
+
+local lines10_4 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_explored_2 = false
+for _, l in ipairs(lines10_4) do
+  if l:find("^● Explored 2 files %(file1%.lua, file2%.lua%)") and not l:find("to expand") then
+    found_explored_2 = true
+  end
+end
+assert(found_explored_2, "Buffer must update in-place to '● Explored 2 files (file1.lua, file2.lua)': " .. vim.inspect(lines10_4))
+
+print("✓ Live in-place group header updates verified")
+
+-- =========================================================================
+-- TEST 11: Duplicate file views only count as 1 file during live execution
+-- =========================================================================
+print("\n[Test 11] Testing duplicate file views only count as 1 file during live execution...")
+
+-- 5. Tool 3: view_file file1.lua ACTIVE (SAME file viewed again)
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "file1.lua" } },
+})
+
+local lines11_1 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_still_2 = false
+for _, l in ipairs(lines11_1) do
+  if l:find("^● Exploring 2 files %(file1%.lua, file2%.lua%)") then
+    found_still_2 = true
+  end
+  assert(not l:find("3 files"), "Must NOT count duplicate view as a 3rd file: " .. l)
+end
+assert(found_still_2, "Count must remain 2 files when re-visiting file1.lua: " .. vim.inspect(lines11_1))
+
+-- Tool 3 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.1,
+  tool_info = { parameters = { AbsolutePath = "file1.lua" }, output = "content1_again" },
+})
+
+-- 6. Category change: Tool 4: run_command git status
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = { parameters = { CommandLine = "git status" } },
+})
+
+local lines11_2 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_exp_completed = false
+local found_cmd_running = false
+for _, l in ipairs(lines11_2) do
+  if l:find("^● Explored 2 files %(file1%.lua, file2%.lua%)") and not l:find("to expand") then
+    found_exp_completed = true
+  end
+  if l:find("^● Running 1 command %(git status%)") and l:find("to expand") then
+    found_cmd_running = true
+  end
+end
+assert(found_exp_completed, "Explore group must be finalized to '● Explored 2 files': " .. vim.inspect(lines11_2))
+assert(found_cmd_running, "New command group must start as '● Running 1 command': " .. vim.inspect(lines11_2))
+
+-- Tool 4 DONE
+session10.on_step_update(session10, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "DONE",
+  duration_seconds = 0.4,
+  tool_info = { parameters = { CommandLine = "git status" }, output = "clean" },
+})
+
+local lines11_3 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
+local found_cmd_done = false
+for _, l in ipairs(lines11_3) do
+  if l:find("^● Ran 1 command %(git status%)") and not l:find("to expand") then
+    found_cmd_done = true
+  end
+end
+assert(found_cmd_done, "Command group must be completed to '● Ran 1 command': " .. vim.inspect(lines11_3))
+
+print("✓ Duplicate file unique counting and category transition in live execution verified")
 
 -- Reset config back to clean defaults
 config_mod.setup()
