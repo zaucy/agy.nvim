@@ -661,6 +661,197 @@ assert(found_cmd_done, "Command group must be completed to '● Ran 1 command': 
 
 print("✓ Duplicate file unique counting and category transition in live execution verified")
 
+-- =========================================================================
+-- TEST 12: Live streaming with preceding thoughts, missing step.tool_name, intermediate thoughts, and repeated files
+-- =========================================================================
+print("\n[Test 12] Testing live streaming with preceding thought, missing tool_name, intermediate thought, and repeated files...")
+
+local live_buf12 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf12, file = "agy://test-conv-live-thoughts" })
+local state12 = protocol.buffers[live_buf12]
+assert(state12 ~= nil, "State must exist for live_buf12")
+
+vim.api.nvim_buf_set_lines(live_buf12, state12.prompt_start_line - 1, -1, false, { "Examine crude providers" })
+protocol.handle_write(live_buf12)
+local session12 = state12.session
+assert(session12 ~= nil, "Session must exist for live_buf12")
+
+-- 1. Preceding thought arrives before any tool
+-- Simulate append_thought_block via check_and_render_pending_thoughts fallback
+local t_rec
+protocol.with_modifiable(live_buf12, function()
+  t_rec = render.append_thought_block(live_buf12, "I need to inspect the crude fs provider first", 1.5, state12.config)
+  t_rec.id = #state12.tool_calls + 1
+  table.insert(state12.tool_calls, t_rec)
+  protocol.add_item_to_current_work_group(live_buf12, t_rec)
+end)
+
+local lines12_thought = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_raw_thought = false
+for _, l in ipairs(lines12_thought) do
+  if l:find("Thought") then found_raw_thought = true end
+end
+assert(found_raw_thought, "Preceding thought should be rendered initially before tools arrive")
+
+-- 2. Tool 1: view_file fs.lua arrives WITHOUT step.tool_name (tool name in step.tool_info.name)
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "ACTIVE",
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/fs.lua" },
+  },
+})
+
+local lines12_t1_active = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_exploring_fs = false
+for _, l in ipairs(lines12_t1_active) do
+  if l:find("^● Exploring 1 file %(fs%.lua%)") and l:find("to expand") then
+    found_exploring_fs = true
+  end
+  assert(not l:find("Thought"), "Preceding thought must be absorbed into group header and removed from raw lines: " .. l)
+  assert(not l:find("^%s*view_file"), "Tool line must NOT be printed as raw line: " .. l)
+end
+assert(found_exploring_fs, "Buffer must show '● Exploring 1 file (fs.lua)': " .. vim.inspect(lines12_t1_active))
+
+-- 3. Tool 1 DONE
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "DONE",
+  duration_seconds = 0.2,
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/fs.lua" },
+    output = "fs code",
+  },
+})
+
+local lines12_t1_done = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_explored_fs = false
+for _, l in ipairs(lines12_t1_done) do
+  if l:find("^● Explored 1 file %(fs%.lua%)") and not l:find("to expand") then
+    found_explored_fs = true
+  end
+end
+assert(found_explored_fs, "Must be finalized to '● Explored 1 file (fs.lua)': " .. vim.inspect(lines12_t1_done))
+
+-- 4. Intermediate thought arrives during active turn
+-- Since state12.current_work_group exists and has header_extmark_id, check_and_render_pending_thoughts will absorb it
+local dur_inter = 4.3
+local tc_thought2 = {
+  id = #state12.tool_calls + 1,
+  is_thought = true,
+  thinking = "Now investigating git provider worktrees",
+  duration_seconds = dur_inter,
+  _in_work_group = true,
+}
+table.insert(state12.tool_calls, tc_thought2)
+table.insert(state12.current_work_group.items, tc_thought2)
+local t_icon = state12.config.icons and state12.config.icons.thought or "💭"
+table.insert(state12.current_work_group.child_lines, string.format("%s Thought %s", t_icon, utils.format_duration(dur_inter)))
+render.update_named_group_header(live_buf12, state12.current_work_group, state12.config, false)
+
+local lines12_inter = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+assert(#lines12_inter == #lines12_t1_done, "Buffer lines must NOT increase when intermediate thought is absorbed")
+
+-- 5. Tool 2: view_file git.lua arrives
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "ACTIVE",
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+  },
+})
+
+local lines12_t2_active = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_exploring_2 = false
+for _, l in ipairs(lines12_t2_active) do
+  if l:find("^● Exploring 2 files %(fs%.lua, git%.lua%)") and l:find("to expand") then
+    found_exploring_2 = true
+  end
+  assert(not l:find("^%s*view_file"), "Must not leak raw tool lines: " .. l)
+end
+assert(found_exploring_2, "Must show '● Exploring 2 files (fs.lua, git.lua)': " .. vim.inspect(lines12_t2_active))
+
+session12.on_step_update(session12, {
+  step_type = "tool",
+  state = "DONE",
+  duration_seconds = 0.1,
+  tool_info = {
+    name = "view_file",
+    parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+    output = "git code",
+  },
+})
+
+-- 6. Tools 3, 4, 5 arrive with the SAME file (git.lua)
+for repeat_idx = 1, 3 do
+  session12.on_step_update(session12, {
+    step_type = "tool",
+    state = "ACTIVE",
+    tool_info = {
+      name = "view_file",
+      parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+    },
+  })
+  local lines_repeat = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+  for _, l in ipairs(lines_repeat) do
+    if l:find("^● Exploring") then
+      assert(l:find("2 files"), "Repeated view of git.lua must NOT increment file count: " .. l)
+    end
+  end
+
+  session12.on_step_update(session12, {
+    step_type = "tool",
+    state = "DONE",
+    duration_seconds = 0.1,
+    tool_info = {
+      name = "view_file",
+      parameters = { AbsolutePath = "lua/crude/providers/git.lua" },
+      output = "git code repeat",
+    },
+  })
+end
+
+local lines12_final = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_final_2 = false
+for _, l in ipairs(lines12_final) do
+  if l:find("^● Explored 2 files %(fs%.lua, git%.lua%)") then
+    found_final_2 = true
+  end
+  assert(not l:find("^%s*view_file"), "No raw tool lines must exist in buffer: " .. l)
+end
+assert(found_final_2, "Final group must be '● Explored 2 files (fs.lua, git.lua)': " .. vim.inspect(lines12_final))
+
+-- 7. Test expansion of the active group via toggle_work_group_at_cursor
+local target_row = state12.current_work_group.header_line_idx
+local win12 = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_buf(win12, live_buf12)
+vim.api.nvim_win_set_cursor(win12, { target_row + 1, 0 })
+
+local toggled_open = protocol.toggle_work_group_at_cursor(live_buf12)
+assert(toggled_open, "Should successfully toggle active work group open")
+local lines_expanded = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+local found_expanded_thought = false
+local found_expanded_tool = false
+for _, l in ipairs(lines_expanded) do
+  if l:find("Thought") then found_expanded_thought = true end
+  if l:find("view_file") then found_expanded_tool = true end
+end
+assert(found_expanded_thought, "Expanded group should show child thoughts")
+assert(found_expanded_tool, "Expanded group should show child tool calls")
+
+-- Re-collapse
+local toggled_closed = protocol.toggle_work_group_at_cursor(live_buf12)
+assert(toggled_closed, "Should successfully toggle active work group closed")
+local lines_recollapsed = vim.api.nvim_buf_get_lines(live_buf12, 0, -1, false)
+for _, l in ipairs(lines_recollapsed) do
+  assert(not l:find("^%s*view_file"), "Re-collapsed group should hide child tool calls: " .. l)
+end
+
+print("✓ Live streaming with preceding thoughts, missing tool_name, intermediate thoughts, and repeated files verified")
+
 -- Reset config back to clean defaults
 config_mod.setup()
 

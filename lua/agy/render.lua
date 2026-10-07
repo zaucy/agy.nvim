@@ -3834,12 +3834,14 @@ function M.update_named_group_header(buf, group, config, is_running)
 
 	local is_open = group.is_open or false
 	local running = (is_running ~= nil) and is_running or (group.is_running or false)
+	group.is_running = running
 	local header_text = M.format_named_group_header(group, is_open, running, cfg)
 
 	local prev_mod = vim.bo[buf].modifiable
 	vim.bo[buf].modifiable = true
 	vim.api.nvim_buf_set_lines(buf, header_row, header_row + 1, false, { header_text })
-	M.set_work_group_header_extmark(buf, header_row, header_text, cfg, group.header_extmark_id, running)
+	local ext_id = M.set_work_group_header_extmark(buf, header_row, header_text, cfg, group.header_extmark_id, running)
+	group.header_extmark_id = ext_id
 	group.header_line_idx = header_row
 	vim.bo[buf].modified = false
 	vim.bo[buf].modifiable = prev_mod
