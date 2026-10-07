@@ -295,6 +295,7 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             auto_scroll = true,      -- Follow streaming response
             collapse_work = true,    -- Auto-collapse tools and thoughts (legacy alias for verbosity)
             verbosity = "medium",    -- Tool verbosity: "medium" (named groups), "high" (full output), "low" (compact)
+            max_visible_actions = 4, -- Max visible groups per turn before middle actions collapse (default: 4)
             wrap = true,             -- Line wrapping
             linebreak = true,        -- Break lines at word boundaries
             conceallevel = 2,        -- Conceal markdown syntax characters
@@ -324,6 +325,7 @@ The following highlight groups are used for styling and can be customized:
 - `AgyGroupDetails`: Dimmed/comment highlight for group details inside parentheses.
 - `AgyGroupFailed`: Highlight for failed command indicator (": failed").
 - `AgyGroupHint`: Subtle hint highlight for expansion keybindings (e.g. "(<CR> to expand)").
+- `AgyMoreActions`: Subtle comment highlight for collapsed middle actions summary line.
 - `AgyPromptArea`: Background for active prompt input area.
 - `AgyUserSign`: User sign column icon highlight.
 - `AgyToolInline`: Subtle background for inline tool details and virtual lines.

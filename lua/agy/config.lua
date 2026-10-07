@@ -15,6 +15,7 @@ local M = {}
 ---@field fold_tool_output? boolean Automatically fold verbose tool output blocks (deprecated, default: false)
 ---@field collapse_work? boolean Automatically collapse tool & thought groups into summary headers (default: true)
 ---@field verbosity? "high" | "medium" | "low" Tool execution & thought verbosity (default: "medium")
+---@field max_visible_actions? number Maximum number of visible action groups per turn before middle actions collapse (default: 4)
 ---@field wrap? boolean Enable line wrapping in agy buffers (default: true)
 ---@field linebreak? boolean Enable linebreak in agy buffers (default: true)
 ---@field conceallevel? number Markdown conceallevel in agy buffers (default: 2)
@@ -173,6 +174,7 @@ M.defaults = {
 		fold_tool_output = false,
 		collapse_work = true,
 		verbosity = "medium",
+		max_visible_actions = 4,
 		wrap = true,
 		linebreak = true,
 		conceallevel = 0,
@@ -221,6 +223,12 @@ function M.setup(opts)
 			assert(
 				opts.ui.verbosity == "high" or opts.ui.verbosity == "medium" or opts.ui.verbosity == "low",
 				"agy config: 'ui.verbosity' must be 'high', 'medium', or 'low'"
+			)
+		end
+		if opts.ui and opts.ui.max_visible_actions ~= nil then
+			assert(
+				type(opts.ui.max_visible_actions) == "number" and opts.ui.max_visible_actions >= 2,
+				"agy config: 'ui.max_visible_actions' must be a number >= 2"
 			)
 		end
 		if opts.ui and opts.ui.collapse_work ~= nil then

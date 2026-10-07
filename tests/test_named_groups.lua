@@ -379,7 +379,7 @@ local found_final_text7 = false
 for _, l in ipairs(t7_lines) do
   if l:find("^● Explored 2 files %(SKILL%.md, cli%.md%)") then
     found_explored_line = true
-  elseif l:find("^● Ran 1 command %(git status%)") then
+  elseif l:find("^● Ran %(git status%)") then
     found_ran_line = true
   elseif l:find("Everything is examined and clean") then
     found_final_text7 = true
@@ -489,11 +489,11 @@ local found_live_cmd = false
 local found_live_txt = false
 for _, l in ipairs(lines9) do
   if l:find("^● Explored 1 file %(foo%.lua%)") then found_live_exp = true end
-  if l:find("^● Ran 1 command %(make build%)") then found_live_cmd = true end
+  if l:find("^● Ran %(make build%)") then found_live_cmd = true end
   if l:find("Done with build") then found_live_txt = true end
 end
 assert(found_live_exp, "Live buffer must contain collapsed '● Explored 1 file (foo.lua)'")
-assert(found_live_cmd, "Live buffer must contain collapsed '● Ran 1 command (make build)'")
+assert(found_live_cmd, "Live buffer must contain collapsed '● Ran (make build)'")
 assert(found_live_txt, "Live buffer must contain streamed assistant text")
 
 print("✓ Live streaming category transitions and auto-collapse verified")
@@ -634,12 +634,12 @@ for _, l in ipairs(lines11_2) do
   if l:find("^● Explored 2 files %(file1%.lua, file2%.lua%)") and not l:find("to expand") then
     found_exp_completed = true
   end
-  if l:find("^● Running 1 command %(git status%)") and l:find("to expand") then
+  if l:find("^● Running %(git status%)") and l:find("to expand") then
     found_cmd_running = true
   end
 end
 assert(found_exp_completed, "Explore group must be finalized to '● Explored 2 files': " .. vim.inspect(lines11_2))
-assert(found_cmd_running, "New command group must start as '● Running 1 command': " .. vim.inspect(lines11_2))
+assert(found_cmd_running, "New command group must start as '● Running (git status)': " .. vim.inspect(lines11_2))
 
 -- Tool 4 DONE
 session10.on_step_update(session10, {
@@ -653,11 +653,11 @@ session10.on_step_update(session10, {
 local lines11_3 = vim.api.nvim_buf_get_lines(live_buf10, 0, -1, false)
 local found_cmd_done = false
 for _, l in ipairs(lines11_3) do
-  if l:find("^● Ran 1 command %(git status%)") and not l:find("to expand") then
+  if l:find("^● Ran %(git status%)") and not l:find("to expand") then
     found_cmd_done = true
   end
 end
-assert(found_cmd_done, "Command group must be completed to '● Ran 1 command': " .. vim.inspect(lines11_3))
+assert(found_cmd_done, "Command group must be completed to '● Ran (git status)': " .. vim.inspect(lines11_3))
 
 print("✓ Duplicate file unique counting and category transition in live execution verified")
 
@@ -851,6 +851,253 @@ for _, l in ipairs(lines_recollapsed) do
 end
 
 print("✓ Live streaming with preceding thoughts, missing tool_name, intermediate thoughts, and repeated files verified")
+
+-- =========================================================================
+-- TEST 13: Dynamic Thinking / Spinner Status Text
+-- =========================================================================
+print("\n[Test 13] Testing dynamic thinking / spinner status text...")
+
+assert(render.get_tool_status_text("view_file") == "Reading file...")
+assert(render.get_tool_status_text("read_file") == "Reading file...")
+assert(render.get_tool_status_text("list_dir") == "Reading file...")
+assert(render.get_tool_status_text("run_command") == "Running command...")
+assert(render.get_tool_status_text("replace_file_content") == "Editing file...")
+assert(render.get_tool_status_text("write_to_file") == "Editing file...")
+assert(render.get_tool_status_text("search_web") == "Searching...")
+assert(render.get_tool_status_text("read_url_content") == "Browsing web...")
+assert(render.get_tool_status_text("invoke_subagent") == "Running subagent...")
+assert(render.get_tool_status_text("schedule") == "Scheduling task...")
+assert(render.get_tool_status_text("image-generator") == "Generating image...")
+assert(render.get_tool_status_text("unknown") == "Thinking...")
+assert(render.get_tool_status_text(nil) == "Thinking...")
+
+local badge_read = render.get_thinking_badge(cfg, "Reading file...")
+assert(badge_read:find("Reading file%.%.%."), "Badge should contain 'Reading file...': " .. badge_read)
+
+-- Test live streaming updates divider badge with active tool status
+local live_buf13 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf13, file = "agy://test-conv-dynamic-status" })
+local state13 = protocol.buffers[live_buf13]
+local session13 = state13.session
+
+-- 1. Prompt submitted: thinking animation starts with 'Thinking...'
+render.start_thinking_animation(live_buf13, nil, nil, state13.config)
+assert(render.current_thinking_badge[live_buf13]:find("Thinking%.%.%."), "Initial badge must be 'Thinking...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 2. Tool view_file starts (ACTIVE): status text immediately becomes 'Reading file...'
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "ACTIVE",
+  tool_info = { parameters = { AbsolutePath = "main.lua" } },
+})
+assert(state13.active_tool_status_text == "Reading file...", "active_tool_status_text should be 'Reading file...'")
+assert(render.current_thinking_badge[live_buf13]:find("Reading file%.%.%."), "Thinking badge must immediately show 'Reading file...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 3. Tool completes (DONE): status text resets to nil / 'Thinking...'
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "view_file",
+  state = "DONE",
+  duration_seconds = 0.2,
+  tool_info = { parameters = { AbsolutePath = "main.lua" }, output = "content" },
+})
+assert(state13.active_tool_status_text == nil, "active_tool_status_text should be reset to nil on DONE")
+assert(render.current_thinking_badge[live_buf13]:find("Thinking%.%.%."), "Thinking badge should return to 'Thinking...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 4. Tool run_command starts (ACTIVE): status text becomes 'Running command...'
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "ACTIVE",
+  tool_info = { parameters = { CommandLine = "echo hello" } },
+})
+assert(state13.active_tool_status_text == "Running command...", "active_tool_status_text should be 'Running command...'")
+assert(render.current_thinking_badge[live_buf13]:find("Running command%.%.%."), "Thinking badge must show 'Running command...': " .. tostring(render.current_thinking_badge[live_buf13]))
+
+-- 5. Tool completes (DONE)
+session13.on_step_update(session13, {
+  step_type = "tool",
+  tool_name = "run_command",
+  state = "DONE",
+  duration_seconds = 0.1,
+  tool_info = { parameters = { CommandLine = "echo hello" }, output = "hello" },
+})
+assert(render.current_thinking_badge[live_buf13]:find("Thinking%.%.%."), "Thinking badge should return to 'Thinking...'")
+
+render.stop_thinking_animation(live_buf13)
+print("✓ Dynamic thinking / spinner status text verified")
+
+-- =========================================================================
+-- TEST 14: Middle Actions Collapsing & Single Command Formatting
+-- =========================================================================
+print("\n[Test 14] Testing middle actions collapsing and single command format...")
+
+-- 14a. Test single command format: '● Ran (<cmd>)' (omits '1 command')
+local single_cmd_group = {
+  category = "command",
+  items = {
+    { tool_name = "run_command", params = { CommandLine = "git grep -n \"nvim_view\" src/" } }
+  }
+}
+local h_single_cmd = render.format_named_group_header(single_cmd_group, false, false, cfg)
+assert(h_single_cmd == '● Ran (git grep -n "nvim_view" src/)', "Single command must format as '● Ran (<cmd>)': " .. h_single_cmd)
+
+local multi_cmd_group = {
+  category = "command",
+  items = {
+    { tool_name = "run_command", params = { CommandLine = "git status" } },
+    { tool_name = "run_command", params = { CommandLine = "git diff" } },
+  }
+}
+local h_multi_cmd = render.format_named_group_header(multi_cmd_group, false, false, cfg)
+assert(h_multi_cmd:find("^● Ran 2 commands"), "Multi-command must retain count: " .. h_multi_cmd)
+
+-- 14b. Test format_middle_actions_summary
+local mock_middle_groups = {
+  { category = "explore", items = { { tool_name = "view_file" }, { tool_name = "view_file" }, { tool_name = "view_file" } } },
+  { category = "command", items = { { tool_name = "run_command" }, { tool_name = "run_command" }, { tool_name = "run_command" }, { tool_name = "run_command" }, { tool_name = "run_command" } } },
+}
+local mid_summary = render.format_middle_actions_summary(mock_middle_groups, false, cfg)
+assert(mid_summary == "... 8 more actions (3 reads, 5 commands) ...", "Got: " .. mid_summary)
+
+local mock_single_mid = {
+  { category = "explore", items = { { tool_name = "view_file" } } }
+}
+local single_mid_summary = render.format_middle_actions_summary(mock_single_mid, false, cfg)
+assert(single_mid_summary == "... 1 more action (1 read) ...", "Got: " .. single_mid_summary)
+
+local mid_open_summary = render.format_middle_actions_summary(mock_middle_groups, true, cfg)
+assert(mid_open_summary:find("%(<CR> to collapse%)"), "Open middle actions should include collapse hint: " .. mid_open_summary)
+
+-- 14c. Test live streaming with 6 distinct milestone groups (> 4 max visible)
+local live_buf14 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf14, file = "agy://test-conv-middle-actions" })
+local state14 = protocol.buffers[live_buf14]
+local session14 = state14.session
+
+local test_steps = {
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f1.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git status" } },
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f2.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "make test" } },
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f3.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git diff" } },
+}
+
+for _, step in ipairs(test_steps) do
+  session14.on_step_update(session14, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "ACTIVE",
+    tool_info = { parameters = step.params },
+  })
+  session14.on_step_update(session14, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "DONE",
+    duration_seconds = 0.2,
+    tool_info = { parameters = step.params, output = "ok" },
+  })
+end
+
+local lines14 = vim.api.nvim_buf_get_lines(live_buf14, 0, -1, false)
+
+-- Head groups (first 2 groups) must be visible:
+local found_head_1 = false
+local found_head_2 = false
+-- Middle summary line must be visible:
+local found_mid_summary = false
+-- Tail groups (last 2 groups) must be visible:
+local found_tail_1 = false
+local found_tail_2 = false
+
+-- Groups 3 and 4 should be collapsed (NOT directly visible as individual headers):
+local found_mid_g3_header = false
+local found_mid_g4_header = false
+
+local mid_line_idx = nil
+
+for idx, l in ipairs(lines14) do
+  if l:find("^● Explored 1 file %(f1%.lua%)") then found_head_1 = true end
+  if l:find("^● Ran %(git status%)") then found_head_2 = true end
+  if l:find("^%.%.%. 2 more actions %(1 read, 1 command%) %.%.%.$") then
+    found_mid_summary = true
+    mid_line_idx = idx - 1 -- 0-indexed
+  end
+  if l:find("^● Explored 1 file %(f3%.lua%)") then found_tail_1 = true end
+  if l:find("^● Ran %(git diff%)") then found_tail_2 = true end
+  if l:find("^● Explored 1 file %(f2%.lua%)") then found_mid_g3_header = true end
+  if l:find("^● Ran %(make test%)") then found_mid_g4_header = true end
+end
+
+assert(found_head_1, "Head group 1 must be visible: " .. vim.inspect(lines14))
+assert(found_head_2, "Head group 2 must be visible: " .. vim.inspect(lines14))
+assert(found_mid_summary, "Middle actions summary must be visible: " .. vim.inspect(lines14))
+assert(found_tail_1, "Tail group 1 must be visible: " .. vim.inspect(lines14))
+assert(found_tail_2, "Tail group 2 must be visible: " .. vim.inspect(lines14))
+assert(not found_mid_g3_header, "Group 3 must be collapsed into middle summary: " .. vim.inspect(lines14))
+assert(not found_mid_g4_header, "Group 4 must be collapsed into middle summary: " .. vim.inspect(lines14))
+
+-- 14d. Test interactive toggle on the middle summary line
+assert(mid_line_idx ~= nil, "mid_line_idx must be known")
+local win14 = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_buf(win14, live_buf14)
+vim.api.nvim_win_set_cursor(win14, { mid_line_idx + 1, 0 })
+
+local toggled_mid_open = protocol.toggle_work_group_at_cursor(live_buf14)
+assert(toggled_mid_open, "Toggling middle actions should succeed")
+
+local lines14_expanded = vim.api.nvim_buf_get_lines(live_buf14, 0, -1, false)
+local found_g3_expanded = false
+local found_g4_expanded = false
+for _, l in ipairs(lines14_expanded) do
+  if l:find("^● Explored 1 file %(f2%.lua%)") then found_g3_expanded = true end
+  if l:find("^● Ran %(make test%)") then found_g4_expanded = true end
+end
+assert(found_g3_expanded, "Expanded middle actions must show Group 3 header: " .. vim.inspect(lines14_expanded))
+assert(found_g4_expanded, "Expanded middle actions must show Group 4 header: " .. vim.inspect(lines14_expanded))
+
+-- Re-collapse middle actions
+vim.api.nvim_win_set_cursor(win14, { mid_line_idx + 1, 0 })
+local toggled_mid_close = protocol.toggle_work_group_at_cursor(live_buf14)
+assert(toggled_mid_close, "Re-collapsing middle actions should succeed")
+
+local lines14_recollapsed = vim.api.nvim_buf_get_lines(live_buf14, 0, -1, false)
+local found_g3_recol = false
+local found_g4_recol = false
+for _, l in ipairs(lines14_recollapsed) do
+  if l:find("^● Explored 1 file %(f2%.lua%)") then found_g3_recol = true end
+  if l:find("^● Ran %(make test%)") then found_g4_recol = true end
+end
+assert(not found_g3_recol, "Re-collapsed middle actions must hide Group 3: " .. vim.inspect(lines14_recollapsed))
+assert(not found_g4_recol, "Re-collapsed middle actions must hide Group 4: " .. vim.inspect(lines14_recollapsed))
+
+-- 14e. Test transcript replay with 6 tool steps in a turn
+local t14_buf = vim.api.nvim_create_buf(false, false)
+local t14_steps = {
+  { type = "USER_INPUT", content = "Run many actions", created_at = "2026-10-06T10:00:00Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "view_file", args = { AbsolutePath = "f1.lua" }, output = "ok", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:01Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "run_command", args = { CommandLine = "git status" }, output = "clean", duration_seconds = 0.2 } }, created_at = "2026-10-06T10:00:02Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "view_file", args = { AbsolutePath = "f2.lua" }, output = "ok", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:03Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "run_command", args = { CommandLine = "make test" }, output = "passed", duration_seconds = 0.3 } }, created_at = "2026-10-06T10:00:04Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "view_file", args = { AbsolutePath = "f3.lua" }, output = "ok", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:05Z" },
+  { type = "PLANNER_RESPONSE", tool_calls = { { name = "run_command", args = { CommandLine = "git diff" }, output = "none", duration_seconds = 0.1 } }, created_at = "2026-10-06T10:00:06Z" },
+  { type = "PLANNER_RESPONSE", content = "All 6 actions done.", created_at = "2026-10-06T10:00:07Z" },
+}
+
+local _, _, _, t14_groups, t14_mid_list = render.render_transcript(t14_buf, "test-conv-replay-mid", t14_steps, cfg)
+local t14_lines = vim.api.nvim_buf_get_lines(t14_buf, 0, -1, false)
+local found_t14_mid = false
+for _, l in ipairs(t14_lines) do
+  if l:find("^%.%.%. 2 more actions %(1 read, 1 command%) %.%.%.$") then
+    found_t14_mid = true
+  end
+end
+assert(found_t14_mid, "Transcript replay must collapse middle actions: " .. vim.inspect(t14_lines))
+assert(t14_mid_list and #t14_mid_list >= 1, "Transcript replay must return middle_actions_list")
+
+print("✓ Middle actions collapsing and single command format verified")
 
 -- Reset config back to clean defaults
 config_mod.setup()
