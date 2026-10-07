@@ -62,7 +62,31 @@ function M.ensure_prompt_line(buf)
 
   local pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.prompt_extmark_id, {})
   if pos and #pos >= 1 then
-    state.prompt_start_line = pos[1] + 1
+    local p_row = pos[1]
+    local line_count = vim.api.nvim_buf_line_count(buf)
+    if p_row < line_count then
+      local line_text = vim.api.nvim_buf_get_lines(buf, p_row, p_row + 1, false)[1] or ""
+      if render.is_compact_header_line(line_text, state.config) or render.is_queue_header_line(line_text, state.config) then
+        local old_guard = M._internal_guard
+        M._internal_guard = true
+        local prev = vim.bo[buf].modifiable
+        vim.bo[buf].modifiable = true
+        pcall(function()
+          local lc = vim.api.nvim_buf_line_count(buf)
+          local last_l = vim.api.nvim_buf_get_lines(buf, lc - 1, lc, false)[1] or ""
+          if last_l ~= "" then
+            vim.api.nvim_buf_set_lines(buf, lc, lc, false, { "" })
+            lc = lc + 1
+          end
+          state.prompt_start_line = lc
+          state.prompt_extmark_id = render.set_divider(buf, lc - 1, "user", nil, nil, true, state.prompt_extmark_id, state.config)
+        end)
+        vim.bo[buf].modifiable = prev
+        M._internal_guard = old_guard
+        return true
+      end
+    end
+    state.prompt_start_line = p_row + 1
   end
 
   local line_count = vim.api.nvim_buf_line_count(buf)
@@ -860,15 +884,24 @@ end
 ---@param params? table
 ---@return boolean is_feedback, string? filename, string? summary
 local function check_artifact_feedback_request(tool_name, params)
-  if tool_name ~= "write_to_file" or type(params) ~= "table" then
+  if tool_name ~= "write_to_file" then
+    return false
+  end
+  if type(params) == "string" then
+    params = utils.json_decode(params)
+  end
+  if type(params) ~= "table" then
     return false
   end
   local meta = params.ArtifactMetadata
   if type(meta) == "string" then
     meta = utils.json_decode(meta)
   end
-  if type(meta) == "table" and meta.RequestFeedback == true then
+  if type(meta) == "table" and (meta.RequestFeedback == true or meta.RequestFeedback == "true") then
     local target = params.TargetFile
+    if target and type(target) == "string" then
+      target = target:gsub('^["\']', ''):gsub('["\']$', '')
+    end
     local fname = target and vim.fs.basename(target) or "artifact"
     return true, fname, meta.Summary
   end
@@ -893,6 +926,15 @@ function M.intercept_ask_question(buf, state, q_list)
     pcall(function() state.stream_flush_timer:stop() end)
   end
 
+  -- Render thoughts prior to question
+  if not state.active_agent_started_output then
+    M.check_and_render_pending_thoughts(buf)
+  else
+    M.mark_transcript_thoughts_rendered(buf, state)
+  end
+
+  M.collapse_active_work_group(buf)
+
   if state.agent_extmark_id and state.agent_line then
     M.with_modifiable(buf, function()
       local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
@@ -906,15 +948,6 @@ function M.intercept_ask_question(buf, state, q_list)
   render.stop_thinking_animation(buf)
   M.ensure_prompt_line(buf)
   M.update_prompt_divider(buf)
-
-  -- Render thoughts prior to question
-  if not state.active_agent_started_output then
-    M.check_and_render_pending_thoughts(buf)
-  else
-    M.mark_transcript_thoughts_rendered(buf, state)
-  end
-
-  M.collapse_active_work_group(buf)
 
   state.stream_info.status = "question"
   M.update_footer(buf)
@@ -980,6 +1013,15 @@ function M.intercept_artifact_review(buf, state, filename, summary)
     pcall(function() state.stream_flush_timer:stop() end)
   end
 
+  -- Render thoughts prior to question
+  if not state.active_agent_started_output then
+    M.check_and_render_pending_thoughts(buf)
+  else
+    M.mark_transcript_thoughts_rendered(buf, state)
+  end
+
+  M.collapse_active_work_group(buf)
+
   if state.agent_extmark_id and state.agent_line then
     M.with_modifiable(buf, function()
       local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
@@ -993,13 +1035,6 @@ function M.intercept_artifact_review(buf, state, filename, summary)
   render.stop_thinking_animation(buf)
   M.ensure_prompt_line(buf)
   M.update_prompt_divider(buf)
-
-  -- Render thoughts prior to question
-  if not state.active_agent_started_output then
-    M.check_and_render_pending_thoughts(buf)
-  else
-    M.mark_transcript_thoughts_rendered(buf, state)
-  end
 
   state.stream_info.status = "question"
   M.update_footer(buf)
@@ -1201,6 +1236,44 @@ function M.check_and_intercept_ask_question(buf, state)
       break
     elseif step.type == "USER_INPUT" then
       break
+    end
+  end
+  return false
+end
+
+---Check if recent transcript contains an artifact requesting feedback to intercept
+---@param buf number
+---@param state table
+---@return boolean intercepted
+function M.check_and_intercept_artifact_review(buf, state)
+  if state.active_question then return true end
+  if not state.session or not state.session.turn_active then return false end
+  if not state.conversation_id or state.conversation_id == "" or state.conversation_id == "new" then return false end
+
+  local cid = state.conversation_id
+  local app_data = state.config and state.config.app_data_dir
+  local steps = transcript_mod.read_transcript(cid, app_data)
+  if not steps or #steps == 0 then return false end
+
+  for i = #steps, 1, -1 do
+    local step = steps[i]
+    if step.type == "USER_INPUT" then
+      break
+    end
+    if step.type == "PLANNER_RESPONSE" and step.tool_calls then
+      for _, tc in ipairs(step.tool_calls) do
+        local tool_name = tc.name
+        local is_feedback, fname, summary = check_artifact_feedback_request(tool_name, tc.args)
+        if is_feedback then
+          local review_key = (step.step_index or i) .. ":" .. fname
+          if not (state.handled_artifact_reviews and state.handled_artifact_reviews[review_key]) then
+            state.handled_artifact_reviews = state.handled_artifact_reviews or {}
+            state.handled_artifact_reviews[review_key] = true
+            M.intercept_artifact_review(buf, state, fname, summary)
+            return true
+          end
+        end
+      end
     end
   end
   return false
@@ -2648,22 +2721,15 @@ function M.handle_buf_read(args)
         return
       end
 
+      -- Check transcript for artifact review
+      if M.check_and_intercept_artifact_review(buf, state) then
+        return
+      end
+
       if stype == "agent_response" then
         if state.pending_artifact_feedback then
           local paf = state.pending_artifact_feedback
           state.pending_artifact_feedback = nil
-          if state.session and state.session.turn_active then
-            state.session:stop()
-          end
-          if state.agent_extmark_id and state.agent_line then
-            M.with_modifiable(buf, function()
-              local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
-              state.prompt_start_line = next_line
-              state.prompt_extmark_id = prompt_extmark_id
-              state.agent_extmark_id = nil
-              state.agent_line = nil
-            end)
-          end
           M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
           return
         end
@@ -2693,24 +2759,13 @@ function M.handle_buf_read(args)
         if state.pending_artifact_feedback and step.state == "ACTIVE" then
           local paf = state.pending_artifact_feedback
           state.pending_artifact_feedback = nil
-          if state.session and state.session.turn_active then
-            state.session:stop()
-          end
-          if state.agent_extmark_id and state.agent_line then
-            M.with_modifiable(buf, function()
-              local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
-              state.prompt_start_line = next_line
-              state.prompt_extmark_id = prompt_extmark_id
-              state.agent_extmark_id = nil
-              state.agent_line = nil
-            end)
-          end
           M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
           return
         end
 
         if step.state == "ACTIVE" then
-          local is_feedback, fname, summary = check_artifact_feedback_request(step.tool_name, step.tool_info and step.tool_info.parameters)
+          local tool_name = step.tool_name or (step.tool_info and step.tool_info.name)
+          local is_feedback, fname, summary = check_artifact_feedback_request(tool_name, step.tool_info and step.tool_info.parameters)
           if is_feedback then
             state.pending_artifact_feedback = {
               filename = fname,
@@ -2759,7 +2814,8 @@ function M.handle_buf_read(args)
             summary = state.pending_artifact_feedback.summary
             state.pending_artifact_feedback = nil
           else
-            is_feedback, fname, summary = check_artifact_feedback_request(step.tool_name, step.tool_info and step.tool_info.parameters)
+            local tool_name = step.tool_name or (step.tool_info and step.tool_info.name)
+            is_feedback, fname, summary = check_artifact_feedback_request(tool_name, step.tool_info and step.tool_info.parameters)
           end
 
           if not is_feedback then
@@ -2786,18 +2842,6 @@ function M.handle_buf_read(args)
           end
 
           if is_feedback then
-            if state.session and state.session.turn_active then
-              state.session:stop()
-            end
-            if state.agent_extmark_id and state.agent_line then
-              M.with_modifiable(buf, function()
-                local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
-                state.prompt_start_line = next_line
-                state.prompt_extmark_id = prompt_extmark_id
-                state.agent_extmark_id = nil
-                state.agent_line = nil
-              end)
-            end
             M.intercept_artifact_review(buf, state, fname, summary)
             return
           end

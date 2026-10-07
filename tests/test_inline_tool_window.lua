@@ -251,6 +251,7 @@ protocol.toggle_tool_at_cursor(test_buf)
 assert(tc_short.is_open == true, "Tool window open")
 -- Switch focus to parent and move cursor to prompt line
 vim.api.nvim_set_current_win(vim.fn.bufwinid(test_buf))
+prompt_line = vim.api.nvim_buf_line_count(test_buf)
 vim.api.nvim_win_set_cursor(0, { prompt_line, 0 })
 vim.cmd("doautocmd CursorMoved")
 assert(tc_short.is_open == false, "Moving cursor to different line in parent must auto-close inline window")
@@ -922,7 +923,7 @@ protocol.buffers[test_buf_12] = state_12
 
 -- Add filler lines so tool call is on line 18, near bottom of 20-row window
 local cur_lines_12 = vim.api.nvim_buf_line_count(test_buf_12)
-local needed_fillers = math.max(0, 18 - cur_lines_12)
+local needed_fillers = math.max(0, 19 - cur_lines_12)
 local filler_12 = {}
 for i = 1, needed_fillers do
   table.insert(filler_12, "Filler line " .. i)

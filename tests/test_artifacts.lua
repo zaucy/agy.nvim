@@ -421,6 +421,102 @@ print("✓ Artifact review question interaction and :w approval flow verified")
 protocol.cleanup_buffer(art_buf)
 print("✓ RequestFeedback: true prevents subsequent tool execution and stops turn")
 
+-- [Test 13] Testing transcript-based artifact review interception and turn cancellation
+print("\n[Test 13] Testing transcript-based artifact review interception...")
+local trans_cid = "test-conv-transcript-review"
+local trans_brain = vim.fs.joinpath(test_app_dir, "brain", trans_cid)
+local trans_logs = vim.fs.joinpath(trans_brain, ".system_generated", "logs")
+vim.fn.mkdir(trans_logs, "p")
+
+local t_steps = {
+  {
+    step_index = 1,
+    type = "USER_INPUT",
+    source = "USER_EXPLICIT",
+    content = "Create implementation plan for feature",
+  },
+  {
+    step_index = 2,
+    type = "PLANNER_RESPONSE",
+    source = "MODEL",
+    thinking = "I need to plan the architecture",
+    tool_calls = {
+      {
+        name = "write_to_file",
+        args = {
+          TargetFile = '"implementation_plan.md"',
+          ArtifactMetadata = {
+            RequestFeedback = true,
+            Summary = "Architecture for subagent coordination",
+          },
+        },
+      },
+    },
+  },
+}
+
+local trans_lines = {}
+for _, s in ipairs(t_steps) do
+  table.insert(trans_lines, vim.json.encode(s))
+end
+local t_file = vim.fs.joinpath(trans_logs, "transcript.jsonl")
+vim.fn.writefile(trans_lines, t_file)
+
+vim.cmd("edit agy://" .. trans_cid)
+local t_buf = vim.api.nvim_get_current_buf()
+local t_state = protocol.buffers[t_buf]
+
+local stop_called = false
+t_state.session = {
+  turn_active = true,
+  stop = function()
+    stop_called = true
+    t_state.session.turn_active = false
+  end,
+  send = function() end,
+}
+
+local intercepted = protocol.check_and_intercept_artifact_review(t_buf, t_state)
+assert(intercepted == true, "check_and_intercept_artifact_review should intercept artifact with RequestFeedback")
+assert(stop_called == true, "state.session:stop() must be called to cancel in-flight turn")
+assert(t_state.active_question ~= nil, "active_question must be set")
+assert(t_state.active_question.is_artifact_review == true, "is_artifact_review must be true")
+assert(t_state.active_question.artifact_filename == "implementation_plan.md", "Filename must match implementation_plan.md")
+
+-- Verify that prompt area has only 1 prompt divider and no leaked history
+local prompt_count = 0
+local ui_marks = vim.api.nvim_buf_get_extmarks(t_buf, render.NS_UI, 0, -1, { details = true })
+for _, m in ipairs(ui_marks) do
+  local opts = m[4]
+  if opts.sign_hl_group == "AgyUserSign" or opts.number_hl_group == "AgyPromptArea" then
+    prompt_count = prompt_count + 1
+  end
+end
+assert(prompt_count == 1, "Expected exactly 1 prompt divider in buffer, found: " .. prompt_count)
+
+protocol.cleanup_buffer(t_buf)
+print("✓ Transcript-based artifact review interception and turn cancellation verified")
+
+-- [Test 14] Testing reload :e leaves exactly 1 prompt divider without leaking or expanding prompt area
+print("\n[Test 14] Testing :e reload prompt divider single-instance guarantee...")
+vim.cmd("edit agy://" .. trans_cid)
+local r_buf = vim.api.nvim_get_current_buf()
+vim.cmd("edit") -- simulate :e reload
+local r_marks = vim.api.nvim_buf_get_extmarks(r_buf, render.NS_UI, 0, -1, { details = true })
+local r_prompt_count = 0
+for _, m in ipairs(r_marks) do
+  local opts = m[4]
+  if opts.sign_hl_group == "AgyUserSign" or opts.number_hl_group == "AgyPromptArea" then
+    r_prompt_count = r_prompt_count + 1
+  end
+end
+assert(r_prompt_count == 1, "Expected exactly 1 prompt divider after :e reload, found: " .. r_prompt_count)
+local r_lines = vim.api.nvim_buf_get_lines(r_buf, 0, -1, false)
+local r_state = protocol.buffers[r_buf]
+assert(r_state.prompt_start_line == #r_lines, "Prompt start line must be the final line of buffer")
+protocol.cleanup_buffer(r_buf)
+print("✓ :e reload single prompt divider verified")
+
 -- Cleanup test files
 pcall(vim.fn.delete, tmp_root, "rf")
 
