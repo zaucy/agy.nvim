@@ -1,6 +1,7 @@
 local utils = require("agy.utils")
 local panel = require("agy.panel")
 local transcript_mod = require("agy.transcript")
+local subagents_mod = require("agy.subagents")
 
 local M = {}
 
@@ -175,6 +176,7 @@ function M.collect_tasks(conv_id, app_data_dir, pstate)
             command = (info and info.command) or (tc.params and (tc.params.CommandLine or tc.params.command)) or tc.param_str or "command",
             log_path = tc.log_path or (info and info.log_path),
             duration_seconds = tc.duration_seconds,
+            order_key = tc.order_key or tc.step_index or tc.header_line_idx,
             tool_rec = tc,
           })
         end
@@ -211,6 +213,7 @@ function M.collect_tasks(conv_id, app_data_dir, pstate)
                   command = info.command,
                   log_path = info.log_path,
                   duration_seconds = step.duration_seconds or tc.duration_seconds,
+                  order_key = step.step_index or i,
                 })
               else
                 -- Update existing entry with outcome details if missing
@@ -254,6 +257,7 @@ function M.collect_tasks(conv_id, app_data_dir, pstate)
                 command = info.command,
                 log_path = info.log_path,
                 duration_seconds = step.duration_seconds,
+                order_key = step.step_index or i,
               })
             end
           end
@@ -319,9 +323,74 @@ function M.setup_highlights()
   set_hl("AgyTaskBadgeRunning", { fg = "#e0af68" })
   set_hl("AgyTaskBadgeSuccess", { fg = "#9ece6a" })
   set_hl("AgyTaskBadgeFailed", { fg = "#f7768e" })
+
+  set_hl("AgyTaskPointer", { bold = true, fg = "#7aa2f7" })
+  set_hl("AgyTaskSelected", { bold = true, fg = "#7dcfff" })
+  set_hl("AgyTaskHint", { fg = "#565f89", italic = true })
 end
 
----Build the content lines and metadata for the /tasks bottom panel
+---Collect all background tasks and subagents for a conversation (sorted reverse chronologically)
+---@param conv_id string
+---@param app_data_dir? string
+---@param pstate? table
+---@return table[] items
+function M.collect_items(conv_id, app_data_dir, pstate)
+  local tasks = M.collect_tasks(conv_id, app_data_dir, pstate)
+  for _, t in ipairs(tasks) do
+    t.kind = "task"
+    t.name = t.command or "command"
+    t.order_key = t.order_key or t.duration_seconds or 0
+  end
+
+  local subagents = subagents_mod.collect_subagents(conv_id, app_data_dir, pstate)
+  for _, s in ipairs(subagents) do
+    s.kind = "subagent"
+    s.name = s.role or "Subagent"
+    s.order_key = s.order_key or s.spawn_step_index or 0
+  end
+
+  local all_items = {}
+  for _, t in ipairs(tasks) do
+    table.insert(all_items, t)
+  end
+  for _, s in ipairs(subagents) do
+    table.insert(all_items, s)
+  end
+
+  if pstate and pstate.in_flight_subagents then
+    for _, if_sub in ipairs(pstate.in_flight_subagents) do
+      local found = false
+      for _, existing in ipairs(all_items) do
+        if (if_sub.subagent_id and existing.subagent_id == if_sub.subagent_id)
+            or (if_sub.short_id and if_sub.short_id ~= "spawning..." and existing.short_id == if_sub.short_id) then
+          found = true
+          if if_sub.status == "killed" or existing.status == "killed" then
+            existing.status = "killed"
+            existing.current_action = nil
+          elseif if_sub.status == "completed" then
+            existing.status = "completed"
+            existing.current_action = nil
+          elseif if_sub.current_action and not existing.current_action then
+            existing.current_action = if_sub.current_action
+          end
+          break
+        end
+      end
+      if not found then
+        table.insert(all_items, if_sub)
+      end
+    end
+  end
+
+  -- Sort reverse chronologically: most recent tasks/subagents at the top
+  table.sort(all_items, function(a, b)
+    return (a.order_key or 0) > (b.order_key or 0)
+  end)
+
+  return all_items
+end
+
+---Build the content lines and metadata for the tasks & subagents bottom panel
 ---@param pstate table
 ---@param cfg table
 ---@param width number
@@ -334,7 +403,7 @@ function M.build_content(pstate, cfg, width)
   local session = pstate.session or {}
   local conv_id = pstate.conversation_id or session.conversation_id or "new"
 
-  local tasks = M.collect_tasks(conv_id, cfg.app_data_dir, pstate)
+  local items = M.collect_items(conv_id, cfg.app_data_dir, pstate)
 
   local lines = {}
   local meta = {}
@@ -349,71 +418,85 @@ function M.build_content(pstate, cfg, width)
     })
   end
 
-  add_line("📋 Background Tasks", "title")
+  add_line("📋 Background Tasks & Subagents", "title")
   add_line("", "empty")
 
-  if #tasks == 0 then
-    add_line("  No background tasks found in this session.", "empty_notice")
-    add_line("  Commands running via `run_command` in background will appear here.", "comment")
+  if #items == 0 then
+    add_line("  No background tasks or subagents found in this session.", "empty_notice")
+    add_line("  Commands running via `run_command` and subagents will appear here.", "comment")
     add_line("", "empty")
   else
-    -- Table Header
-    local hdr_id = "  TASK ID"
-    local hdr_status = "STATUS"
-    local hdr_exit = "EXIT"
-    local hdr_cmd = "COMMAND"
+    assert(cfg, "agy tasks: config required")
+    assert(cfg.icons, "agy tasks: config.icons required")
+    assert(cfg.icons.bullets and cfg.icons.bullets[1], "agy tasks: config.icons.bullets[1] required")
+    assert(cfg.icons.middle_dot, "agy tasks: config.icons.middle_dot required")
+    local bullet = cfg.icons.bullets[1]
+    local dot = cfg.icons.middle_dot
 
-    local col1_w = 14
-    local col2_w = 14
-    local col3_w = 8
+    local subagent_count = 0
+    local task_count = 0
 
-    local hdr = string.format("%-" .. col1_w .. "s%-" .. col2_w .. "s%-" .. col3_w .. "s%s", hdr_id, hdr_status, hdr_exit, hdr_cmd)
-    add_line(hdr, "header")
-    add_line("  " .. string.rep("─", math.min(width - 4, 76)), "border")
-
-    local success_count = 0
-    local failed_count = 0
-    local running_count = 0
-
-    for _, t in ipairs(tasks) do
-      local cfg_icons = (cfg and cfg.icons) or {}
-      local c_icon = cfg_icons.run_command or ""
-      local status_str = c_icon .. " Running"
-      if t.status == "success" or t.status == "done" then
-        status_str = c_icon .. " Success"
-        success_count = success_count + 1
-      elseif t.status == "failed" or t.status == "error" then
-        status_str = c_icon .. " Failed"
-        failed_count = failed_count + 1
+    for _, it in ipairs(items) do
+      local status_str = "Running"
+      if it.kind == "subagent" then
+        subagent_count = subagent_count + 1
+        if it.status == "running" or it.status == "alive" then
+          if it.current_action and it.current_action ~= "" and it.current_action ~= "Running" then
+            status_str = "Running (" .. it.current_action .. ")"
+          else
+            status_str = "Running"
+          end
+        elseif it.status == "killed" then
+          status_str = "Killed"
+        elseif it.status == "idle" then
+          status_str = "Idle"
+        else
+          status_str = "Completed"
+        end
       else
-        running_count = running_count + 1
+        task_count = task_count + 1
+        if it.status == "success" or it.status == "done" then
+          status_str = (it.exit_code ~= nil) and ("Success (" .. it.exit_code .. ")") or "Success"
+        elseif it.status == "failed" or it.status == "error" then
+          status_str = (it.exit_code ~= nil) and ("Failed (" .. it.exit_code .. ")") or "Failed"
+        else
+          status_str = "Running"
+        end
       end
 
-      local exit_str = (t.exit_code ~= nil) and tostring(t.exit_code) or "-"
-      local cmd_str = t.command or ""
-      local max_cmd_w = math.max(20, width - col1_w - col2_w - col3_w - 6)
-      if #cmd_str > max_cmd_w then
-        cmd_str = cmd_str:sub(1, max_cmd_w - 3) .. "..."
+      local prefix = "  " .. bullet .. " "
+      local suffix = string.format(" (%s) %s %s", it.short_id, dot, status_str)
+      local max_name_w = math.max(15, width - #prefix - #suffix - 2)
+      local display_name = it.name or ""
+      if #display_name > max_name_w then
+        display_name = display_name:sub(1, max_name_w - 3) .. "..."
       end
 
-      local row_str = string.format("  %-" .. (col1_w - 2) .. "s%-" .. col2_w .. "s%-" .. col3_w .. "s%s", t.short_id, status_str, exit_str, cmd_str)
-      add_line(row_str, "task_row", { task = t })
-      row_to_task[#lines - 1] = t
+      local row_str = prefix .. display_name .. suffix
+      add_line(row_str, "item_row", {
+        item = it,
+        name = display_name,
+        short_id = it.short_id,
+        status_str = status_str,
+        kind = it.kind,
+        status = it.status,
+      })
+      row_to_task[#lines - 1] = it
     end
 
     add_line("", "empty")
-    local summary_str = string.format("  Tasks: %d total (%d succeeded, %d failed, %d running)", #tasks, success_count, failed_count, running_count)
+    local summary_str = string.format("  Total: %d (%d subagents, %d tasks)", #items, subagent_count, task_count)
     add_line(summary_str, "summary")
     add_line("", "empty")
   end
 
-  local nav_text = "enter View Log · k Kill Task · r Refresh · q Close"
+  local nav_text = "enter View · k Kill · r Refresh · q Close"
   add_line(panel.format_footer(nav_text, "", width), "footer", { text = nav_text })
 
   return lines, meta, row_to_task
 end
 
----Apply syntax and semantic highlighting to the /tasks bottom panel
+---Apply syntax and semantic highlighting to the tasks & subagents bottom panel
 ---@param buf number
 ---@param meta table[]
 function M.apply_highlights(buf, meta)
@@ -431,75 +514,54 @@ function M.apply_highlights(buf, meta)
         hl_group = "AgyTaskTitle",
       })
 
-    elseif l_type == "header" then
-      pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, 0, {
-        end_col = #line_str,
-        hl_group = "AgyTaskHeader",
-      })
-
-    elseif l_type == "border" or l_type == "comment" or l_type == "empty_notice" then
+    elseif l_type == "border" or l_type == "comment" or l_type == "empty_notice" or l_type == "summary" then
       pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, 0, {
         end_col = #line_str,
         hl_group = "Comment",
       })
 
-    elseif l_type == "task_row" then
+    elseif l_type == "item_row" then
       local extra = m.extra or {}
-      local task = extra.task or {}
+      local it = extra.item or {}
+      local status = extra.status or it.status
 
-      -- Highlight task ID (cyan)
-      local id_end = line_str:find("%s%s+", 3)
-      if id_end then
-        pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, 2, {
-          end_col = id_end - 1,
-          hl_group = "AgyTaskId",
-        })
-      end
-
-      -- Highlight status
       local status_hl = "AgyTaskRunning"
-      if task.status == "success" or task.status == "done" then
+      if status == "success" or status == "done" or status == "completed" then
         status_hl = "AgyTaskSuccess"
-      elseif task.status == "failed" or task.status == "error" then
+      elseif status == "failed" or status == "error" or status == "killed" then
         status_hl = "AgyTaskFailed"
       end
 
-      local s_stat, e_stat = nil, nil
-      if line_str:find("Success", 1, true) then
-        s_stat, e_stat = line_str:find("%S+%s+Success")
-        if not s_stat then s_stat, e_stat = line_str:find("Success", 1, true) end
-      elseif line_str:find("Failed", 1, true) then
-        s_stat, e_stat = line_str:find("%S+%s+Failed")
-        if not s_stat then s_stat, e_stat = line_str:find("Failed", 1, true) end
-      elseif line_str:find("Running", 1, true) then
-        s_stat, e_stat = line_str:find("%S+%s+Running")
-        if not s_stat then s_stat, e_stat = line_str:find("Running", 1, true) end
-      end
-
-      if s_stat and e_stat then
-        pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, s_stat - 1, {
-          end_col = e_stat,
+      -- Highlight bullet
+      local bullet_pos = line_str:find("%S")
+      if bullet_pos then
+        pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, bullet_pos - 1, {
+          end_col = bullet_pos + 2,
           hl_group = status_hl,
         })
       end
 
-      -- Highlight command
-      local cmd_pos = line_str:find("%s%s+%d+%s%s+") or line_str:find("%s%s+%-%s%s+")
-      if cmd_pos then
-        local cmd_start = line_str:find("%S", cmd_pos + 4)
-        if cmd_start then
-          pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, cmd_start - 1, {
-            end_col = #line_str,
-            hl_group = "AgyTaskCommand",
+      -- Highlight ID in parentheses: e.g. (short_id)
+      if it.short_id then
+        local id_start, id_end = line_str:find("%(" .. vim.pesc(it.short_id) .. "%)")
+        if id_start and id_end then
+          pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, id_start, {
+            end_col = id_end - 1,
+            hl_group = "AgyTaskId",
           })
         end
       end
 
-    elseif l_type == "summary" then
-      pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, 0, {
-        end_col = #line_str,
-        hl_group = "Comment",
-      })
+      -- Highlight status string at end of line
+      if extra.status_str then
+        local s_stat, e_stat = line_str:find(vim.pesc(extra.status_str) .. "$")
+        if s_stat and e_stat then
+          pcall(vim.api.nvim_buf_set_extmark, buf, M.NS_TASKS, row, s_stat - 1, {
+            end_col = e_stat,
+            hl_group = status_hl,
+          })
+        end
+      end
 
     elseif l_type == "footer" then
       local extra = m.extra or {}
@@ -508,7 +570,7 @@ function M.apply_highlights(buf, meta)
   end
 end
 
----Open interactive background tasks panel in the lower area below active prompt
+---Open interactive background tasks and subagents panel in the lower area below active prompt
 ---@param caller_buf? number
 ---@return number win, number buf
 function M.open(caller_buf)
@@ -527,49 +589,75 @@ function M.open(caller_buf)
   local win_w = vim.api.nvim_win_get_width(target_win)
   local width = math.max(80, win_w - 4)
 
+  local session = (pstate and pstate.session) or {}
+  local conv_id = (pstate and pstate.conversation_id) or session.conversation_id or "new"
+
   local lines, meta, row_to_task = M.build_content(pstate, cfg, width)
 
   local keymaps = {
     ["<CR>"] = function()
       local cur_row = vim.api.nvim_win_get_cursor(0)[1] - 1
-      local task = row_to_task[cur_row]
-      if task and task.log_path and vim.fn.filereadable(task.log_path) == 1 then
+      local item = row_to_task[cur_row]
+      if not item then return end
+
+      if item.kind == "subagent" then
         panel.close()
-        vim.cmd("split " .. vim.fn.fnameescape(task.log_path))
-      elseif task and task.tool_rec and task.tool_rec.output then
-        vim.notify("[agy.nvim] " .. task.short_id .. ":\n" .. tostring(task.tool_rec.output):sub(1, 400), vim.log.levels.INFO)
-      else
-        vim.notify("[agy.nvim] No log file available for " .. (task and task.short_id or "selected line"), vim.log.levels.INFO)
+        pcall(vim.api.nvim_set_current_win, target_win)
+        vim.cmd("edit " .. vim.fn.fnameescape("agy://" .. conv_id .. "/subagent/" .. item.subagent_id))
+      elseif item.kind == "task" then
+        if item.log_path and vim.fn.filereadable(item.log_path) == 1 then
+          panel.close()
+          pcall(vim.api.nvim_set_current_win, target_win)
+          vim.cmd("split " .. vim.fn.fnameescape(item.log_path))
+        elseif item.tool_rec and item.tool_rec.output then
+          vim.notify("[agy.nvim] " .. item.short_id .. ":\n" .. tostring(item.tool_rec.output):sub(1, 400), vim.log.levels.INFO)
+        else
+          vim.notify("[agy.nvim] No log file available for " .. item.short_id, vim.log.levels.INFO)
+        end
       end
     end,
     ["k"] = function()
       local cur_row = vim.api.nvim_win_get_cursor(0)[1] - 1
-      local task = row_to_task[cur_row]
-      if task and task.status == "running" then
-        task.status = "failed"
-        task.exit_code = 130
-        if task.tool_rec then
-          task.tool_rec.task_status = "failed"
-          task.tool_rec.exit_code = 130
-          pcall(function()
-            local render_mod = require("agy.render")
-            render_mod.update_task_status(caller_buf, task.tool_rec, "failed", 130)
-          end)
+      local item = row_to_task[cur_row]
+      if not item then return end
+
+      if item.kind == "subagent" then
+        if item.status == "running" or item.status == "alive" then
+          subagents_mod.kill_subagent(conv_id, item.subagent_id, cfg.app_data_dir, pstate)
+          item.status = "killed"
+          vim.notify("[agy.nvim] Terminated subagent: " .. (item.role or item.short_id), vim.log.levels.INFO)
+          local new_lines, new_meta, new_rtt = M.build_content(pstate, cfg, width)
+          row_to_task = new_rtt
+          panel.update(new_lines, new_meta)
+        else
+          vim.notify("[agy.nvim] Selected subagent is not running", vim.log.levels.INFO)
         end
-        vim.notify("[agy.nvim] Terminated background task: " .. task.short_id, vim.log.levels.INFO)
-        -- Re-render tasks panel
-        local new_lines, new_meta, new_rtt = M.build_content(pstate, cfg, width)
-        row_to_task = new_rtt
-        panel.update(new_lines, new_meta)
-      else
-        vim.notify("[agy.nvim] Selected task is not running", vim.log.levels.INFO)
+      elseif item.kind == "task" then
+        if item.status == "running" then
+          item.status = "failed"
+          item.exit_code = 130
+          if item.tool_rec then
+            item.tool_rec.task_status = "failed"
+            item.tool_rec.exit_code = 130
+            pcall(function()
+              local render_mod = require("agy.render")
+              render_mod.update_task_status(caller_buf, item.tool_rec, "failed", 130)
+            end)
+          end
+          vim.notify("[agy.nvim] Terminated background task: " .. item.short_id, vim.log.levels.INFO)
+          local new_lines, new_meta, new_rtt = M.build_content(pstate, cfg, width)
+          row_to_task = new_rtt
+          panel.update(new_lines, new_meta)
+        else
+          vim.notify("[agy.nvim] Selected task is not running", vim.log.levels.INFO)
+        end
       end
     end,
     ["r"] = function()
       local new_lines, new_meta, new_rtt = M.build_content(pstate, cfg, width)
       row_to_task = new_rtt
       panel.update(new_lines, new_meta)
-      vim.notify("[agy.nvim] Tasks refreshed", vim.log.levels.INFO)
+      vim.notify("[agy.nvim] Tasks & subagents refreshed", vim.log.levels.INFO)
     end,
   }
 

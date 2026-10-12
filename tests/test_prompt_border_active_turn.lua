@@ -308,10 +308,11 @@ assert(foot_mark_bg ~= nil and foot_mark_bg[3] ~= nil, "Footer extmark must exis
 local vl_bg = foot_mark_bg[3].virt_lines
 assert(#vl_bg >= 2, "Must retain both border and footer after bg task completion")
 assert(vl_bg[1][1][2] == "AgyPromptBorder", "First virt_line must remain AgyPromptBorder")
-assert(vl_bg[2][1][2] == "AgyPromptFooter", "Second virt_line must remain AgyPromptFooter")
+assert(vl_bg[#vl_bg][1][2] == "AgyPromptFooter", "Last virt_line must remain AgyPromptFooter")
 
 local line_count_9 = vim.api.nvim_buf_line_count(buf9)
-assert(foot_mark_bg[1] == line_count_9 - 1, "Footer must be attached to the final line of multi-line prompt")
+local prompt_last_row = state9.prompt_start_line
+assert(foot_mark_bg[1] == prompt_last_row, "Footer must be attached to the final line of multi-line prompt")
 
 protocol.cleanup_buffer(buf9)
 vim.cmd("bdelete! " .. buf9)

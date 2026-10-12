@@ -121,6 +121,12 @@ end, {
   desc = "Show Antigravity background tasks and status",
 })
 
+vim.api.nvim_create_user_command("AgySubagents", function()
+  agy.subagents()
+end, {
+  desc = "Show Antigravity subagents and background tasks",
+})
+
 vim.api.nvim_create_user_command("AgyArtifacts", function(opts)
   local arg = opts.args and vim.trim(opts.args) or ""
   agy.artifacts(arg ~= "" and arg or nil)

@@ -8,6 +8,7 @@ M.NS_PROMPT = vim.api.nvim_create_namespace("agy_prompt")
 M.NS_SPACER = vim.api.nvim_create_namespace("agy_tool_spacer")
 M.NS_QUEUE = vim.api.nvim_create_namespace("agy_queue")
 M.NS_LOGO = vim.api.nvim_create_namespace("agy_logo")
+M.NS_TASKS = vim.api.nvim_create_namespace("agy_tasks")
 M.active_logo_buffers = {}
 M.logo_timer = nil
 M.logo_animation_angle = 0
@@ -252,6 +253,12 @@ function M.setup_highlights()
 		AgyTaskBadgeRunning = { link = "DiagnosticWarn", default = true },
 		AgyTaskBadgeSuccess = { link = "DiagnosticOk", default = true },
 		AgyTaskBadgeFailed = { link = "DiagnosticError", default = true },
+		AgyTaskId = { link = "DiagnosticInfo", default = true },
+		AgyTaskName = { link = "Normal", default = true },
+		AgyTaskDot = { link = "Comment", default = true },
+		AgyTaskPointer = { link = "Special", default = true, bold = true },
+		AgyTaskSelected = { link = "Title", default = true, bold = true },
+		AgyTaskHint = { link = "Comment", default = true, italic = true },
 		AgyBadgeActive = { link = "DiagnosticWarn", default = true },
 		AgyBadgeDone = { link = "DiagnosticOk", default = true },
 		AgyBadgeError = { link = "DiagnosticError", default = true },
@@ -892,6 +899,17 @@ function M.get_agent_boundary(buf, from_agent_row)
 		end
 	end
 
+	-- Also check tasks extmark if prompt extmark is absent or below it
+	if state and state.tasks_extmark_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.tasks_extmark_id, {})
+		if pos and #pos >= 1 then
+			local t_row = pos[1]
+			if not agent_row or t_row > agent_row then
+				return t_row, agent_row
+			end
+		end
+	end
+
 	local ui_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_UI, 0, -1, { details = true })
 	if not agent_row then
 		for _, m in ipairs(ui_marks) do
@@ -1244,25 +1262,268 @@ function M.stop_thinking_animation(buf)
 end
 
 
----Set or update the bottom prompt footer virtual text and bottom border
+---Format a single background task or subagent into display line text and highlight regions
+---@param item table
+---@param config? table
+---@param is_selected? boolean
+---@return string line_text
+---@return table[] highlights
+function M.format_task_item_line(item, config, is_selected)
+	local cfg = get_config(config)
+	assert(cfg.icons, "agy render: config.icons required")
+	assert(cfg.icons.bullets and cfg.icons.bullets[1], "agy render: config.icons.bullets[1] required")
+	assert(cfg.icons.middle_dot, "agy render: config.icons.middle_dot required")
+	assert(cfg.icons.pointer, "agy render: config.icons.pointer required")
+
+	local bullet = cfg.icons.bullets[1]
+	local middle_dot = cfg.icons.middle_dot
+	local pointer = cfg.icons.pointer
+
+	local is_running = (item.status == "running" or item.status == "alive")
+	local is_done = (item.status == "completed" or item.status == "success" or item.status == "done")
+
+	local bullet_hl = is_running and "AgyTaskRunning"
+		or (is_done and "AgyTaskSuccess" or "AgyTaskFailed")
+	local status_hl = is_running and "AgyTaskRunning"
+		or (is_done and "AgyTaskSuccess" or "AgyTaskFailed")
+
+	local display_name = item.role or item.name or "Subagent"
+	local id_str = item.short_id and string.format(" (%s)", item.short_id) or ""
+	local status_str = "Running"
+	if item.kind == "subagent" then
+		if item.status == "running" or item.status == "alive" then
+			if item.current_action and item.current_action ~= "" and item.current_action ~= "Running" then
+				status_str = "Running (" .. item.current_action .. ")"
+			else
+				status_str = "Running"
+			end
+		elseif item.status == "killed" then
+			status_str = "Killed"
+		elseif item.status == "idle" then
+			status_str = "Idle"
+		else
+			status_str = "Completed"
+		end
+	else
+		if item.status == "success" or item.status == "done" or item.status == "completed" then
+			status_str = (item.exit_code ~= nil) and ("Success (" .. item.exit_code .. ")") or "Success"
+		elseif item.status == "failed" or item.status == "error" or item.status == "killed" then
+			status_str = (item.exit_code ~= nil) and ("Failed (" .. item.exit_code .. ")") or "Failed"
+		else
+			status_str = "Running"
+		end
+	end
+
+	local prefix = is_selected and pointer or "  "
+	local prefix_hl = is_selected and "AgyTaskPointer" or "Normal"
+	local name_hl = is_selected and "AgyTaskSelected" or "AgyTaskName"
+
+	local col = 0
+	local prefix_col_start = col
+	local prefix_col_end = col + #prefix
+	col = prefix_col_end
+
+	local bullet_col_start = col
+	local bullet_col_end = col + #bullet
+	col = bullet_col_end
+
+	local name_str = " " .. display_name
+	local name_col_start = col
+	local name_col_end = col + #name_str
+	col = name_col_end
+
+	local id_col_start = col
+	local id_col_end = col + #id_str
+	col = id_col_end
+
+	local dot_str = " " .. middle_dot .. " "
+	local dot_col_start = col
+	local dot_col_end = col + #dot_str
+	col = dot_col_end
+
+	local status_col_start = col
+	local status_col_end = col + #status_str
+
+	local full_line = prefix .. bullet .. name_str .. id_str .. dot_str .. status_str
+
+	local hls = {
+		{ start_col = prefix_col_start, end_col = prefix_col_end, hl_group = prefix_hl },
+		{ start_col = bullet_col_start, end_col = bullet_col_end, hl_group = bullet_hl },
+		{ start_col = name_col_start, end_col = name_col_end, hl_group = name_hl },
+		{ start_col = id_col_start, end_col = id_col_end, hl_group = "AgyTaskId" },
+		{ start_col = dot_col_start, end_col = dot_col_end, hl_group = "AgyTaskDot" },
+		{ start_col = status_col_start, end_col = status_col_end, hl_group = status_hl },
+	}
+
+	return full_line, hls
+end
+
+---Format a single background task or subagent into virtual line chunks
+---@param item table
+---@param is_selected? boolean
+---@param config? table
+---@return table[] chunks Array of { text, hl_group }
+function M.format_task_item_chunks(item, is_selected, config)
+	local cfg = get_config(config)
+	assert(cfg.icons, "agy render: config.icons required")
+	assert(cfg.icons.bullets and cfg.icons.bullets[1], "agy render: config.icons.bullets[1] required")
+	assert(cfg.icons.middle_dot, "agy render: config.icons.middle_dot required")
+	assert(cfg.icons.pointer, "agy render: config.icons.pointer required")
+
+	local bullet = cfg.icons.bullets[1]
+	local middle_dot = cfg.icons.middle_dot
+	local pointer = cfg.icons.pointer
+
+	local is_running = (item.status == "running" or item.status == "alive")
+	local is_done = (item.status == "completed" or item.status == "success" or item.status == "done")
+
+	local bullet_hl = is_running and "AgyTaskRunning"
+		or (is_done and "AgyTaskSuccess" or "AgyTaskFailed")
+	local status_hl = is_running and "AgyTaskRunning"
+		or (is_done and "AgyTaskSuccess" or "AgyTaskFailed")
+
+	local display_name = item.role or item.name or "Subagent"
+	local id_str = item.short_id and string.format(" (%s)", item.short_id) or ""
+	local status_str = "Running"
+	if item.kind == "subagent" then
+		if item.status == "running" or item.status == "alive" then
+			if item.current_action and item.current_action ~= "" and item.current_action ~= "Running" then
+				status_str = "Running (" .. item.current_action .. ")"
+			else
+				status_str = "Running"
+			end
+		elseif item.status == "killed" then
+			status_str = "Killed"
+		elseif item.status == "idle" then
+			status_str = "Idle"
+		else
+			status_str = "Completed"
+		end
+	else
+		if item.status == "success" or item.status == "done" or item.status == "completed" then
+			status_str = (item.exit_code ~= nil) and ("Success (" .. item.exit_code .. ")") or "Success"
+		elseif item.status == "failed" or item.status == "error" or item.status == "killed" then
+			status_str = (item.exit_code ~= nil) and ("Failed (" .. item.exit_code .. ")") or "Failed"
+		else
+			status_str = "Running"
+		end
+	end
+
+	local prefix = is_selected and pointer or "  "
+	local prefix_hl = is_selected and "AgyTaskPointer" or "Normal"
+	local name_hl = is_selected and "AgyTaskSelected" or "AgyTaskName"
+
+	return {
+		{ prefix, prefix_hl },
+		{ bullet, bullet_hl },
+		{ " " .. display_name, name_hl },
+		{ id_str, "AgyTaskId" },
+		{ " " .. middle_dot .. " ", "AgyTaskDot" },
+		{ status_str, status_hl },
+	}
+end
+
+---Clear virtual lines for tasks/subagents at the bottom of the buffer
+---@param buf number
+---@param tasks_extmark_id? number
+function M.clear_task_lines(buf, tasks_extmark_id)
+	if not vim.api.nvim_buf_is_valid(buf) then return end
+	vim.api.nvim_buf_clear_namespace(buf, M.NS_TASKS, 0, -1)
+	if tasks_extmark_id then
+		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_TASKS, tasks_extmark_id)
+		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, tasks_extmark_id)
+	end
+end
+
+---Render or update virtual lines for tasks/subagents at the bottom of the buffer
+---@param buf number
+---@param task_items table[]
+---@param config? table
+---@param existing_extmark_id? number
+---@param selected_index? number
+---@return number? tasks_extmark_id
+function M.render_task_lines(buf, task_items, config, existing_extmark_id, selected_index)
+	if not vim.api.nvim_buf_is_valid(buf) then return nil end
+
+	if not task_items or #task_items == 0 then
+		M.clear_task_lines(buf, existing_extmark_id)
+		return nil
+	end
+
+	local max_items = 5
+	local virt_lines = {}
+	for idx = 1, math.min(#task_items, max_items) do
+		local is_sel = (selected_index == idx)
+		local chunks = M.format_task_item_chunks(task_items[idx], is_sel, config)
+		table.insert(virt_lines, chunks)
+	end
+	if #task_items > max_items then
+		local remaining = #task_items - max_items
+		local more_str = string.format("  ... and %d more (type /subagents to view all)", remaining)
+		table.insert(virt_lines, { { more_str, "Comment" } })
+	end
+	if selected_index and selected_index >= 1 and selected_index <= #task_items then
+		table.insert(virt_lines, { { "  ⏎ View · k Kill · Esc Cancel", "AgyTaskHint" } })
+	end
+
+	local line_count = vim.api.nvim_buf_line_count(buf)
+	local attach_row = math.max(0, line_count - 1)
+
+	if existing_extmark_id then
+		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_TASKS, existing_extmark_id)
+	end
+
+	local new_ext_id = vim.api.nvim_buf_set_extmark(buf, M.NS_TASKS, attach_row, 0, {
+		virt_lines = virt_lines,
+		virt_lines_leftcol = true,
+		virt_lines_above = false,
+		priority = 100,
+	})
+
+	return new_ext_id
+end
+
+---Set or update the bottom prompt footer virtual text, tasks/subagents virtual lines, and bottom border
 ---@param buf number
 ---@param footer_text? string
 ---@param extmark_id? number
 ---@param is_prompt_active? boolean If true, render the bottom border line of the prompt area
 ---@param config? table
+---@param target_row? number 0-indexed buffer line row to anchor the virtual footer lines
+---@param task_items? table[] Optional list of background tasks and subagents
+---@param selected_index? number Optional 1-indexed selected task/subagent
 ---@return number? extmark_id
-function M.set_prompt_footer(buf, footer_text, extmark_id, is_prompt_active, config)
+function M.set_prompt_footer(buf, footer_text, extmark_id, is_prompt_active, config, target_row, task_items, selected_index)
 	if not vim.api.nvim_buf_is_valid(buf) then
 		return nil
 	end
 
 	local line_count = vim.api.nvim_buf_line_count(buf)
-	local last_line = line_count - 1
+	local attach_row = (type(target_row) == "number") and target_row or (line_count - 1)
+	if attach_row < 0 then attach_row = 0 end
+	if attach_row >= line_count then attach_row = line_count - 1 end
 
 	local virt_lines = {}
 	if is_prompt_active then
 		local width = M.get_max_window_width(buf)
 		table.insert(virt_lines, { { string.rep("─", width), "AgyPromptBorder" } })
+	end
+
+	if task_items and #task_items > 0 then
+		local max_items = 5
+		for idx = 1, math.min(#task_items, max_items) do
+			local is_sel = (selected_index == idx)
+			local chunks = M.format_task_item_chunks(task_items[idx], is_sel, config)
+			table.insert(virt_lines, chunks)
+		end
+		if #task_items > max_items then
+			local remaining = #task_items - max_items
+			local more_str = string.format("  ... and %d more (type /subagents to view all)", remaining)
+			table.insert(virt_lines, { { more_str, "Comment" } })
+		end
+		if selected_index and selected_index >= 1 and selected_index <= #task_items then
+			table.insert(virt_lines, { { "  ⏎ View · k Kill · Esc Cancel", "AgyTaskHint" } })
+		end
 	end
 
 	if footer_text and footer_text ~= "" then
@@ -1290,7 +1551,7 @@ function M.set_prompt_footer(buf, footer_text, extmark_id, is_prompt_active, con
 		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, extmark_id)
 	end
 
-	return vim.api.nvim_buf_set_extmark(buf, M.NS_UI, last_line, 0, opts)
+	return vim.api.nvim_buf_set_extmark(buf, M.NS_UI, attach_row, 0, opts)
 end
 
 ---Apply background color to history lines
@@ -1572,8 +1833,10 @@ end
 ---@param session_uri string e.g. "agy://new" or "agy://<conversation_id>"
 ---@param config? table
 ---@return number prompt_start_line
+---@param sub_text? string
+---@return number prompt_start_line
 ---@return number prompt_extmark_id
-function M.init_session_buffer(buf, session_uri, config)
+function M.init_session_buffer(buf, session_uri, config, sub_text)
 	M.setup_highlights()
 	pcall(vim.treesitter.start, buf, "markdown")
 	vim.api.nvim_buf_clear_namespace(buf, M.NS_UI, 0, -1)
@@ -1585,7 +1848,7 @@ function M.init_session_buffer(buf, session_uri, config)
 
 	local lines
 	if header_style == "banner" then
-		lines = M.build_banner_lines(session_uri, cfg)
+		lines = M.build_banner_lines(session_uri, cfg, sub_text)
 	else
 		lines = {
 			"# Antigravity Session: " .. session_uri,
@@ -1598,7 +1861,7 @@ function M.init_session_buffer(buf, session_uri, config)
 	local prompt_start_line = #lines
 
 	if header_style == "banner" then
-		M.render_banner_extmarks(buf, session_uri, cfg)
+		M.render_banner_extmarks(buf, session_uri, cfg, sub_text)
 		M.start_logo_animation(buf, cfg)
 	end
 
@@ -2073,16 +2336,20 @@ end
 ---@param steps? table[]
 ---@param config? table
 ---@param cwd? string|string[]
+---@param opts? { session_uri?: string, sub_text?: string, is_subagent?: boolean }
 ---@return number prompt_start_line
 ---@return number prompt_extmark_id
 ---@return table[] tool_calls
-function M.render_transcript(buf, conversation_id, steps, config, cwd)
+function M.render_transcript(buf, conversation_id, steps, config, cwd, opts)
 	assert(buf and vim.api.nvim_buf_is_valid(buf), "agy render: valid buffer is required")
 	assert(conversation_id, "agy render: conversation_id is required")
 	config = get_config(config)
 	cwd = cwd or vim.fn.getcwd()
 
-	local prompt_start_line, prompt_extmark_id = M.init_session_buffer(buf, "agy://" .. conversation_id, config)
+	local session_uri = (opts and opts.session_uri) or ("agy://" .. conversation_id)
+	local sub_text = opts and opts.sub_text
+
+	local prompt_start_line, prompt_extmark_id = M.init_session_buffer(buf, session_uri, config, sub_text)
 	if not steps or #steps == 0 then
 		return prompt_start_line, prompt_extmark_id, {}
 	end
@@ -2713,6 +2980,9 @@ function M.append_tool_call(buf, tool_name, params, cwd, config)
 	local line_text = (param_str ~= "") and string.format("%s %s `%s`", icon, tool_name, param_str)
 		or string.format("%s %s", icon, tool_name)
 
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
 	local boundary_row, agent_row = M.get_agent_boundary(buf)
 	local tool_line
 	if boundary_row then
@@ -2749,6 +3019,7 @@ function M.append_tool_call(buf, tool_name, params, cwd, config)
 	end
 
 	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 
 	local s_col, e_col = line_text:find(tool_name, 1, true)
 	local hl_group = is_run_cmd and "AgyTaskRunning" or "AgyToolHeader"
@@ -4299,8 +4570,10 @@ function M.set_middle_actions_extmark(buf, row, text, config, existing_id)
 	if existing_id then
 		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, existing_id)
 	end
+	local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+	local end_col = math.min(#text, #line)
 	return vim.api.nvim_buf_set_extmark(buf, M.NS_UI, row, 0, {
-		end_col = #text,
+		end_col = end_col,
 		hl_group = "AgyMoreActions",
 		priority = 150,
 	})
@@ -4417,12 +4690,14 @@ function M.reconcile_middle_actions(buf, state, config)
 		end
 	end
 
-	if not insert_row then
-		insert_row = vim.api.nvim_buf_line_count(buf)
+	local line_count = vim.api.nvim_buf_line_count(buf)
+	if not insert_row or insert_row > line_count then
+		insert_row = line_count
 	end
 
 	vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { summary_text })
-	local ext_id = M.set_middle_actions_extmark(buf, insert_row, summary_text, cfg)
+	local actual_row = math.min(insert_row, vim.api.nvim_buf_line_count(buf) - 1)
+	local ext_id = M.set_middle_actions_extmark(buf, actual_row, summary_text, cfg)
 	state.middle_actions = {
 		extmark_id = ext_id,
 		groups = middle_groups,
@@ -5275,6 +5550,9 @@ end
 ---@return number next_prompt_extmark_id
 function M.render_error(buf, err_message, config)
 	M.stop_thinking_animation(buf)
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
+
 	local err_icon = get_icon("error", config)
 	local e_prefix = (err_icon ~= "") and (err_icon .. " ") or ""
 	local err_text = string.format("%sError: %s", e_prefix, err_message)
@@ -5307,6 +5585,7 @@ function M.render_error(buf, err_message, config)
 			M.apply_history_highlights(buf, next_prompt_line, config)
 			M.apply_prompt_highlights(buf, next_prompt_line, config)
 			vim.bo[buf].modified = false
+			vim.bo[buf].modifiable = prev_mod
 			return next_prompt_line, existing_prompt_ext
 		end
 	end
@@ -5333,6 +5612,7 @@ function M.render_error(buf, err_message, config)
 	M.apply_prompt_highlights(buf, next_prompt_line, config)
 
 	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 	return next_prompt_line, prompt_extmark_id
 end
 
@@ -5343,6 +5623,8 @@ end
 ---@return number next_prompt_extmark_id
 function M.render_cancelled(buf, config)
 	M.stop_thinking_animation(buf)
+	local prev_mod = vim.bo[buf].modifiable
+	vim.bo[buf].modifiable = true
 
 	local cancel_icon = get_icon("cancelled", config)
 	local c_prefix = (cancel_icon ~= "") and (cancel_icon .. " ") or ""
@@ -5376,6 +5658,7 @@ function M.render_cancelled(buf, config)
 			M.apply_history_highlights(buf, next_prompt_line, config)
 			M.apply_prompt_highlights(buf, next_prompt_line, config)
 			vim.bo[buf].modified = false
+			vim.bo[buf].modifiable = prev_mod
 			return next_prompt_line, existing_prompt_ext
 		end
 	end
@@ -5402,6 +5685,7 @@ function M.render_cancelled(buf, config)
 	M.apply_prompt_highlights(buf, next_prompt_line, config)
 
 	vim.bo[buf].modified = false
+	vim.bo[buf].modifiable = prev_mod
 	return next_prompt_line, prompt_extmark_id
 end
 
