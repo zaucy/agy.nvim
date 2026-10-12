@@ -1099,6 +1099,160 @@ assert(t14_mid_list and #t14_mid_list >= 1, "Transcript replay must return middl
 
 print("✓ Middle actions collapsing and single command format verified")
 
+-- =========================================================================
+-- TEST 15: Multi-Turn Work Group Isolation (Interactive Question & Prompt Turns)
+-- =========================================================================
+print("\n[Test 15] Testing multi-turn work group isolation and preventing tool collapsing into previous turns...")
+
+local live_buf15 = vim.api.nvim_create_buf(false, false)
+protocol.handle_buf_read({ buf = live_buf15, file = "agy://test-conv-multi-turn-isolation" })
+local state15 = protocol.buffers[live_buf15]
+local session15 = state15.session
+session15.send_prompt = function(self, prompt)
+  return true
+end
+session15.stop = function(self)
+end
+
+-- Turn 1: Execute 6 distinct tool actions
+local turn1_steps = {
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f1.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git status" } },
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f2.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "make test" } },
+  { cat = "explore", name = "view_file", params = { AbsolutePath = "f3.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git diff" } },
+}
+
+for _, step in ipairs(turn1_steps) do
+  session15.on_step_update(session15, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "ACTIVE",
+    tool_info = { parameters = step.params },
+  })
+  session15.on_step_update(session15, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "DONE",
+    duration_seconds = 0.2,
+    tool_info = { parameters = step.params, output = "ok" },
+  })
+end
+
+local lines15_turn1 = vim.api.nvim_buf_get_lines(live_buf15, 0, -1, false)
+local found_turn1_mid = false
+for _, l in ipairs(lines15_turn1) do
+  if l:find("^%.%.%. 2 more actions %(1 read, 1 command%) %.%.%.$") then
+    found_turn1_mid = true
+  end
+end
+assert(found_turn1_mid, "Turn 1 must have its own middle actions summary: " .. vim.inspect(lines15_turn1))
+
+-- Now Turn 1 issues an interactive question (ask_question)
+session15.on_step_update(session15, {
+  step_type = "tool",
+  tool_name = "ask_question",
+  state = "ACTIVE",
+  tool_info = {
+    name = "ask_question",
+    parameters = {
+      questions = {
+        {
+          question = "Choose resolution strategy:",
+          options = { "Keep", "Remove" },
+          is_multi_select = false,
+        }
+      }
+    }
+  }
+})
+
+assert(state15.active_question ~= nil, "Turn 1 must intercept ask_question and set active_question")
+assert(#state15.turn_work_groups == 0, "Turn work groups must be reset to 0 after turn finalization")
+assert(state15.middle_actions == nil, "Active middle actions pointer must be cleared after turn finalization")
+
+-- User answers and submits the question, starting Turn 2
+local q_ui15 = state15.active_question.ui
+assert(q_ui15 and q_ui15.is_visible(), "Question UI must be active")
+q_ui15.accept()
+
+assert(state15.active_question == nil, "active_question must be cleared after answer submission")
+assert(#state15.turn_work_groups == 0, "Turn 2 must start with 0 turn_work_groups")
+assert(state15.middle_actions == nil, "Turn 2 must start with nil middle_actions")
+
+-- Turn 2: Execute 6 distinct tool actions
+local turn2_steps = {
+  { cat = "edit", name = "replace_file_content", params = { TargetFile = "p1.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git log" } },
+  { cat = "edit", name = "replace_file_content", params = { TargetFile = "p2.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git status" } },
+  { cat = "edit", name = "replace_file_content", params = { TargetFile = "p3.lua" } },
+  { cat = "command", name = "run_command", params = { CommandLine = "git commit" } },
+}
+
+for _, step in ipairs(turn2_steps) do
+  session15.on_step_update(session15, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "ACTIVE",
+    tool_info = { parameters = step.params },
+  })
+  session15.on_step_update(session15, {
+    step_type = "tool",
+    tool_name = step.name,
+    state = "DONE",
+    duration_seconds = 0.2,
+    tool_info = { parameters = step.params, output = "ok" },
+  })
+end
+
+local lines15_turn2 = vim.api.nvim_buf_get_lines(live_buf15, 0, -1, false)
+
+-- Turn 1's middle action summary MUST NOT be corrupted by Turn 2:
+local turn1_mid_count = 0
+local turn2_mid_count = 0
+local found_corrupted_mid = false
+
+for _, l in ipairs(lines15_turn2) do
+  if l:find("^%.%.%. 2 more actions %(1 read, 1 command%) %.%.%.$") then
+    turn1_mid_count = turn1_mid_count + 1
+  end
+  if l:find("^%.%.%. 2 more actions %(1 edit, 1 command%) %.%.%.$") then
+    turn2_mid_count = turn2_mid_count + 1
+  end
+  -- If Turn 2 collapsed into Turn 1, Turn 1 would have had 4 or 6 or 8 more actions with edits:
+  if l:find("more actions") and l:find("read") and l:find("edit") then
+    found_corrupted_mid = true
+  end
+end
+
+assert(turn1_mid_count == 1, "Turn 1 middle summary must remain intact: " .. vim.inspect(lines15_turn2))
+assert(turn2_mid_count == 1, "Turn 2 must have its own distinct middle summary: " .. vim.inspect(lines15_turn2))
+assert(not found_corrupted_mid, "Turn 1 and Turn 2 actions must NOT be collapsed together across turns: " .. vim.inspect(lines15_turn2))
+
+-- Verify Turn 2 head and tail groups are visible in the buffer
+local found_t2_head1 = false
+local found_t2_head2 = false
+local found_t2_tail1 = false
+local found_t2_tail2 = false
+for _, l in ipairs(lines15_turn2) do
+  if l:find("^● Edited 1 file %(p1%.lua%)") then found_t2_head1 = true end
+  if l:find("^● Ran %(git log%)") then found_t2_head2 = true end
+  if l:find("^● Edited 1 file %(p3%.lua%)") then found_t2_tail1 = true end
+  if l:find("^● Ran %(git commit%)") then found_t2_tail2 = true end
+end
+assert(found_t2_head1, "Turn 2 head group 1 must be visible: " .. vim.inspect(lines15_turn2))
+assert(found_t2_head2, "Turn 2 head group 2 must be visible: " .. vim.inspect(lines15_turn2))
+assert(found_t2_tail1, "Turn 2 tail group 1 must be visible: " .. vim.inspect(lines15_turn2))
+assert(found_t2_tail2, "Turn 2 tail group 2 must be visible: " .. vim.inspect(lines15_turn2))
+
+-- Both middle action groups must be present in middle_actions_list
+assert(#state15.middle_actions_list >= 2, "middle_actions_list must contain middle records for both turns")
+
+protocol.cleanup_buffer(live_buf15)
+print("✓ Multi-turn work group isolation and prevention of cross-turn tool collapsing verified")
+
 -- Reset config back to clean defaults
 config_mod.setup()
 

@@ -49,6 +49,21 @@ function M.with_modifiable(buf, fn)
   return res
 end
 
+---Reset active turn work group tracking state
+---@param state table
+function M.reset_turn_work_state(state)
+  state.current_work_group = nil
+  state.turn_work_groups = {}
+  if state.middle_actions then
+    state.middle_actions_list = state.middle_actions_list or {}
+    if not vim.tbl_contains(state.middle_actions_list, state.middle_actions) then
+      table.insert(state.middle_actions_list, state.middle_actions)
+    end
+    state.middle_actions = nil
+  end
+  state.active_tool_status_text = nil
+end
+
 ---Ensure that the buffer always has at least one line in the prompt area
 ---@param buf number
 ---@return boolean restored Whether deleted prompt lines were restored
@@ -970,6 +985,7 @@ function M.intercept_ask_question(buf, state, q_list)
       state.agent_line = nil
     end)
   end
+  M.reset_turn_work_state(state)
 
   render.stop_thinking_animation(buf)
   M.ensure_prompt_line(buf)
@@ -1057,6 +1073,7 @@ function M.intercept_artifact_review(buf, state, filename, summary)
       state.agent_line = nil
     end)
   end
+  M.reset_turn_work_state(state)
 
   render.stop_thinking_animation(buf)
   M.ensure_prompt_line(buf)
@@ -1148,6 +1165,8 @@ function M.submit_question_answer(buf, state, answer_payload)
   state.last_thought_start_time = vim.uv.hrtime()
   state.had_background_task = false
   state.reengage_follow_bottom = nil
+  state.work_groups = state.work_groups or {}
+  M.reset_turn_work_state(state)
 
   M.with_modifiable(buf, function()
     local line_count = vim.api.nvim_buf_line_count(buf)
@@ -1856,11 +1875,8 @@ function M.handle_write(buf)
   state.last_thought_start_time = vim.uv.hrtime()
   state.had_background_task = false
   state.reengage_follow_bottom = nil
-  state.current_work_group = nil
   state.work_groups = state.work_groups or {}
-  state.turn_work_groups = {}
-  state.middle_actions = nil
-  state.active_tool_status_text = nil
+  M.reset_turn_work_state(state)
 
   M.with_modifiable(buf, function()
     -- Prepare buffer: append agent response placeholder and active thinking divider
@@ -2152,6 +2168,7 @@ function M.stop_turn(buf)
       state.prompt_start_line = next_line
       state.prompt_extmark_id = prompt_extmark_id
     end)
+    M.reset_turn_work_state(state)
     M.update_footer(buf)
     M.update_modifiable(buf)
     vim.notify("[agy.nvim] Question cancelled.", vim.log.levels.INFO)
@@ -2168,6 +2185,7 @@ function M.stop_turn(buf)
       state.prompt_start_line = next_line
       state.prompt_extmark_id = prompt_extmark_id
     end)
+    M.reset_turn_work_state(state)
     M.update_footer(buf)
     M.update_modifiable(buf)
     vim.notify("[agy.nvim] Turn cancelled.", vim.log.levels.INFO)
@@ -2202,7 +2220,7 @@ function M.add_item_to_current_work_group(buf, item)
 
   if not state.current_work_group then
     state.current_work_group = {
-      id = #state.work_groups + 1,
+      id = (state.work_groups and #state.work_groups or 0) + 1,
       category = cat,
       is_open = false,
       start_time = vim.uv.hrtime(),
@@ -2210,6 +2228,8 @@ function M.add_item_to_current_work_group(buf, item)
       items = {},
       child_lines = {},
     }
+    state.turn_work_groups = state.turn_work_groups or {}
+    table.insert(state.turn_work_groups, state.current_work_group)
   elseif cat and not state.current_work_group.category then
     state.current_work_group.category = cat
   end
@@ -2557,7 +2577,7 @@ function M.handle_buf_read(args)
     existing_state.tool_calls = tool_calls or {}
     existing_state.work_groups = work_groups or {}
     existing_state.middle_actions_list = middle_actions or {}
-    existing_state.current_work_group = nil
+    M.reset_turn_work_state(existing_state)
     existing_state.active_tool_record = nil
     existing_state.footer_extmark_id = nil
     existing_state.agent_extmark_id = nil
@@ -2735,6 +2755,8 @@ function M.handle_buf_read(args)
     work_groups = initial_work_groups or {},
     middle_actions_list = initial_middle_actions or {},
     current_work_group = nil,
+    turn_work_groups = {},
+    middle_actions = nil,
     active_tool_record = nil,
     rendered_thinking = rendered_thinking,
     stream_info = {
@@ -3210,6 +3232,7 @@ function M.handle_buf_read(args)
           end
         end)
       end
+      M.reset_turn_work_state(state)
       M.update_modifiable(buf)
       M.update_footer(buf)
 
@@ -3285,6 +3308,7 @@ function M.handle_buf_read(args)
           state.follow_bottom = false
         end
       end)
+      M.reset_turn_work_state(state)
       M.update_modifiable(buf)
       M.update_footer(buf)
     end,
@@ -3308,6 +3332,7 @@ function M.handle_buf_read(args)
           state.agent_extmark_id = nil
           state.agent_line = nil
         end)
+        M.reset_turn_work_state(state)
       end
       M.update_modifiable(buf)
       M.update_footer(buf)

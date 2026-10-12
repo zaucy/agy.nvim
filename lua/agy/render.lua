@@ -4373,9 +4373,17 @@ function M.reconcile_middle_actions(buf, state, config)
 
 	local summary_text = M.format_middle_actions_summary(middle_groups, false, cfg)
 
+	local agent_pos = nil
+	if state.agent_extmark_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.agent_extmark_id, {})
+		if pos and #pos >= 1 then
+			agent_pos = pos[1]
+		end
+	end
+
 	if state.middle_actions and state.middle_actions.extmark_id then
 		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.middle_actions.extmark_id, {})
-		if pos and #pos >= 1 then
+		if pos and #pos >= 1 and (not agent_pos or pos[1] > agent_pos) then
 			local mid_row = pos[1]
 			vim.api.nvim_buf_set_lines(buf, mid_row, mid_row + 1, false, { summary_text })
 			state.middle_actions.extmark_id = M.set_middle_actions_extmark(buf, mid_row, summary_text, cfg, state.middle_actions.extmark_id)
@@ -4420,6 +4428,10 @@ function M.reconcile_middle_actions(buf, state, config)
 		groups = middle_groups,
 		is_open = false,
 	}
+	state.middle_actions_list = state.middle_actions_list or {}
+	if not vim.tbl_contains(state.middle_actions_list, state.middle_actions) then
+		table.insert(state.middle_actions_list, state.middle_actions)
+	end
 
 	vim.bo[buf].modified = false
 	vim.bo[buf].modifiable = prev_mod
