@@ -252,6 +252,9 @@ function M.setup_highlights()
 		AgyTaskBadgeRunning = { link = "DiagnosticWarn", default = true },
 		AgyTaskBadgeSuccess = { link = "DiagnosticOk", default = true },
 		AgyTaskBadgeFailed = { link = "DiagnosticError", default = true },
+		AgyTaskId = { link = "DiagnosticInfo", default = true },
+		AgyTaskName = { link = "Normal", default = true },
+		AgyTaskDot = { link = "Comment", default = true },
 		AgyBadgeActive = { link = "DiagnosticWarn", default = true },
 		AgyBadgeDone = { link = "DiagnosticOk", default = true },
 		AgyBadgeError = { link = "DiagnosticError", default = true },
@@ -1250,8 +1253,9 @@ end
 ---@param extmark_id? number
 ---@param is_prompt_active? boolean If true, render the bottom border line of the prompt area
 ---@param config? table
+---@param task_items? table[] Optional list of active or recent tasks and subagents
 ---@return number? extmark_id
-function M.set_prompt_footer(buf, footer_text, extmark_id, is_prompt_active, config)
+function M.set_prompt_footer(buf, footer_text, extmark_id, is_prompt_active, config, task_items)
 	if not vim.api.nvim_buf_is_valid(buf) then
 		return nil
 	end
@@ -1269,6 +1273,68 @@ function M.set_prompt_footer(buf, footer_text, extmark_id, is_prompt_active, con
 		local footer_icon = get_icon("footer", config)
 		local sep = (footer_icon ~= "") and (footer_icon .. " ") or ""
 		table.insert(virt_lines, { { string.format("── %s%s", sep, footer_text), "AgyPromptFooter" } })
+	end
+
+	if task_items and #task_items > 0 then
+		local cfg = config or config_mod.get()
+		assert(cfg, "agy render: config required")
+		assert(cfg.icons, "agy render: config.icons required")
+		assert(cfg.icons.bullets and cfg.icons.bullets[1], "agy render: config.icons.bullets[1] required")
+		assert(cfg.icons.middle_dot, "agy render: config.icons.middle_dot required")
+
+		local bullet = cfg.icons.bullets[1]
+		local middle_dot = cfg.icons.middle_dot
+
+		local max_items = 5
+		for idx = 1, math.min(#task_items, max_items) do
+			local item = task_items[idx]
+			local is_running = (item.status == "running" or item.status == "alive")
+			local is_done = (item.status == "completed" or item.status == "success" or item.status == "done")
+
+			local bullet_hl = is_running and "AgyTaskRunning"
+				or (is_done and "AgyTaskSuccess" or "AgyTaskFailed")
+			local status_hl = is_running and "AgyTaskRunning"
+				or (is_done and "AgyTaskSuccess" or "AgyTaskFailed")
+
+			local display_name = item.role or item.name or "Subagent"
+			local id_str = item.short_id and string.format(" (%s)", item.short_id) or ""
+			local status_str = "Running"
+			if item.kind == "subagent" then
+				if item.status == "running" or item.status == "alive" then
+					status_str = "Running"
+				elseif item.status == "killed" then
+					status_str = "Killed"
+				elseif item.status == "idle" then
+					status_str = "Idle"
+				else
+					status_str = "Completed"
+				end
+			else
+				if item.status == "success" or item.status == "done" or item.status == "completed" then
+					status_str = (item.exit_code ~= nil) and ("Success (" .. item.exit_code .. ")") or "Success"
+				elseif item.status == "failed" or item.status == "error" or item.status == "killed" then
+					status_str = (item.exit_code ~= nil) and ("Failed (" .. item.exit_code .. ")") or "Failed"
+				else
+					status_str = "Running"
+				end
+			end
+
+			table.insert(virt_lines, {
+				{ "  ", "Normal" },
+				{ bullet, bullet_hl },
+				{ string.format(" %s", display_name), "AgyTaskName" },
+				{ id_str, "AgyTaskId" },
+				{ string.format(" %s ", middle_dot), "AgyTaskDot" },
+				{ status_str, status_hl },
+			})
+		end
+
+		if #task_items > max_items then
+			local remaining = #task_items - max_items
+			table.insert(virt_lines, {
+				{ string.format("  ... and %d more (type /subagents to view all)", remaining), "Comment" },
+			})
+		end
 	end
 
 	if #virt_lines == 0 then

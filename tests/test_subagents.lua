@@ -10,6 +10,7 @@ local protocol = require("agy.protocol")
 local config_mod = require("agy.config")
 local panel = require("agy.panel")
 local agy = require("agy")
+vim.cmd("runtime plugin/agy.lua")
 
 print("=== Running Antigravity Subagents & Inspection Tests ===")
 
@@ -389,12 +390,118 @@ subagents.stop_watcher(live_watch_buf)
 assert(subagents.active_watchers[live_watch_buf] == nil, "Expected watcher to be stopped")
 print("✓ Live reactive watcher updates verified")
 
+-- [Test 12] Testing render.set_prompt_footer renders task_items below prompt
+print("\n[Test 12] Testing render.set_prompt_footer renders task_items in virt_lines...")
+local footer_buf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_lines(footer_buf, 0, -1, false, { "line 1", "line 2", "> active prompt" })
+
+local sample_items = {
+  {
+    kind = "subagent",
+    role = "Input Forwarding Fixer",
+    short_id = "cd15cd22",
+    status = "running",
+  },
+  {
+    kind = "task",
+    name = "cargo test",
+    short_id = "task-30",
+    status = "completed",
+    exit_code = 0,
+  }
+}
+
+local ext_id = render.set_prompt_footer(footer_buf, "gemini-3.8-flash-high", nil, true, cfg, sample_items)
+assert(ext_id ~= nil, "Expected ext_id from set_prompt_footer")
+
+local extmark_info = vim.api.nvim_buf_get_extmark_by_id(footer_buf, render.NS_UI, ext_id, { details = true })
+assert(extmark_info and extmark_info[3] and extmark_info[3].virt_lines, "Expected virt_lines in extmark details")
+local virt_lines = extmark_info[3].virt_lines
+
+-- Line 1: border
+-- Line 2: footer status
+-- Line 3: subagent item
+-- Line 4: task item
+assert(#virt_lines >= 4, "Expected at least 4 virtual lines, got " .. #virt_lines)
+
+local sub_vl = virt_lines[3]
+local sub_text = ""
+for _, chunk in ipairs(sub_vl) do
+  sub_text = sub_text .. chunk[1]
+end
+assert(sub_text:find("Input Forwarding Fixer", 1, true), "Expected role in virt_line: " .. sub_text)
+assert(sub_text:find("cd15cd22", 1, true), "Expected short_id in virt_line: " .. sub_text)
+assert(sub_text:find("Running", 1, true), "Expected Running status in virt_line: " .. sub_text)
+
+local task_vl = virt_lines[4]
+local task_text = ""
+for _, chunk in ipairs(task_vl) do
+  task_text = task_text .. chunk[1]
+end
+assert(task_text:find("cargo test", 1, true), "Expected task name in virt_line: " .. task_text)
+assert(task_text:find("task-30", 1, true), "Expected task short_id in virt_line: " .. task_text)
+assert(task_text:find("Success", 1, true), "Expected Success status in virt_line: " .. task_text)
+print("✓ render.set_prompt_footer task_items rendering in virt_lines verified")
+
+-- [Test 13] Testing protocol.update_footer with in_flight_subagents
+print("\n[Test 13] Testing protocol.update_footer live subagent tracking...")
+local proto_buf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_lines(proto_buf, 0, -1, false, { "> prompt line" })
+protocol.buffers[proto_buf] = {
+  buf = proto_buf,
+  conversation_id = "test-live-conv",
+  config = cfg,
+  stream_info = { model = "gemini-3.8-flash", status = "generating" },
+  prompt_start_line = 1,
+  prompt_extmark_id = render.set_divider(proto_buf, 0, "user", nil, nil, true, nil, cfg),
+  tool_calls = {},
+  in_flight_subagents = {
+    {
+      kind = "subagent",
+      role = "DeepCoder",
+      name = "DeepCoder",
+      short_id = "spawning...",
+      status = "running",
+      order_key = 999999,
+    }
+  }
+}
+
+protocol.update_footer(proto_buf)
+local p_state = protocol.buffers[proto_buf]
+assert(p_state.footer_items and #p_state.footer_items >= 1, "Expected footer_items in buffer state")
+assert(p_state.footer_items[1].role == "DeepCoder", "Expected in-flight subagent in footer_items")
+print("✓ protocol.update_footer live subagent tracking verified")
+
+-- [Test 14] Testing <Down> navigation from prompt opens tasks panel
+print("\n[Test 14] Testing prompt navigation to tasks panel...")
+assert(p_state.footer_items and #p_state.footer_items > 0, "Expected footer items for navigation")
+protocol._setup_buffer(proto_buf, "test-live-conv")
+
+local win = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_buf(win, proto_buf)
+vim.api.nvim_win_set_cursor(win, { 1, 0 })
+
+-- Verify <Down> keymap exists on buffer
+local keymaps = vim.api.nvim_buf_get_keymap(proto_buf, "n")
+local found_down = false
+for _, km in ipairs(keymaps) do
+  if km.lhs == "<Down>" then
+    found_down = true
+    break
+  end
+end
+assert(found_down == true, "Expected <Down> keymap registered on buffer")
+print("✓ prompt navigation keymap verified")
+
 -- Cleanup
 pcall(vim.fn.delete, tmp_app_dir, "rf")
 pcall(vim.cmd, "bdelete! " .. sub_buf)
 pcall(vim.cmd, "bdelete! " .. proto_sub_buf)
 pcall(vim.cmd, "bdelete! " .. main_buf)
 pcall(vim.cmd, "bdelete! " .. live_watch_buf)
+pcall(vim.cmd, "bdelete! " .. footer_buf)
+pcall(vim.cmd, "bdelete! " .. proto_buf)
 
 print("\nALL SUBAGENTS & INSPECTION TESTS PASSED PERFECTLY!")
 vim.cmd("qall!")

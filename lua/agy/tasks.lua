@@ -353,6 +353,22 @@ function M.collect_items(conv_id, app_data_dir, pstate)
     table.insert(all_items, s)
   end
 
+  if pstate and pstate.in_flight_subagents then
+    for _, if_sub in ipairs(pstate.in_flight_subagents) do
+      local found = false
+      for _, existing in ipairs(all_items) do
+        if (if_sub.subagent_id and existing.subagent_id == if_sub.subagent_id)
+            or (if_sub.short_id and if_sub.short_id ~= "spawning..." and existing.short_id == if_sub.short_id) then
+          found = true
+          break
+        end
+      end
+      if not found then
+        table.insert(all_items, if_sub)
+      end
+    end
+  end
+
   -- Sort reverse chronologically: most recent tasks/subagents at the top
   table.sort(all_items, function(a, b)
     return (a.order_key or 0) > (b.order_key or 0)

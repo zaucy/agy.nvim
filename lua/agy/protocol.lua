@@ -295,7 +295,59 @@ function M.update_footer(buf)
     footer_text = (#parts > 0) and table.concat(parts, "  │  ") or "Antigravity Ready"
   end
 
-  state.footer_extmark_id = render.set_prompt_footer(buf, footer_text, state.footer_extmark_id, is_prompt_active, state.config)
+  local tasks_mod = require("agy.tasks")
+  local conv_id = state.conversation_id or (state.session and state.session.conversation_id) or "new"
+  local cfg = state.config or config_mod.get()
+  local app_dir = cfg and cfg.app_data_dir
+
+  local task_items = {}
+  if conv_id and conv_id ~= "" and app_dir and app_dir ~= "" then
+    task_items = tasks_mod.collect_items(conv_id, app_dir, state)
+  end
+
+  state.footer_items = task_items
+  state.footer_extmark_id = render.set_prompt_footer(buf, footer_text, state.footer_extmark_id, is_prompt_active, state.config, task_items)
+
+  local has_running_items = false
+  for _, it in ipairs(task_items) do
+    if it.status == "running" or it.status == "alive" then
+      has_running_items = true
+      break
+    end
+  end
+
+  if has_running_items then
+    if not state.subagent_refresh_timer then
+      local timer = vim.uv.new_timer()
+      state.subagent_refresh_timer = timer
+      timer:start(1500, 1500, vim.schedule_wrap(function()
+        if not vim.api.nvim_buf_is_valid(buf) or not M.buffers[buf] then
+          if state.subagent_refresh_timer then
+            pcall(function()
+              state.subagent_refresh_timer:stop()
+              if not state.subagent_refresh_timer:is_closing() then
+                state.subagent_refresh_timer:close()
+              end
+            end)
+            state.subagent_refresh_timer = nil
+          end
+          return
+        end
+        M.update_footer(buf)
+      end))
+    end
+  else
+    if state.subagent_refresh_timer then
+      pcall(function()
+        state.subagent_refresh_timer:stop()
+        if not state.subagent_refresh_timer:is_closing() then
+          state.subagent_refresh_timer:close()
+        end
+      end)
+      state.subagent_refresh_timer = nil
+    end
+  end
+
   if state.follow_bottom then
     local wins = vim.fn.win_findbuf(buf)
     for _, win in ipairs(wins) do
@@ -553,6 +605,10 @@ function M._setup_buffer(buf, conversation_id)
           M.handle_write(buf)
           return
         end
+        if trimmed == "" and state and state.footer_items and #state.footer_items > 0 then
+          require("agy.tasks").open(buf)
+          return
+        end
       end
 
       if toggle_key == "<CR>" then
@@ -573,6 +629,62 @@ function M._setup_buffer(buf, conversation_id)
       desc = "Toggle question option or tool output at cursor",
     })
   end
+
+  -- Down keymap to access tasks & subagents panel from prompt area
+  vim.keymap.set("n", "<Down>", function()
+    local state = M.buffers[buf]
+    local cur_win = vim.api.nvim_get_current_win()
+    local cur_line = vim.api.nvim_win_get_cursor(cur_win)[1]
+    local line_count = vim.api.nvim_buf_line_count(buf)
+    local prompt_start = state and state.prompt_start_line or line_count
+    if cur_line >= prompt_start and cur_line >= line_count and state and state.footer_items and #state.footer_items > 0 then
+      require("agy.tasks").open(buf)
+      return
+    end
+    vim.cmd("normal! j")
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Navigate down or open background tasks & subagents panel",
+  })
+
+  -- Mouse click to select task/subagent from footer or open panel
+  vim.keymap.set("n", "<LeftMouse>", function()
+    local mouse = vim.fn.getmousepos()
+    if mouse and mouse.winid and vim.api.nvim_win_is_valid(mouse.winid) and vim.api.nvim_win_get_buf(mouse.winid) == buf then
+      local state = M.buffers[buf]
+      local prompt_start = state and state.prompt_start_line or vim.api.nvim_buf_line_count(buf)
+      if mouse.line >= prompt_start and state and state.footer_items and #state.footer_items > 0 then
+        local prompt_winrow = vim.api.nvim_win_call(mouse.winid, function()
+          local view = vim.fn.winsaveview()
+          return (prompt_start - view.topline) + 1
+        end)
+        local item_idx = mouse.winrow - (prompt_winrow + 2)
+        if item_idx >= 1 and item_idx <= #state.footer_items then
+          local it = state.footer_items[item_idx]
+          if it.kind == "subagent" and it.subagent_id then
+            local cid = state.conversation_id or "new"
+            vim.cmd("edit " .. vim.fn.fnameescape("agy://" .. cid .. "/subagent/" .. it.subagent_id))
+            return
+          elseif it.kind == "task" and it.log_path and vim.fn.filereadable(it.log_path) == 1 then
+            vim.cmd("split " .. vim.fn.fnameescape(it.log_path))
+            return
+          end
+        elseif mouse.winrow > prompt_winrow then
+          require("agy.tasks").open(buf)
+          return
+        end
+      end
+      vim.api.nvim_set_current_win(mouse.winid)
+      pcall(vim.api.nvim_win_set_cursor, mouse.winid, { mouse.line, math.max(0, mouse.column - 1) })
+      return
+    end
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<LeftMouse>", true, false, true), "n", false)
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Click to focus, or select task/subagent from footer",
+  })
 
   completion.setup_buffer(buf)
 
@@ -2468,6 +2580,15 @@ function M.cleanup_buffer(buf)
     pcall(vim.api.nvim_buf_clear_namespace, buf, render.NS_SPACER, 0, -1)
     render.stop_logo_animation(buf)
     pcall(vim.api.nvim_buf_clear_namespace, buf, render.NS_LOGO, 0, -1)
+    if state.subagent_refresh_timer then
+      pcall(function()
+        state.subagent_refresh_timer:stop()
+        if not state.subagent_refresh_timer:is_closing() then
+          state.subagent_refresh_timer:close()
+        end
+      end)
+      state.subagent_refresh_timer = nil
+    end
     if state.session and state.session.destroy then
       state.session:destroy()
     end
@@ -2940,6 +3061,35 @@ function M.handle_buf_read(args)
           local status_text = render.get_tool_status_text(tool_name)
           state.active_tool_status_text = status_text
           render.update_thinking_status(buf, status_text, state.config)
+
+          if tool_name == "invoke_subagent" and step.tool_info and step.tool_info.parameters then
+            local sub_args = step.tool_info.parameters.Subagents
+            local sub_list = {}
+            if type(sub_args) == "string" then
+              local ok, parsed = pcall(vim.json.decode, sub_args)
+              if ok and type(parsed) == "table" then sub_list = parsed end
+            elseif type(sub_args) == "table" then
+              sub_list = sub_args
+            end
+            local first_sub = sub_list[1] or {}
+            local role = first_sub.Role or first_sub.role or first_sub.TypeName or first_sub.typeName or "Subagent"
+            state.in_flight_subagents = state.in_flight_subagents or {}
+            local exists = false
+            for _, if_sub in ipairs(state.in_flight_subagents) do
+              if if_sub.role == role then exists = true break end
+            end
+            if not exists then
+              table.insert(state.in_flight_subagents, 1, {
+                kind = "subagent",
+                role = role,
+                name = role,
+                short_id = "spawning...",
+                status = "running",
+                order_key = 999999,
+              })
+            end
+          end
+
           M.update_footer(buf)
           M.with_modifiable(buf, function()
             local ws = (state.workspaces and #state.workspaces > 0) and state.workspaces or ((s.workspaces and #s.workspaces > 0) and s.workspaces or s.cwd)
@@ -3174,11 +3324,74 @@ function M.handle_buf_read(args)
               end
             end
           end
+
+          -- Handle invoke_subagent completion
+          if tool_name == "invoke_subagent" and step.tool_info and step.tool_info.output then
+            local out_str = tostring(step.tool_info.output)
+            local sid = out_str:match('"conversationId":%s*"([^"]+)"')
+              or out_str:match('conversationId:%s*([%w%-_]+)')
+            if sid then
+              local subagents_mod = require("agy.subagents")
+              local short_id = subagents_mod.short_id(sid)
+              local p = step.tool_info.parameters or {}
+              local sub_args = p.Subagents
+              local sub_list = {}
+              if type(sub_args) == "string" then
+                local ok, parsed = pcall(vim.json.decode, sub_args)
+                if ok and type(parsed) == "table" then sub_list = parsed end
+              elseif type(sub_args) == "table" then
+                sub_list = sub_args
+              end
+              local first_sub = sub_list[1] or {}
+              local role = first_sub.Role or first_sub.role or first_sub.TypeName or first_sub.typeName or "Subagent"
+              state.in_flight_subagents = state.in_flight_subagents or {}
+              local matched = false
+              for _, if_sub in ipairs(state.in_flight_subagents) do
+                if if_sub.role == role or if_sub.short_id == "spawning..." then
+                  if_sub.subagent_id = sid
+                  if_sub.short_id = short_id
+                  if_sub.status = "running"
+                  matched = true
+                  break
+                end
+              end
+              if not matched then
+                table.insert(state.in_flight_subagents, 1, {
+                  kind = "subagent",
+                  subagent_id = sid,
+                  short_id = short_id,
+                  role = role,
+                  name = role,
+                  status = "running",
+                  order_key = 999999,
+                })
+              end
+              M.update_footer(buf)
+            end
+          end
+
+          -- Handle manage_subagents with Action == "kill"
+          if tool_name == "manage_subagents" and step.tool_info and step.tool_info.parameters then
+            local p = step.tool_info.parameters
+            if p.Action == "kill" and type(p.ConversationIds) == "table" then
+              for _, kid in ipairs(p.ConversationIds) do
+                if state.in_flight_subagents then
+                  for _, if_sub in ipairs(state.in_flight_subagents) do
+                    if if_sub.subagent_id == kid or (if_sub.short_id and if_sub.short_id == kid:sub(1, 8)) then
+                      if_sub.status = "killed"
+                    end
+                  end
+                end
+              end
+              M.update_footer(buf)
+            end
+          end
         end
 
       elseif stype == "system_message" and step.state == "DONE" then
         M.flush_stream_delta(buf, false)
         M.reconcile_background_tasks(buf, state, state.conversation_id)
+        M.update_footer(buf)
       else
         M.flush_stream_delta(buf, false)
       end
@@ -3192,6 +3405,7 @@ function M.handle_buf_read(args)
       if result.conversation_id and result.conversation_id ~= "" then
         state.conversation_id = result.conversation_id
       end
+      M.update_footer(buf)
       if state.pending_history_display and state.conversation_id and state.conversation_id ~= "" and state.conversation_id ~= "new" then
         local ws = (state.workspaces and state.workspaces[1])
           or (state.session and state.session.cwd)
