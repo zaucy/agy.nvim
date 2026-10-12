@@ -50,6 +50,9 @@ function M.extract_current_action(steps)
   end
 
   if last_step.type == "GENERIC" or last_step.type == "tool" then
+    if last_step.content and tostring(last_step.content):find("Message sent to") then
+      return nil
+    end
     return "Thinking..."
   end
 
@@ -66,12 +69,47 @@ end
 
 ---Parse subagents from parent conversation transcript steps
 ---@param steps table[]
----@return table<string, table> subagents_by_id
+---@return table<string, table> subagents_map
+---@return number last_user_turn_idx
+---@return table<string, number> last_sent_step
+---@return table<string, number> last_replied_step
+---@return table<string, boolean> killed_subs
 function M.parse_subagents_from_steps(steps)
   local subagents_map = {}
-  if not steps or #steps == 0 then return subagents_map end
+  local last_user_turn_idx = 0
+  local last_sent_step = {}
+  local last_replied_step = {}
+  local killed_subs = {}
+
+  if not steps or #steps == 0 then
+    return subagents_map, last_user_turn_idx, last_sent_step, last_replied_step, killed_subs
+  end
 
   for i, step in ipairs(steps) do
+    local step_idx = step.step_index or i
+    if step.type == "USER_INPUT" or step.source == "USER_EXPLICIT" then
+      last_user_turn_idx = step_idx
+    end
+
+    -- Check if parent received a message from a subagent
+    local content = step.content or ""
+    if content ~= "" then
+      local sender_id = content:match("sender=([%w%-_]+)")
+      if sender_id then
+        last_replied_step[sender_id] = step_idx
+        if #sender_id >= 8 then
+          last_replied_step[sender_id:sub(1, 8)] = step_idx
+        end
+      end
+    end
+
+    if step.sender and type(step.sender) == "string" and step.sender ~= "" then
+      last_replied_step[step.sender] = step_idx
+      if #step.sender >= 8 then
+        last_replied_step[step.sender:sub(1, 8)] = step_idx
+      end
+    end
+
     -- Check step.tool_calls
     if step.tool_calls then
       for _, tc in ipairs(step.tool_calls) do
@@ -105,10 +143,24 @@ function M.parse_subagents_from_steps(steps)
               name = role,
               type_name = type_name,
               status = "running",
-              spawn_step_index = step.step_index or i,
-              order_key = step.step_index or i,
+              spawn_step_index = step_idx,
+              order_key = step_idx,
               prompt = prompt,
             }
+            last_sent_step[sid] = step_idx
+            last_sent_step[M.short_id(sid)] = step_idx
+          end
+        end
+
+        if tc.name == "send_message" then
+          local args = tc.args or {}
+          local rcpt = args.Recipient
+          if rcpt and type(rcpt) == "string" then
+            rcpt = rcpt:gsub('^["\']', ''):gsub('["\']$', '')
+            last_sent_step[rcpt] = step_idx
+            if #rcpt >= 8 then
+              last_sent_step[rcpt:sub(1, 8)] = step_idx
+            end
           end
         end
 
@@ -116,6 +168,7 @@ function M.parse_subagents_from_steps(steps)
           local args = tc.args or {}
           if args.Action == "kill" and type(args.ConversationIds) == "table" then
             for _, kid in ipairs(args.ConversationIds) do
+              killed_subs[kid] = true
               if subagents_map[kid] then
                 subagents_map[kid].status = "killed"
               end
@@ -158,16 +211,39 @@ function M.parse_subagents_from_steps(steps)
             name = role,
             type_name = type_name,
             status = "running",
-            spawn_step_index = step.step_index or i,
-            order_key = step.step_index or i,
+            spawn_step_index = step_idx,
+            order_key = step_idx,
             prompt = prompt,
           }
+          last_sent_step[sid] = step_idx
+          last_sent_step[M.short_id(sid)] = step_idx
+        end
+      end
+
+      if tname == "send_message" then
+        local args = step.args or (step.tool_info and step.tool_info.parameters) or {}
+        local rcpt = args.Recipient
+        if rcpt and type(rcpt) == "string" then
+          rcpt = rcpt:gsub('^["\']', ''):gsub('["\']$', '')
+          last_sent_step[rcpt] = step_idx
+          if #rcpt >= 8 then
+            last_sent_step[rcpt:sub(1, 8)] = step_idx
+          end
         end
       end
     end
   end
 
-  return subagents_map
+  for sid, entry in pairs(subagents_map) do
+    if killed_subs[sid] then
+      entry.status = "killed"
+    elseif last_replied_step[sid] and last_replied_step[sid] >= (last_sent_step[sid] or 0) then
+      entry.status = "completed"
+      entry.current_action = nil
+    end
+  end
+
+  return subagents_map, last_user_turn_idx, last_sent_step, last_replied_step, killed_subs
 end
 
 ---Collect all subagents for a conversation (from disk metadata, transcript, and in-memory state)
@@ -179,6 +255,18 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
   assert(conv_id and conv_id ~= "", "agy subagents: conv_id is required")
   local subagents = {}
   local seen = {}
+
+  local is_turn_active = false
+  if pstate then
+    if pstate.session and pstate.session.turn_active then
+      is_turn_active = true
+    elseif pstate.stream_info and (pstate.stream_info.status == "generating" or pstate.stream_info.status == "thinking" or (type(pstate.stream_info.status) == "string" and pstate.stream_info.status:find("^tool:"))) then
+      is_turn_active = true
+    end
+  end
+
+  local parent_steps = (conv_id ~= "new") and transcript_mod.read_transcript(conv_id, app_data_dir) or {}
+  local from_steps, last_user_turn_idx, last_sent_step, last_replied_step, killed_subs = M.parse_subagents_from_steps(parent_steps)
 
   local subagents_map = {}
 
@@ -202,22 +290,72 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
               local role = desc.role or desc.typeName or "Subagent"
               local type_name = desc.typeName or "self"
               local state_str = parsed.state or "SUBAGENT_STATE_ALIVE"
-              local status = (state_str == "SUBAGENT_STATE_KILLED") and "killed" or "running"
               local step_idx = parsed.spawnStepIndex or 0
+              local is_killed = (state_str == "SUBAGENT_STATE_KILLED" or killed_subs[sid] == true)
 
-              -- If alive, inspect subagent's own transcript for completion and current action
+              local status = "completed"
               local current_action = nil
-              if status == "running" then
-                local sub_log = utils.get_brain_dir(app_data_dir) .. "/" .. sid .. "/.system_generated/logs/transcript.jsonl"
-                if vim.fn.filereadable(sub_log) == 1 then
-                  local sub_steps = transcript_mod.read_transcript(sid, app_data_dir)
-                  if #sub_steps > 0 then
-                    local last_step = sub_steps[#sub_steps]
-                    if last_step.type == "PLANNER_RESPONSE" and (not last_step.tool_calls or #last_step.tool_calls == 0) then
-                      status = "completed"
+
+              if is_killed then
+                status = "killed"
+              elseif not is_turn_active then
+                -- When no turn is actively running, all living subagents are completed
+                status = "completed"
+              else
+                -- Turn IS active: check if subagent belongs to previous turn or already replied
+                local was_contacted = (last_sent_step[sid] and last_sent_step[sid] >= last_user_turn_idx)
+                if step_idx < last_user_turn_idx and not was_contacted then
+                  status = "completed"
+                elseif last_replied_step[sid] and last_replied_step[sid] >= (last_sent_step[sid] or 0) then
+                  status = "completed"
+                else
+                  -- Active in current turn: inspect subagent transcript
+                  local sub_log = utils.get_brain_dir(app_data_dir) .. "/" .. sid .. "/.system_generated/logs/transcript.jsonl"
+                  if vim.fn.filereadable(sub_log) == 1 then
+                    local sub_steps = transcript_mod.read_transcript(sid, app_data_dir)
+                    if #sub_steps > 0 then
+                      local last_step = sub_steps[#sub_steps]
+                      if last_step.type == "PLANNER_RESPONSE" then
+                        if not last_step.tool_calls or #last_step.tool_calls == 0 then
+                          status = "completed"
+                        else
+                          local is_send_msg_to_parent = false
+                          for _, tc in ipairs(last_step.tool_calls) do
+                            if tc.name == "send_message" then
+                              local rcpt = tc.args and tc.args.Recipient
+                              if rcpt and (rcpt:find(conv_id, 1, true) or conv_id:find(rcpt, 1, true)) then
+                                is_send_msg_to_parent = true
+                                break
+                              end
+                            end
+                          end
+                          if is_send_msg_to_parent then
+                            status = "completed"
+                          else
+                            status = "running"
+                            current_action = M.extract_current_action(sub_steps)
+                          end
+                        end
+                      elseif last_step.type == "GENERIC" then
+                        if last_step.content and tostring(last_step.content):find("Message sent to") then
+                          status = "completed"
+                        else
+                          status = "running"
+                          current_action = M.extract_current_action(sub_steps)
+                        end
+                      elseif last_step.status == "ERROR" then
+                        status = "failed"
+                      else
+                        status = "running"
+                        current_action = M.extract_current_action(sub_steps)
+                      end
                     else
-                      current_action = M.extract_current_action(sub_steps)
+                      status = "running"
+                      current_action = "Starting..."
                     end
+                  else
+                    status = "running"
+                    current_action = "Starting..."
                   end
                 end
               end
@@ -247,42 +385,59 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
     end
   end
 
-  -- 2. Scan parent conversation transcript on disk
-  if conv_id ~= "new" then
-    local steps = transcript_mod.read_transcript(conv_id, app_data_dir)
-    local from_steps = M.parse_subagents_from_steps(steps)
-    for sid, entry in pairs(from_steps) do
-      if not subagents_map[sid] then
-        entry.kind = "subagent"
-        entry.parent_conv_id = conv_id
-        entry.transcript_path = vim.fs.normalize(utils.get_brain_dir(app_data_dir) .. "/" .. sid .. "/.system_generated/logs/transcript.jsonl")
-        if entry.status == "running" and vim.fn.filereadable(entry.transcript_path) == 1 then
-          local sub_steps = transcript_mod.read_transcript(sid, app_data_dir)
-          if #sub_steps > 0 then
-            local last_step = sub_steps[#sub_steps]
-            if last_step.type == "PLANNER_RESPONSE" and (not last_step.tool_calls or #last_step.tool_calls == 0) then
-              entry.status = "completed"
-            else
-              entry.current_action = M.extract_current_action(sub_steps)
+  -- 2. Scan parent conversation transcript on disk for subagents not in .json files
+  for sid, entry in pairs(from_steps) do
+    if not subagents_map[sid] then
+      entry.kind = "subagent"
+      entry.parent_conv_id = conv_id
+      entry.transcript_path = vim.fs.normalize(utils.get_brain_dir(app_data_dir) .. "/" .. sid .. "/.system_generated/logs/transcript.jsonl")
+      if entry.status ~= "killed" then
+        if not is_turn_active then
+          entry.status = "completed"
+          entry.current_action = nil
+        else
+          local was_contacted = (last_sent_step[sid] and last_sent_step[sid] >= last_user_turn_idx)
+          if (entry.spawn_step_index or 0) < last_user_turn_idx and not was_contacted then
+            entry.status = "completed"
+            entry.current_action = nil
+          elseif last_replied_step[sid] and last_replied_step[sid] >= (last_sent_step[sid] or 0) then
+            entry.status = "completed"
+            entry.current_action = nil
+          elseif entry.status == "running" and vim.fn.filereadable(entry.transcript_path) == 1 then
+            local sub_steps = transcript_mod.read_transcript(sid, app_data_dir)
+            if #sub_steps > 0 then
+              local last_step = sub_steps[#sub_steps]
+              if last_step.type == "PLANNER_RESPONSE" and (not last_step.tool_calls or #last_step.tool_calls == 0) then
+                entry.status = "completed"
+                entry.current_action = nil
+              elseif last_step.type == "GENERIC" and last_step.content and tostring(last_step.content):find("Message sent to") then
+                entry.status = "completed"
+                entry.current_action = nil
+              elseif last_step.status == "ERROR" then
+                entry.status = "failed"
+                entry.current_action = nil
+              else
+                entry.current_action = M.extract_current_action(sub_steps)
+              end
             end
           end
         end
-        subagents_map[sid] = entry
-      else
-        -- Merge prompt or role if missing
-        if not subagents_map[sid].prompt and entry.prompt then
-          subagents_map[sid].prompt = entry.prompt
-        end
-        if subagents_map[sid].role == "Subagent" and entry.role ~= "Subagent" then
-          subagents_map[sid].role = entry.role
-          subagents_map[sid].name = entry.role
-        end
+      end
+      subagents_map[sid] = entry
+    else
+      -- Merge prompt or role if missing
+      if not subagents_map[sid].prompt and entry.prompt then
+        subagents_map[sid].prompt = entry.prompt
+      end
+      if subagents_map[sid].role == "Subagent" and entry.role ~= "Subagent" then
+        subagents_map[sid].role = entry.role
+        subagents_map[sid].name = entry.role
       end
     end
   end
 
-  -- 3. Check in-memory tool calls from active buffer state
-  if pstate and pstate.tool_calls then
+  -- 3. Check in-memory tool calls from active buffer state (only during active turn)
+  if is_turn_active and pstate and pstate.tool_calls then
     for _, tc in ipairs(pstate.tool_calls) do
       if (tc.tool_name == "invoke_subagent" or tc.name == "invoke_subagent") and tc.output then
         local sid = tostring(tc.output):match('"conversationId":%s*"([^"]+)"')
@@ -350,11 +505,23 @@ function M.kill_subagent(conv_id, subagent_id, app_data_dir, pstate)
     end
   end
 
-  if pstate and pstate.subagents then
-    for _, s in ipairs(pstate.subagents) do
-      if s.subagent_id == subagent_id then
-        s.status = "killed"
-        s.state = "SUBAGENT_STATE_KILLED"
+  if pstate then
+    if pstate.subagents then
+      for _, s in ipairs(pstate.subagents) do
+        if s.subagent_id == subagent_id or (s.short_id and s.short_id == subagent_id:sub(1, 8)) then
+          s.status = "killed"
+          s.state = "SUBAGENT_STATE_KILLED"
+          s.current_action = nil
+        end
+      end
+    end
+    if pstate.in_flight_subagents then
+      for _, s in ipairs(pstate.in_flight_subagents) do
+        if s.subagent_id == subagent_id or (s.short_id and s.short_id == subagent_id:sub(1, 8)) then
+          s.status = "killed"
+          s.state = "SUBAGENT_STATE_KILLED"
+          s.current_action = nil
+        end
       end
     end
   end

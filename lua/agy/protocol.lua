@@ -3582,6 +3582,16 @@ function M.handle_buf_read(args)
       elseif stype == "system_message" and step.state == "DONE" then
         M.flush_stream_delta(buf, false)
         M.reconcile_background_tasks(buf, state, state.conversation_id)
+        local content = step.content or ""
+        local sender_id = content:match("sender=([%w%-_]+)")
+        if sender_id and state.in_flight_subagents then
+          for _, if_sub in ipairs(state.in_flight_subagents) do
+            if if_sub.subagent_id == sender_id or (if_sub.short_id and if_sub.short_id == sender_id:sub(1, 8)) then
+              if_sub.status = "completed"
+              if_sub.current_action = nil
+            end
+          end
+        end
         M.update_footer(buf)
       else
         M.flush_stream_delta(buf, false)
@@ -3595,6 +3605,14 @@ function M.handle_buf_read(args)
       end
       if result.conversation_id and result.conversation_id ~= "" then
         state.conversation_id = result.conversation_id
+      end
+      if state.in_flight_subagents then
+        for _, if_sub in ipairs(state.in_flight_subagents) do
+          if if_sub.status == "running" then
+            if_sub.status = "completed"
+            if_sub.current_action = nil
+          end
+        end
       end
       M.update_footer(buf)
       if state.pending_history_display and state.conversation_id and state.conversation_id ~= "" and state.conversation_id ~= "new" then
@@ -3745,6 +3763,14 @@ function M.handle_buf_read(args)
         end
       end)
       M.reset_turn_work_state(state)
+      if state.in_flight_subagents then
+        for _, if_sub in ipairs(state.in_flight_subagents) do
+          if if_sub.status == "running" then
+            if_sub.status = "completed"
+            if_sub.current_action = nil
+          end
+        end
+      end
       M.update_modifiable(buf)
       M.update_footer(buf)
     end,
@@ -3769,6 +3795,14 @@ function M.handle_buf_read(args)
           state.agent_line = nil
         end)
         M.reset_turn_work_state(state)
+      end
+      if state.in_flight_subagents then
+        for _, if_sub in ipairs(state.in_flight_subagents) do
+          if if_sub.status == "running" then
+            if_sub.status = "completed"
+            if_sub.current_action = nil
+          end
+        end
       end
       M.update_modifiable(buf)
       M.update_footer(buf)

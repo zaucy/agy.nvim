@@ -360,6 +360,15 @@ function M.collect_items(conv_id, app_data_dir, pstate)
         if (if_sub.subagent_id and existing.subagent_id == if_sub.subagent_id)
             or (if_sub.short_id and if_sub.short_id ~= "spawning..." and existing.short_id == if_sub.short_id) then
           found = true
+          if if_sub.status == "killed" or existing.status == "killed" then
+            existing.status = "killed"
+            existing.current_action = nil
+          elseif if_sub.status == "completed" then
+            existing.status = "completed"
+            existing.current_action = nil
+          elseif if_sub.current_action and not existing.current_action then
+            existing.current_action = if_sub.current_action
+          end
           break
         end
       end

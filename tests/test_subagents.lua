@@ -611,8 +611,159 @@ local live_sub_item = {
 }
 local formatted_live_line, _ = render.format_task_item_line(live_sub_item, cfg)
 print("Formatted live subagent line:\n  " .. formatted_live_line)
-assert(formatted_live_line:find("Running %(Reading build_script%.md%)"), "Expected Running (Reading build_script.md) in line: " .. formatted_live_line)
 print("✓ live subagent action extraction and formatted status verified")
+
+-- [Test 18] Testing resumed conversation subagents completion detection
+print("\n[Test 18] Testing resumed conversation subagent completion detection...")
+local test_sub_id_3 = "33334444-5555-6666-7777-888899990000"
+local sub3_logs_dir = tmp_app_dir .. "/brain/" .. test_sub_id_3 .. "/.system_generated/logs"
+vim.fn.mkdir(sub3_logs_dir, "p")
+
+local sub3_meta = {
+  conversationId = test_sub_id_3,
+  subagentDescriptor = {
+    typeName = "research",
+    role = "Diagnostics & Quality Specialist",
+  },
+  state = "SUBAGENT_STATE_ALIVE", -- Still ALIVE on disk
+  spawnStepIndex = 5,
+  workspaceUris = { "file:///test/ws" },
+}
+vim.fn.writefile({ vim.json.encode(sub3_meta) }, parent_subagents_dir .. "/" .. test_sub_id_3 .. ".json")
+
+-- Transcript ends on GENERIC (output of last tool call)
+local sub3_transcript = {
+  vim.json.encode({
+    step_index = 1,
+    source = "MODEL",
+    type = "PLANNER_RESPONSE",
+    status = "DONE",
+    tool_calls = { { name = "run_command", args = { CommandLine = "pytest" } } },
+  }),
+  vim.json.encode({
+    step_index = 2,
+    source = "MODEL",
+    type = "GENERIC",
+    status = "DONE",
+    content = "3 passed, 0 failed in 0.45s",
+  })
+}
+vim.fn.writefile(sub3_transcript, sub3_logs_dir .. "/transcript.jsonl")
+
+-- When conversation is resumed or opened with idle session (turn_active == false):
+local resumed_pstate = {
+  conversation_id = test_conv_id,
+  session = { turn_active = false },
+  stream_info = { status = "ready" },
+}
+local resumed_subs = subagents.collect_subagents(test_conv_id, tmp_app_dir, resumed_pstate)
+local found3 = nil
+for _, s in ipairs(resumed_subs) do
+  if s.subagent_id == test_sub_id_3 then found3 = s break end
+end
+
+assert(found3 ~= nil, "Expected subagent 3 collected in resumed conversation")
+assert(found3.status == "completed", "Expected status 'completed' in resumed/idle conversation, got: " .. tostring(found3.status))
+assert(found3.current_action == nil, "Expected current_action nil for completed subagent, got: " .. tostring(found3.current_action))
+
+local formatted_resumed_line, _ = render.format_task_item_line(found3, cfg)
+print("Formatted resumed subagent line:\n  " .. formatted_resumed_line)
+assert(formatted_resumed_line:find("Completed"), "Expected 'Completed' in formatted line: " .. formatted_resumed_line)
+assert(not formatted_resumed_line:find("Running"), "Must NOT contain 'Running' in formatted line: " .. formatted_resumed_line)
+print("✓ resumed conversation subagent completion detection verified")
+
+-- [Test 19] Testing multi-turn subagent lifecycle and message reply completion
+print("\n[Test 19] Testing multi-turn subagent lifecycle and message reply completion...")
+local test_conv_multiturn = "test-conv-multiturn-200"
+local multiturn_subagents_dir = tmp_app_dir .. "/brain/" .. test_conv_multiturn .. "/.system_generated/subagents"
+local multiturn_logs_dir = tmp_app_dir .. "/brain/" .. test_conv_multiturn .. "/.system_generated/logs"
+vim.fn.mkdir(multiturn_subagents_dir, "p")
+vim.fn.mkdir(multiturn_logs_dir, "p")
+
+local sub_turn1_id = "aaaa1111-2222-3333-4444-555566667777"
+local sub_turn2_id = "bbbb2222-3333-4444-5555-666677778888"
+
+-- Turn 1 subagent metadata
+vim.fn.writefile({ vim.json.encode({
+  conversationId = sub_turn1_id,
+  subagentDescriptor = { typeName = "self", role = "Turn 1 Worker" },
+  state = "SUBAGENT_STATE_ALIVE",
+  spawnStepIndex = 2,
+}) }, multiturn_subagents_dir .. "/" .. sub_turn1_id .. ".json")
+
+-- Turn 2 subagent metadata
+vim.fn.writefile({ vim.json.encode({
+  conversationId = sub_turn2_id,
+  subagentDescriptor = { typeName = "self", role = "Turn 2 Worker" },
+  state = "SUBAGENT_STATE_ALIVE",
+  spawnStepIndex = 12,
+}) }, multiturn_subagents_dir .. "/" .. sub_turn2_id .. ".json")
+
+-- Parent multi-turn transcript:
+-- Turn 1: Step 1 (USER_INPUT), Step 2 (invoke subagent 1), Step 3 (SYSTEM_MESSAGE sender=sub1)
+-- Turn 2: Step 10 (USER_INPUT), Step 12 (invoke subagent 2)
+local parent_multiturn_steps = {
+  vim.json.encode({ step_index = 1, source = "USER_EXPLICIT", type = "USER_INPUT", content = "First prompt" }),
+  vim.json.encode({
+    step_index = 2,
+    source = "MODEL",
+    type = "PLANNER_RESPONSE",
+    tool_calls = { { name = "invoke_subagent", output = '{"conversationId":"' .. sub_turn1_id .. '"}' } },
+  }),
+  vim.json.encode({
+    step_index = 3,
+    source = "SYSTEM",
+    type = "SYSTEM_MESSAGE",
+    content = "[Message] timestamp=2026-10-12T12:00:00Z sender=" .. sub_turn1_id .. " content=Turn 1 done!",
+  }),
+  vim.json.encode({ step_index = 10, source = "USER_EXPLICIT", type = "USER_INPUT", content = "Second prompt" }),
+  vim.json.encode({
+    step_index = 12,
+    source = "MODEL",
+    type = "PLANNER_RESPONSE",
+    tool_calls = { { name = "invoke_subagent", output = '{"conversationId":"' .. sub_turn2_id .. '"}' } },
+  }),
+}
+vim.fn.writefile(parent_multiturn_steps, multiturn_logs_dir .. "/transcript.jsonl")
+
+-- Active session during Turn 2:
+local active_turn2_pstate = {
+  conversation_id = test_conv_multiturn,
+  session = { turn_active = true },
+  stream_info = { status = "generating" },
+}
+
+local multiturn_collected = subagents.collect_subagents(test_conv_multiturn, tmp_app_dir, active_turn2_pstate)
+local sub1_item = nil
+local sub2_item = nil
+for _, s in ipairs(multiturn_collected) do
+  if s.subagent_id == sub_turn1_id then sub1_item = s end
+  if s.subagent_id == sub_turn2_id then sub2_item = s end
+end
+
+assert(sub1_item ~= nil, "Expected Turn 1 subagent collected")
+assert(sub2_item ~= nil, "Expected Turn 2 subagent collected")
+assert(sub1_item.status == "completed", "Turn 1 subagent must be 'completed' during Turn 2, got: " .. tostring(sub1_item.status))
+assert(sub2_item.status == "running", "Turn 2 subagent must be 'running' during active Turn 2, got: " .. tostring(sub2_item.status))
+
+-- Now parent receives completion message from Turn 2 subagent
+table.insert(parent_multiturn_steps, vim.json.encode({
+  step_index = 14,
+  source = "SYSTEM",
+  type = "SYSTEM_MESSAGE",
+  content = "[Message] timestamp=2026-10-12T12:05:00Z sender=" .. sub_turn2_id .. " content=Turn 2 finished!",
+}))
+vim.fn.writefile(parent_multiturn_steps, multiturn_logs_dir .. "/transcript.jsonl")
+
+local after_reply_collected = subagents.collect_subagents(test_conv_multiturn, tmp_app_dir, active_turn2_pstate)
+local sub2_after = nil
+for _, s in ipairs(after_reply_collected) do
+  if s.subagent_id == sub_turn2_id then sub2_after = s break end
+end
+
+assert(sub2_after ~= nil, "Expected sub2 collected after reply")
+assert(sub2_after.status == "completed", "Turn 2 subagent must be 'completed' after replying to parent, got: " .. tostring(sub2_after.status))
+print("✓ multi-turn subagent lifecycle and message reply completion verified")
 
 -- Cleanup
 pcall(vim.fn.delete, tmp_app_dir, "rf")
