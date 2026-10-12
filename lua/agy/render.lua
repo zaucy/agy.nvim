@@ -896,6 +896,17 @@ function M.get_agent_boundary(buf, from_agent_row)
 		end
 	end
 
+	-- Also check tasks extmark if prompt extmark is absent or below it
+	if state and state.tasks_extmark_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.tasks_extmark_id, {})
+		if pos and #pos >= 1 then
+			local t_row = pos[1]
+			if not agent_row or t_row > agent_row then
+				return t_row, agent_row
+			end
+		end
+	end
+
 	local ui_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_UI, 0, -1, { details = true })
 	if not agent_row then
 		for _, m in ipairs(ui_marks) do
@@ -1334,6 +1345,11 @@ end
 function M.clear_task_lines(buf, tasks_start_extmark_id)
 	if not vim.api.nvim_buf_is_valid(buf) then return end
 	vim.api.nvim_buf_clear_namespace(buf, M.NS_TASKS, 0, -1)
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+	if state then
+		state.task_line_count = nil
+	end
 	if not tasks_start_extmark_id then return end
 
 	local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, tasks_start_extmark_id, {})
@@ -1388,13 +1404,28 @@ function M.render_task_lines(buf, task_items, config, existing_extmark_id)
 		or nil
 
 	local line_count = vim.api.nvim_buf_line_count(buf)
-	local start_row = (pos and #pos >= 1 and pos[1] <= line_count) and pos[1] or line_count
+	local protocol = package.loaded["agy.protocol"]
+	local state = protocol and protocol.buffers and protocol.buffers[buf]
+
+	-- Start row must be at pos[1] if valid and at/below prompt_start_line, otherwise at line_count
+	local min_allowed_row = line_count
+	if state and state.prompt_start_line then
+		min_allowed_row = state.prompt_start_line
+	end
+
+	local start_row = (pos and #pos >= 1 and pos[1] <= line_count and pos[1] >= min_allowed_row) and pos[1] or line_count
+	local old_count = (state and state.task_line_count) or #new_lines
+	local end_row = (pos and #pos >= 1 and pos[1] == start_row) and math.min(line_count, start_row + old_count) or start_row
 
 	local prev_mod = vim.bo[buf].modifiable
 	vim.bo[buf].modifiable = true
 	local prev_modified = vim.bo[buf].modified
 
-	pcall(vim.api.nvim_buf_set_lines, buf, start_row, -1, false, new_lines)
+	pcall(vim.api.nvim_buf_set_lines, buf, start_row, end_row, false, new_lines)
+
+	if state then
+		state.task_line_count = #new_lines
+	end
 
 	if not prev_modified then
 		vim.bo[buf].modified = false
@@ -4493,8 +4524,10 @@ function M.set_middle_actions_extmark(buf, row, text, config, existing_id)
 	if existing_id then
 		pcall(vim.api.nvim_buf_del_extmark, buf, M.NS_UI, existing_id)
 	end
+	local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+	local end_col = math.min(#text, #line)
 	return vim.api.nvim_buf_set_extmark(buf, M.NS_UI, row, 0, {
-		end_col = #text,
+		end_col = end_col,
 		hl_group = "AgyMoreActions",
 		priority = 150,
 	})
@@ -4611,12 +4644,14 @@ function M.reconcile_middle_actions(buf, state, config)
 		end
 	end
 
-	if not insert_row then
-		insert_row = vim.api.nvim_buf_line_count(buf)
+	local line_count = vim.api.nvim_buf_line_count(buf)
+	if not insert_row or insert_row > line_count then
+		insert_row = line_count
 	end
 
 	vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { summary_text })
-	local ext_id = M.set_middle_actions_extmark(buf, insert_row, summary_text, cfg)
+	local actual_row = math.min(insert_row, vim.api.nvim_buf_line_count(buf) - 1)
+	local ext_id = M.set_middle_actions_extmark(buf, actual_row, summary_text, cfg)
 	state.middle_actions = {
 		extmark_id = ext_id,
 		groups = middle_groups,

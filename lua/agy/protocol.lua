@@ -2229,17 +2229,27 @@ function M.restore_prompt_area(buf)
   end
 
   M.with_modifiable(buf, function()
-    local line_count = vim.api.nvim_buf_line_count(buf)
-    local to_add = { "", "" }
+    local insert_row = nil
+    if state.tasks_extmark_id then
+      local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+      if t_pos and #t_pos >= 1 then
+        insert_row = t_pos[1]
+      end
+    end
+    if not insert_row then
+      insert_row = vim.api.nvim_buf_line_count(buf)
+    end
 
-    vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, to_add)
-    local new_count = vim.api.nvim_buf_line_count(buf)
+    local to_add = { "", "" }
+    vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, to_add)
+
     local is_thinking = (state.stream_info and state.stream_info.status == "thinking")
       or (state.session and state.session.turn_active)
     local badge = (is_thinking or (render.thinking_timers and render.thinking_timers[buf]))
       and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
       or nil
-    state.prompt_extmark_id = render.set_divider(buf, new_count - 1, "user", badge, "AgyBadgeActive", true, nil, state.config)
+    state.prompt_extmark_id = render.set_divider(buf, insert_row, "user", badge, "AgyBadgeActive", true, nil, state.config)
+    state.prompt_start_line = insert_row + 2
 
     if state.prompt_queue and #state.prompt_queue > 0 then
       local new_prompt_line = render.render_queue(buf, state.prompt_queue, state.prompt_start_line, state.config)
@@ -2252,6 +2262,7 @@ function M.restore_prompt_area(buf)
     end
 
     render.apply_prompt_highlights(buf, state.prompt_start_line)
+    vim.bo[buf].modified = false
   end)
 
   state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
@@ -3238,7 +3249,6 @@ function M.handle_buf_read(args)
             end
           end
 
-          M.update_footer(buf)
           M.with_modifiable(buf, function()
             local ws = (state.workspaces and #state.workspaces > 0) and state.workspaces or ((s.workspaces and #s.workspaces > 0) and s.workspaces or s.cwd)
             local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
@@ -3406,7 +3416,6 @@ function M.handle_buf_read(args)
           end
           state.active_tool_status_text = nil
           render.update_thinking_status(buf, nil, state.config)
-          M.update_footer(buf)
           if state.active_tool_record then
             M.with_modifiable(buf, function()
               local verbosity = (state.config and state.config.ui and state.config.ui.verbosity) or "medium"
