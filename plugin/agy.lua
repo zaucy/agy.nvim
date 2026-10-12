@@ -43,10 +43,13 @@ end, {
   desc = "Start a new Antigravity session (agy://new)",
 })
 
-vim.api.nvim_create_user_command("AgyHome", function()
-  agy.home()
+vim.api.nvim_create_user_command("AgyHome", function(opts)
+  local arg = opts.args and vim.trim(opts.args) or ""
+  agy.home(arg ~= "" and arg or nil)
 end, {
-  desc = "Open the Antigravity root home buffer (agy://)",
+  nargs = "?",
+  complete = "dir",
+  desc = "Open the Antigravity workspace home buffer (agy://<dir>/)",
 })
 
 vim.api.nvim_create_user_command("AgyResume", function(opts)

@@ -11,23 +11,30 @@ function M.setup(opts)
   protocol.setup()
 end
 
----Open an Antigravity conversation buffer or root home buffer
----@param conversation_id? string Optional conversation ID. If nil or "", opens agy://. If "new", opens agy://new.
+---Open an Antigravity conversation buffer or workspace home buffer
+---@param conversation_id? string Optional conversation ID or directory. If nil or "", opens agy://<cwd>/. If "new", opens agy://new.
 function M.open(conversation_id)
   local target
   if not conversation_id or conversation_id == "" or conversation_id == "home" then
-    target = "agy://"
+    local home_mod = require("agy.home")
+    target = home_mod.get_home_uri()
   elseif conversation_id == "new" then
     target = "agy://new"
+  elseif conversation_id:match("^/") or conversation_id:match("^%a:[/\\]") then
+    local home_mod = require("agy.home")
+    target = home_mod.get_home_uri(conversation_id)
   else
     target = "agy://" .. conversation_id
   end
-  vim.cmd("edit " .. target)
+  vim.cmd("edit " .. vim.fn.fnameescape(target))
 end
 
----Open the Antigravity root home buffer (agy://)
-function M.home()
-  M.open("")
+---Open the Antigravity workspace home buffer (agy://<dir>/)
+---@param dir? string Optional target directory (defaults to current working directory)
+function M.home(dir)
+  local home_mod = require("agy.home")
+  local target = home_mod.get_home_uri(dir)
+  vim.cmd("edit " .. vim.fn.fnameescape(target))
 end
 
 ---Start a brand new Antigravity session
@@ -130,6 +137,9 @@ function M.artifacts(filename)
   if not cid or cid == "" or cid == "new" then
     local bname = vim.api.nvim_buf_get_name(cur_buf)
     cid = bname:match("^agy://([^/?#]+)")
+    if cid and (cid:match("^%a:$") or cid == "home" or protocol.is_home_uri(bname:match("^agy://(.*)$") or "")) then
+      cid = nil
+    end
   end
 
   if not cid or cid == "" or cid == "new" or cid == "home" then
