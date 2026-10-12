@@ -241,6 +241,7 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             run_command = "",       -- Icon for run_command / background tasks
             subagent = "🤖",          -- Icon for subagents
             prompt_sign = "❯ ",
+            pointer = "❯ ",           -- Pointer icon for selected task or subagent
             cancelled = "⏹️",
             review_comment = "💬",
             new_session = "󰐕 ",      -- Icon for agy://new in home buffer
@@ -354,6 +355,9 @@ The following highlight groups are used for styling and can be customized:
 - `AgyQuestionStepTodo`: Unanswered question step circle in progression.
 - `AgyQuestionStepCurrent`: Current active question step circle in progression.
 - `AgyQuestionStepLine`: Connecting line between question steps in progression.
+- `AgyTaskPointer`: Pointer indicator (`❯`) for selected task or subagent.
+- `AgyTaskSelected`: Highlighted label for selected task or subagent.
+- `AgyTaskHint`: Action key hints for selected task or subagent.
 
 ==============================================================================
 8. MENTIONS & EXTENSION API                                     *agy-mentions*

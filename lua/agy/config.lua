@@ -87,6 +87,7 @@ local M = {}
 ---@field group_running? string Bullet icon for running named tool group (default: "●")
 ---@field middle_dot? string Middle dot separator for group details (default: "·")
 ---@field multiply? string Multiplication symbol for repeated commands (default: "×")
+---@field pointer? string Pointer icon for selected task or subagent in virtual text (default: "❯ ")
 
 ---@class AgyConfig
 ---@field agy_cmd? string Executable path or name for Antigravity CLI (default: "agy")
@@ -113,6 +114,7 @@ M.defaults = {
 		run_command = "",
 		subagent = "🤖",
 		prompt_sign = "❯ ",
+		pointer = "❯ ",
 		cancelled = "⏹️",
 		work_collapsed = "▶",
 		work_expanded = "▼",

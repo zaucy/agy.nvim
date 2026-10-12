@@ -323,6 +323,10 @@ function M.setup_highlights()
   set_hl("AgyTaskBadgeRunning", { fg = "#e0af68" })
   set_hl("AgyTaskBadgeSuccess", { fg = "#9ece6a" })
   set_hl("AgyTaskBadgeFailed", { fg = "#f7768e" })
+
+  set_hl("AgyTaskPointer", { bold = true, fg = "#7aa2f7" })
+  set_hl("AgyTaskSelected", { bold = true, fg = "#7dcfff" })
+  set_hl("AgyTaskHint", { fg = "#565f89", italic = true })
 end
 
 ---Collect all background tasks and subagents for a conversation (sorted reverse chronologically)
