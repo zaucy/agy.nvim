@@ -58,8 +58,8 @@ local cfg = config.setup({
   },
 })
 
--- [Test 1] Testing home.path_equals
-print("\n[Test 1] Testing home.path_equals...")
+-- [Test 1] Testing home.path_equals and home.get_home_uri
+print("\n[Test 1] Testing home.path_equals and home.get_home_uri...")
 assert(home.path_equals("C:/foo/bar", "C:/foo/bar"), "Identical paths must match")
 assert(home.path_equals("C:/foo/bar/", "C:/foo/bar"), "Trailing slash must normalize")
 assert(home.path_equals("C:\\foo\\bar", "C:/foo/bar"), "Backslashes and forward slashes must match")
@@ -69,7 +69,18 @@ end
 assert(not home.path_equals("C:/foo/bar", "C:/foo/baz"), "Different paths must not match")
 assert(not home.path_equals("", "C:/foo/bar"), "Empty path must return false")
 assert(not home.path_equals(nil, "C:/foo/bar"), "Nil path must return false")
-print("✓ home.path_equals verified")
+
+-- Test home.get_home_uri
+assert(home.get_home_uri("C:/foo/bar"):match("^agy://"), "get_home_uri must start with agy://")
+assert(home.get_home_uri("C:/foo/bar"):sub(-1) == "/", "get_home_uri must end with trailing slash")
+if vim.fn.has("win32") == 1 then
+  assert(home.get_home_uri("C:\\foo\\bar") == "agy://C:/foo/bar/", "Backslashes must normalize to forward slashes")
+  assert(home.get_home_uri("C:/foo/bar/") == "agy://C:/foo/bar/", "Duplicate trailing slashes must not be created")
+else
+  assert(home.get_home_uri("/home/user/project") == "agy:///home/user/project/", "Unix path must format as agy:///path/")
+  assert(home.get_home_uri("/home/user/project/") == "agy:///home/user/project/", "Unix trailing slash must be preserved")
+end
+print("✓ home.path_equals and home.get_home_uri verified")
 
 -- [Test 2] Testing home.get_workspace_conversations
 print("\n[Test 2] Testing home.get_workspace_conversations...")
@@ -99,8 +110,8 @@ for idx, l in ipairs(lines) do
   print(string.format("  [%2d] %s", idx, l))
 end
 
--- Line 4 should contain agy://
-assert(lines[4]:find("agy://", 1, true), "Line 4 must contain agy://")
+-- Line 4 should contain home_uri (agy://<mock_cwd>/)
+assert(lines[4]:find(home.get_home_uri(mock_cwd), 1, true), "Line 4 must contain home_uri")
 -- Line 5 should contain Workspace: <mock_cwd>
 assert(lines[5]:find(mock_cwd, 1, true), "Line 5 must contain mock_cwd")
 -- Line 8 should contain [agy://new]
@@ -217,7 +228,8 @@ vim.cmd = function(cmd_str)
 end
 
 conv_dash_fn()
-assert(nav_target == "agy://", "Expected conversation '-' to navigate to agy://, got: " .. tostring(nav_target))
+local expected_home = home.get_home_uri(mock_cwd)
+assert(nav_target == expected_home, "Expected conversation '-' to navigate to " .. expected_home .. ", got: " .. tostring(nav_target))
 
 -- Tier 3: In agy://<id>/artifacts/<filename>, pressing '-' navigates to agy://<id>
 local artifacts_mod = require("agy.artifacts")
@@ -244,18 +256,43 @@ vim.cmd = orig_cmd
 vim.notify = orig_notify
 print("✓ 3-tier '-' navigation hierarchy verified across all buffers")
 
--- [Test 7] Testing protocol handle_buf_read for agy://, agy:///, and agy://home
-print("\n[Test 7] Testing protocol handle_buf_read for agy://, agy:///, and agy://home...")
-local test_urls = { "agy://", "agy:///", "agy://home" }
+-- [Test 7] Testing protocol.is_home_uri and handle_buf_read for agy://, agy:///, agy://home, and agy://<dir>/
+print("\n[Test 7] Testing protocol.is_home_uri and handle_buf_read...")
+assert(protocol.is_home_uri("") == true, "Empty raw must be home URI")
+assert(protocol.is_home_uri("/") == true, "Slash raw must be home URI")
+assert(protocol.is_home_uri("home") == true, "Home raw must be home URI")
+local is_h, h_dir = protocol.is_home_uri(mock_cwd)
+assert(is_h == true and h_dir:find("my%-app/?$"), "Directory path must be identified as home URI")
+assert(protocol.is_home_uri("new") == false, "agy://new must not be home URI")
+assert(protocol.is_home_uri(conv_id_1) == false, "agy://<id> must not be home URI")
+
+local test_urls = { "agy://", "agy:///", "agy://home", home.get_home_uri(mock_cwd), home.get_home_uri(other_cwd) }
 for _, url in ipairs(test_urls) do
   local b = vim.api.nvim_create_buf(false, true)
   protocol.handle_buf_read({ buf = b, file = url })
-  assert(protocol.buffers[b] ~= nil, "Expected buffer state recorded for " .. url)
-  assert(protocol.buffers[b].is_home == true, "Expected is_home == true for " .. url)
-  local b_lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+  local target_buf = vim.api.nvim_buf_is_valid(b) and b or vim.api.nvim_get_current_buf()
+  assert(protocol.buffers[target_buf] ~= nil, "Expected buffer state recorded for " .. url)
+  assert(protocol.buffers[target_buf].is_home == true, "Expected is_home == true for " .. url)
+  local b_lines = vim.api.nvim_buf_get_lines(target_buf, 0, -1, false)
   assert(#b_lines >= 8, "Expected rendered home lines for " .. url)
+  assert(vim.api.nvim_buf_get_name(target_buf):match("^agy://"), "Buffer name must start with agy://")
+  assert(vim.api.nvim_buf_get_name(target_buf):sub(-1) == "/", "Buffer name must end with trailing slash")
+  -- Clean up buffer so next test starts clean
+  pcall(vim.api.nvim_buf_delete, target_buf, { force = true })
 end
-print("✓ protocol handle_buf_read for agy:// URLs verified")
+
+-- Test buffer reuse: opening agy:// when agy://<cwd>/ already exists reuses buffer
+local current_cwd_home = home.get_home_uri()
+local first_buf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_win_set_buf(win, first_buf)
+protocol.handle_buf_read({ buf = first_buf, file = current_cwd_home })
+assert(vim.api.nvim_buf_get_name(first_buf) == current_cwd_home, "First buffer must be named " .. current_cwd_home)
+
+local second_buf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_win_set_buf(win, second_buf)
+protocol.handle_buf_read({ buf = second_buf, file = "agy://" })
+assert(vim.api.nvim_win_get_buf(win) == first_buf, "Window must reuse first_buf for identical cwd home")
+print("✓ protocol handle_buf_read and buffer reuse for agy:// URLs verified")
 
 -- [Test 8] Testing user commands :Agy, :AgyNew, :AgyHome
 print("\n[Test 8] Testing user commands :Agy, :AgyNew, :AgyHome...")
@@ -273,11 +310,23 @@ end
 -- Test agy.home() and agy.open("")
 opened_cmd = nil
 agy.home()
-assert(opened_cmd == "agy://", "Expected agy.home() to open agy://, got: " .. tostring(opened_cmd))
+assert(opened_cmd == home.get_home_uri(), "Expected agy.home() to open " .. home.get_home_uri() .. ", got: " .. tostring(opened_cmd))
 
 opened_cmd = nil
 agy.open("")
-assert(opened_cmd == "agy://", "Expected agy.open('') to open agy://, got: " .. tostring(opened_cmd))
+assert(opened_cmd == home.get_home_uri(), "Expected agy.open('') to open " .. home.get_home_uri() .. ", got: " .. tostring(opened_cmd))
+
+opened_cmd = nil
+agy.open("home")
+assert(opened_cmd == home.get_home_uri(), "Expected agy.open('home') to open " .. home.get_home_uri() .. ", got: " .. tostring(opened_cmd))
+
+opened_cmd = nil
+agy.home(other_cwd)
+assert(opened_cmd == home.get_home_uri(other_cwd), "Expected agy.home(other_cwd) to open " .. home.get_home_uri(other_cwd) .. ", got: " .. tostring(opened_cmd))
+
+opened_cmd = nil
+agy.open(other_cwd)
+assert(opened_cmd == home.get_home_uri(other_cwd), "Expected agy.open(other_cwd) to open " .. home.get_home_uri(other_cwd) .. ", got: " .. tostring(opened_cmd))
 
 opened_cmd = nil
 agy.new()

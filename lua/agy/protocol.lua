@@ -412,6 +412,29 @@ function M.resolve_prompt_mentions(prompt_text, workspaces)
   return mention_mod.resolve(prompt_text, ctx)
 end
 
+---Get the workspace home URI for a conversation buffer
+---@param buf number
+---@param cid? string
+---@param app_data_dir? string
+---@return string
+function M.get_conversation_home_uri(buf, cid, app_data_dir)
+  local state = M.buffers[buf]
+  local ws = nil
+  if state and state.workspaces and #state.workspaces > 0 then
+    ws = state.workspaces[1]
+  elseif state and state.session and (state.session.workspaces or state.session.cwd) then
+    ws = (state.session.workspaces and state.session.workspaces[1]) or state.session.cwd
+  end
+  if (not ws or ws == "") and cid and cid ~= "" and cid ~= "new" then
+    ws = transcript_mod.get_conversation_workspace(cid, app_data_dir)
+  end
+  if not ws or ws == "" then
+    ws = vim.fn.getcwd()
+  end
+  local home_mod = require("agy.home")
+  return home_mod.get_home_uri(ws)
+end
+
 ---Setup buffer-local autocommands and options
 ---@param buf number
 ---@param conversation_id string
@@ -508,13 +531,14 @@ function M._setup_buffer(buf, conversation_id)
     desc = "Open link under cursor or go to definition",
   })
 
-  -- Up navigation to agy:// home
+  -- Up navigation to agy://<workspace>/ home
   vim.keymap.set("n", "-", function()
-    vim.cmd("edit agy://")
+    local target_home = M.get_conversation_home_uri(buf, conversation_id, cfg.app_data_dir)
+    vim.cmd("edit " .. vim.fn.fnameescape(target_home))
   end, {
     buffer = buf,
     silent = true,
-    desc = "Navigate up to agy:// home",
+    desc = "Navigate up to workspace home",
   })
 
   local toggle_key = cfg.keymaps.toggle_tool or "<CR>"
@@ -2462,6 +2486,21 @@ function M.cleanup_buffer(buf)
   end
 end
 
+---Check if a raw URI path represents a home buffer
+---@param raw string The path portion after agy://
+---@return boolean is_home
+---@return string? dir_path
+function M.is_home_uri(raw)
+  if not raw or raw == "" or raw == "/" or raw == "home" then
+    return true, vim.fn.getcwd()
+  end
+  if raw:match("^/") or raw:match("^[A-Za-z]:[/\\]") then
+    local norm = vim.fs.normalize(raw):gsub("[/\\]+$", "") .. "/"
+    return true, norm
+  end
+  return false, nil
+end
+
 ---Main handler for BufReadCmd agy://*
 ---@param args table
 function M.handle_buf_read(args)
@@ -2501,18 +2540,47 @@ function M.handle_buf_read(args)
     return
   end
 
-  -- Check if this is the home buffer: agy:// or agy:/// or agy://home
-  if clean_raw == "" or clean_raw == "/" or clean_raw == "home" then
+  -- Check if this is a home buffer: agy://, agy:///, agy://home, or agy://<dir>/
+  local is_home, home_dir = M.is_home_uri(clean_raw)
+  if is_home then
     local existing_state = M.buffers[buf]
     if existing_state and existing_state.session and existing_state.session.turn_active then
       existing_state.session:stop()
     end
 
     local home_mod = require("agy.home")
-    home_mod.render_home(buf, cfg)
+    local canonical_uri = home_mod.get_home_uri(home_dir)
+
+    -- Check if another valid buffer with canonical_uri already exists
+    local existing_buf = nil
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if b ~= buf and vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == canonical_uri then
+        existing_buf = b
+        break
+      end
+    end
+
+    if existing_buf then
+      local win = vim.api.nvim_get_current_win()
+      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+        vim.api.nvim_win_set_buf(win, existing_buf)
+      end
+      if vim.api.nvim_buf_is_valid(buf) and buf ~= existing_buf then
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
+      end
+      home_mod.render_home(existing_buf, cfg, home_dir)
+      return
+    end
+
+    if vim.api.nvim_buf_get_name(buf) ~= canonical_uri then
+      pcall(vim.api.nvim_buf_set_name, buf, canonical_uri)
+    end
+
+    home_mod.render_home(buf, cfg, home_dir)
     M.buffers[buf] = {
       buf = buf,
       is_home = true,
+      cwd = home_dir,
       config = cfg,
     }
     return
@@ -2629,13 +2697,14 @@ function M.handle_buf_read(args)
 
     completion.setup_buffer(buf)
 
-    -- Up navigation to agy:// home
+    -- Up navigation to agy://<workspace>/ home
     vim.keymap.set("n", "-", function()
-      vim.cmd("edit agy://")
+      local target_home = M.get_conversation_home_uri(buf, target_id, cfg.app_data_dir)
+      vim.cmd("edit " .. vim.fn.fnameescape(target_home))
     end, {
       buffer = buf,
       silent = true,
-      desc = "Navigate up to agy:// home",
+      desc = "Navigate up to workspace home",
     })
 
     vim.bo[buf].modified = false

@@ -63,7 +63,17 @@ function M.get_workspace_conversations_async(cwd, app_data_dir)
   return matches
 end
 
----Render the root agy:// home buffer
+---Build canonical home URI for a directory
+---@param dir? string
+---@return string
+function M.get_home_uri(dir)
+  local target = dir or vim.fn.getcwd()
+  assert(target and target ~= "", "agy home: valid directory required")
+  local norm = vim.fs.normalize(target):gsub("[/\\]+$", "") .. "/"
+  return "agy://" .. norm
+end
+
+---Render the root agy://<dir>/ home buffer
 ---@param buf number
 ---@param config? table
 ---@param cwd? string
@@ -81,6 +91,7 @@ function M.render_home(buf, config, cwd)
   local horiz = cfg.icons.table.horizontal
 
   local target_cwd = cwd or vim.fn.getcwd()
+  local home_uri = M.get_home_uri(target_cwd)
   local conversations = M.get_workspace_conversations(target_cwd, cfg.app_data_dir)
 
   -- Prefetch models asynchronously in background so next session open is instantaneous
@@ -93,12 +104,12 @@ function M.render_home(buf, config, cwd)
   local lines = {}
 
   if header_style == "banner" then
-    local banner = render.build_banner_lines("agy://", cfg, "Workspace: " .. target_cwd)
+    local banner = render.build_banner_lines(home_uri, cfg, "Workspace: " .. target_cwd)
     for i = 1, 7 do
       table.insert(lines, banner[i])
     end
   else
-    table.insert(lines, "# Antigravity Home (agy://)")
+    table.insert(lines, "# Antigravity Home (" .. home_uri .. ")")
     table.insert(lines, "Workspace: " .. target_cwd)
     table.insert(lines, "")
   end
@@ -177,7 +188,7 @@ function M.render_home(buf, config, cwd)
 
   -- Apply banner extmarks and animation
   if header_style == "banner" then
-    render.render_banner_extmarks(buf, "agy://", cfg, "Workspace: " .. target_cwd)
+    render.render_banner_extmarks(buf, home_uri, cfg, "Workspace: " .. target_cwd)
     render.start_logo_animation(buf, cfg)
   end
 

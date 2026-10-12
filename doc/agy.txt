@@ -53,9 +53,15 @@ Using vim-plug: >vim
 You can open Antigravity conversations and navigation using the `agy://` URL scheme:
 
 - `agy://`
-  Opens the root home buffer displaying the current workspace, an `agy://new`
-  entry at the top to start a fresh conversation, and a list of resumable
-  conversations recorded for the active workspace.
+  Opens the workspace home buffer. Automatically switches to `agy://<dir>/`
+  where `<dir>` is the current working directory, giving each workspace a
+  unique buffer name.
+
+- `agy://<dir>/`
+  Opens the workspace home buffer for `<dir>` (e.g. `agy://C:/path/to/project/`
+  on Windows, `agy:///path/to/project/` on Unix), displaying an `agy://new`
+  entry at the top to start a fresh conversation and a list of resumable
+  conversations recorded for that workspace.
 
 - `agy://new`
   Opens a fresh conversation. Once Antigravity initializes the session, the
@@ -73,12 +79,13 @@ You can open Antigravity conversations and navigation using the `agy://` URL sch
 ==============================================================================
 5. COMMANDS                                                     *agy-commands*
 
-:Agy [conversation-id]                                                  *:Agy*
-    Open the Antigravity root home buffer (`agy://`). If a conversation ID or
-    `new` is specified, opens that conversation buffer directly.
+:Agy [conversation-id|directory]                                        *:Agy*
+    Open the Antigravity workspace home buffer (`agy://<cwd>/`). If a
+    conversation ID, `new`, or directory path is specified, opens that target
+    directly.
 
-:AgyHome                                                              *:AgyHome*
-    Open the root Antigravity home buffer (`agy://`).
+:AgyHome [directory]                                                  *:AgyHome*
+    Open the workspace home buffer (`agy://<cwd>/` or `agy://<dir>/`).
 
 :AgyNew                                                              *:AgyNew*
     Start a brand new Antigravity session (`agy://new`).
@@ -119,14 +126,14 @@ You can open Antigravity conversations and navigation using the `agy://` URL sch
 ==============================================================================
 6. KEYMAPS                                                       *agy-keymaps*
 
-Inside the root `agy://` home buffer:
+Inside an `agy://<dir>/` workspace home buffer:
 
 - `<CR>` (Normal mode):
   Open `agy://new` to start a fresh conversation (when cursor is on `agy://new`
   or header area) or resume the conversation selected under cursor.
 
 - `-` (Normal mode):
-  Notify that you are already at the agy root (`[agy.nvim] Already at agy root`).
+  Notify that you are already at the workspace root (`[agy.nvim] Already at agy root`).
 
 - `q` (Normal mode):
   Close the home buffer / window.
@@ -138,7 +145,7 @@ Inside the root `agy://` home buffer:
 Inside an `agy://<id>` or `agy://new` conversation buffer:
 
 - `-` (Normal mode):
-  Navigate up one level to the root `agy://` home buffer.
+  Navigate up one level to the conversation's workspace home buffer (`agy://<dir>/`).
 
 - `<C-s>` (Normal and Insert modes):
   Save the buffer and submit the prompt below the User divider. If a turn
