@@ -107,9 +107,29 @@ function M.ensure_prompt_line(buf)
 
   local line_count = vim.api.nvim_buf_line_count(buf)
   local prompt_start = state.prompt_start_line or line_count
+  local task_start = nil
+  if state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+    local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+    if t_pos and #t_pos >= 1 then
+      task_start = t_pos[1] + 1
+    end
+  end
 
   local restored = false
-  if line_count < prompt_start then
+  if task_start and prompt_start >= task_start then
+    local old_guard = M._internal_guard
+    M._internal_guard = true
+    local prev = vim.bo[buf].modifiable
+    vim.bo[buf].modifiable = true
+    pcall(function()
+      vim.api.nvim_buf_set_lines(buf, task_start - 1, task_start - 1, false, { "" })
+      state.prompt_start_line = task_start - 1
+      state.prompt_extmark_id = render.set_divider(buf, task_start - 2, "user", nil, nil, true, state.prompt_extmark_id, state.config)
+    end)
+    vim.bo[buf].modifiable = prev
+    M._internal_guard = old_guard
+    restored = true
+  elseif line_count < prompt_start then
     local old_guard = M._internal_guard
     M._internal_guard = true
     local prev = vim.bo[buf].modifiable
@@ -183,10 +203,21 @@ function M.update_modifiable(buf)
   local cur_line = vim.api.nvim_win_get_cursor(win)[1]
   local prompt_start = state.prompt_start_line or 1
 
+  local task_start = nil
+  if state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+    local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+    if t_pos and #t_pos >= 1 then
+      task_start = t_pos[1] + 1
+    end
+  end
+
   local mode = vim.fn.mode()
   local is_visual = (mode:find("^[vV\x16]") ~= nil)
 
   local should_be_modifiable = (cur_line >= prompt_start)
+  if task_start and cur_line >= task_start then
+    should_be_modifiable = false
+  end
   if state.active_question then
     if state.active_question.ui and state.active_question.ui.state and state.active_question.ui.state.is_editing_write_in then
       should_be_modifiable = true
@@ -198,7 +229,8 @@ function M.update_modifiable(buf)
   if is_visual then
     local v_line = vim.fn.getpos("v")[2]
     local min_sel = math.min(cur_line, v_line)
-    if min_sel < prompt_start then
+    local max_sel = math.max(cur_line, v_line)
+    if min_sel < prompt_start or (task_start and max_sel >= task_start) then
       should_be_modifiable = false
     end
   end
@@ -306,7 +338,26 @@ function M.update_footer(buf)
   end
 
   state.footer_items = task_items
-  state.footer_extmark_id = render.set_prompt_footer(buf, footer_text, state.footer_extmark_id, is_prompt_active, state.config, task_items)
+
+  -- Render actual buffer lines for tasks/subagents at the bottom
+  local old_guard = M._internal_guard
+  M._internal_guard = true
+  state.tasks_extmark_id = render.render_task_lines(buf, task_items, state.config, state.tasks_extmark_id)
+  M._internal_guard = old_guard
+
+  -- Anchor footer virtual lines (border + status) directly on the last prompt row (above tasks)
+  local last_prompt_row = nil
+  if state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+    local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+    if t_pos and #t_pos >= 1 then
+      last_prompt_row = t_pos[1] - 1
+    end
+  end
+  if not last_prompt_row or last_prompt_row < 0 then
+    last_prompt_row = vim.api.nvim_buf_line_count(buf) - 1
+  end
+
+  state.footer_extmark_id = render.set_prompt_footer(buf, footer_text, state.footer_extmark_id, is_prompt_active, state.config, last_prompt_row)
 
   local has_running_items = false
   for _, it in ipairs(task_items) do
@@ -442,9 +493,20 @@ function M.extract_prompt(buf)
     end
   end
   local prompt_start = state and state.prompt_start_line or 1
-  local line_count = vim.api.nvim_buf_line_count(buf)
+  local prompt_end = vim.api.nvim_buf_line_count(buf)
 
-  local prompt_lines = vim.api.nvim_buf_get_lines(buf, prompt_start - 1, line_count, false)
+  if state and state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+    local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+    if t_pos and #t_pos >= 1 then
+      prompt_end = t_pos[1]
+    end
+  end
+
+  if prompt_end < prompt_start - 1 then
+    prompt_end = prompt_start - 1
+  end
+
+  local prompt_lines = vim.api.nvim_buf_get_lines(buf, prompt_start - 1, prompt_end, false)
   local full_text = table.concat(prompt_lines, "\n")
   return utils.trim(full_text), prompt_start
 end
@@ -596,6 +658,32 @@ function M._setup_buffer(buf, conversation_id)
 
     local handled = M.toggle_tool_at_cursor(buf, vim.api.nvim_get_current_win())
     if not handled then
+      local task_start = nil
+      if state and state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+        local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+        if t_pos and #t_pos >= 1 then
+          task_start = t_pos[1] + 1
+        end
+      end
+
+      if task_start and cur_line >= task_start and state and state.footer_items then
+        local item_idx = cur_line - task_start + 1
+        if item_idx >= 1 and item_idx <= #state.footer_items then
+          local it = state.footer_items[item_idx]
+          if it.kind == "subagent" and it.subagent_id then
+            local cid = state.conversation_id or "new"
+            vim.cmd("edit " .. vim.fn.fnameescape("agy://" .. cid .. "/subagent/" .. it.subagent_id))
+            return
+          elseif it.kind == "task" and it.log_path and vim.fn.filereadable(it.log_path) == 1 then
+            vim.cmd("split " .. vim.fn.fnameescape(it.log_path))
+            return
+          end
+        else
+          require("agy.tasks").open(buf)
+          return
+        end
+      end
+
       local prompt_start = state and state.prompt_start_line or 1
       if cur_line >= prompt_start then
         local line_text = vim.api.nvim_get_current_line()
@@ -630,14 +718,57 @@ function M._setup_buffer(buf, conversation_id)
     })
   end
 
-  -- Down keymap to access tasks & subagents panel from prompt area
+  -- Keymaps to kill selected task/subagent when cursor is on a task line
+  local function handle_task_kill_or_key(key)
+    local state = M.buffers[buf]
+    local cur_win = vim.api.nvim_get_current_win()
+    local cur_line = vim.api.nvim_win_get_cursor(cur_win)[1]
+    local task_start = nil
+    if state and state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+      local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+      if t_pos and #t_pos >= 1 then
+        task_start = t_pos[1] + 1
+      end
+    end
+
+    if task_start and cur_line >= task_start and state and state.footer_items then
+      local item_idx = cur_line - task_start + 1
+      if item_idx >= 1 and item_idx <= #state.footer_items then
+        local it = state.footer_items[item_idx]
+        if it.kind == "subagent" and it.subagent_id then
+          require("agy.subagents").kill_subagent(state.conversation_id, it.subagent_id, state.config and state.config.app_data_dir)
+          vim.notify("[agy.nvim] Killed subagent " .. (it.role or it.subagent_id), vim.log.levels.INFO)
+          M.update_footer(buf)
+          return
+        elseif it.kind == "task" and it.task_id then
+          require("agy.tasks").kill_task(it.task_id)
+          vim.notify("[agy.nvim] Killed task " .. (it.name or it.task_id), vim.log.levels.INFO)
+          M.update_footer(buf)
+          return
+        end
+      end
+    end
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "n", false)
+  end
+
+  vim.keymap.set("n", "d", function() handle_task_kill_or_key("d") end, {
+    buffer = buf,
+    silent = true,
+    desc = "Kill selected task/subagent or delete",
+  })
+  vim.keymap.set("n", "x", function() handle_task_kill_or_key("x") end, {
+    buffer = buf,
+    silent = true,
+    desc = "Kill selected task/subagent or delete character",
+  })
+
+  -- Down keymap to access tasks & subagents from prompt area
   vim.keymap.set("n", "<Down>", function()
     local state = M.buffers[buf]
     local cur_win = vim.api.nvim_get_current_win()
     local cur_line = vim.api.nvim_win_get_cursor(cur_win)[1]
     local line_count = vim.api.nvim_buf_line_count(buf)
-    local prompt_start = state and state.prompt_start_line or line_count
-    if cur_line >= prompt_start and cur_line >= line_count and state and state.footer_items and #state.footer_items > 0 then
+    if cur_line >= line_count and state and state.footer_items and #state.footer_items > 0 then
       require("agy.tasks").open(buf)
       return
     end
@@ -648,18 +779,20 @@ function M._setup_buffer(buf, conversation_id)
     desc = "Navigate down or open background tasks & subagents panel",
   })
 
-  -- Mouse click to select task/subagent from footer or open panel
+  -- Mouse click to select task/subagent from buffer lines or footer
   vim.keymap.set("n", "<LeftMouse>", function()
     local mouse = vim.fn.getmousepos()
     if mouse and mouse.winid and vim.api.nvim_win_is_valid(mouse.winid) and vim.api.nvim_win_get_buf(mouse.winid) == buf then
       local state = M.buffers[buf]
-      local prompt_start = state and state.prompt_start_line or vim.api.nvim_buf_line_count(buf)
-      if mouse.line >= prompt_start and state and state.footer_items and #state.footer_items > 0 then
-        local prompt_winrow = vim.api.nvim_win_call(mouse.winid, function()
-          local view = vim.fn.winsaveview()
-          return (prompt_start - view.topline) + 1
-        end)
-        local item_idx = mouse.winrow - (prompt_winrow + 2)
+      local task_start = nil
+      if state and state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+        local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+        if t_pos and #t_pos >= 1 then
+          task_start = t_pos[1] + 1
+        end
+      end
+      if task_start and mouse.line >= task_start and state and state.footer_items then
+        local item_idx = mouse.line - task_start + 1
         if item_idx >= 1 and item_idx <= #state.footer_items then
           local it = state.footer_items[item_idx]
           if it.kind == "subagent" and it.subagent_id then
@@ -670,7 +803,7 @@ function M._setup_buffer(buf, conversation_id)
             vim.cmd("split " .. vim.fn.fnameescape(it.log_path))
             return
           end
-        elseif mouse.winrow > prompt_winrow then
+        else
           require("agy.tasks").open(buf)
           return
         end
@@ -1659,6 +1792,10 @@ function M.handle_write(buf)
   -- Helper to clear the prompt input area in the buffer and mark clean
   local function clear_prompt_and_clean()
     vim.cmd("stopinsert")
+    if state.tasks_extmark_id then
+      render.clear_task_lines(buf, state.tasks_extmark_id)
+      state.tasks_extmark_id = nil
+    end
     M.with_modifiable(buf, function()
       vim.api.nvim_buf_set_lines(buf, state.prompt_start_line - 1, -1, false, { "" })
     end)
@@ -1668,6 +1805,7 @@ function M.handle_write(buf)
     if win ~= -1 and vim.api.nvim_win_is_valid(win) then
       pcall(vim.api.nvim_win_set_cursor, win, { state.prompt_start_line, 0 })
     end
+    M.update_footer(buf)
   end
 
   -- Intercept and automatically process CONTROL slash commands locally
@@ -1995,6 +2133,12 @@ function M.handle_write(buf)
   state.reengage_follow_bottom = nil
   state.work_groups = state.work_groups or {}
   M.reset_turn_work_state(state)
+
+  -- Clear task buffer lines so they are not archived into conversation history
+  if state.tasks_extmark_id then
+    render.clear_task_lines(buf, state.tasks_extmark_id)
+    state.tasks_extmark_id = nil
+  end
 
   M.with_modifiable(buf, function()
     -- Prepare buffer: append agent response placeholder and active thinking divider
@@ -2588,6 +2732,10 @@ function M.cleanup_buffer(buf)
         end
       end)
       state.subagent_refresh_timer = nil
+    end
+    if state.tasks_extmark_id then
+      render.clear_task_lines(buf, state.tasks_extmark_id)
+      state.tasks_extmark_id = nil
     end
     if state.session and state.session.destroy then
       state.session:destroy()

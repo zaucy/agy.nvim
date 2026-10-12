@@ -390,8 +390,8 @@ subagents.stop_watcher(live_watch_buf)
 assert(subagents.active_watchers[live_watch_buf] == nil, "Expected watcher to be stopped")
 print("✓ Live reactive watcher updates verified")
 
--- [Test 12] Testing render.set_prompt_footer renders task_items below prompt
-print("\n[Test 12] Testing render.set_prompt_footer renders task_items in virt_lines...")
+-- [Test 12] Testing render.render_task_lines renders real buffer lines below prompt
+print("\n[Test 12] Testing render.render_task_lines renders buffer lines with highlights...")
 local footer_buf = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_buf_set_lines(footer_buf, 0, -1, false, { "line 1", "line 2", "> active prompt" })
 
@@ -411,40 +411,33 @@ local sample_items = {
   }
 }
 
-local ext_id = render.set_prompt_footer(footer_buf, "gemini-3.8-flash-high", nil, true, cfg, sample_items)
-assert(ext_id ~= nil, "Expected ext_id from set_prompt_footer")
+local task_ext_id = render.render_task_lines(footer_buf, sample_items, cfg)
+assert(task_ext_id ~= nil, "Expected task_ext_id from render_task_lines")
 
-local extmark_info = vim.api.nvim_buf_get_extmark_by_id(footer_buf, render.NS_UI, ext_id, { details = true })
-assert(extmark_info and extmark_info[3] and extmark_info[3].virt_lines, "Expected virt_lines in extmark details")
-local virt_lines = extmark_info[3].virt_lines
+local line_count = vim.api.nvim_buf_line_count(footer_buf)
+assert(line_count == 5, "Expected 5 lines (3 original + 2 task items), got " .. line_count)
 
--- Line 1: border
--- Line 2: footer status
--- Line 3: subagent item
--- Line 4: task item
-assert(#virt_lines >= 4, "Expected at least 4 virtual lines, got " .. #virt_lines)
+local line4 = vim.api.nvim_buf_get_lines(footer_buf, 3, 4, false)[1]
+local line5 = vim.api.nvim_buf_get_lines(footer_buf, 4, 5, false)[1]
+assert(line4:find("Input Forwarding Fixer", 1, true), "Expected role in line 4: " .. line4)
+assert(line4:find("cd15cd22", 1, true), "Expected short_id in line 4: " .. line4)
+assert(line4:find("Running", 1, true), "Expected Running in line 4: " .. line4)
 
-local sub_vl = virt_lines[3]
-local sub_text = ""
-for _, chunk in ipairs(sub_vl) do
-  sub_text = sub_text .. chunk[1]
-end
-assert(sub_text:find("Input Forwarding Fixer", 1, true), "Expected role in virt_line: " .. sub_text)
-assert(sub_text:find("cd15cd22", 1, true), "Expected short_id in virt_line: " .. sub_text)
-assert(sub_text:find("Running", 1, true), "Expected Running status in virt_line: " .. sub_text)
+assert(line5:find("cargo test", 1, true), "Expected task name in line 5: " .. line5)
+assert(line5:find("task-30", 1, true), "Expected task-30 in line 5: " .. line5)
+assert(line5:find("Success", 1, true), "Expected Success in line 5: " .. line5)
 
-local task_vl = virt_lines[4]
-local task_text = ""
-for _, chunk in ipairs(task_vl) do
-  task_text = task_text .. chunk[1]
-end
-assert(task_text:find("cargo test", 1, true), "Expected task name in virt_line: " .. task_text)
-assert(task_text:find("task-30", 1, true), "Expected task short_id in virt_line: " .. task_text)
-assert(task_text:find("Success", 1, true), "Expected Success status in virt_line: " .. task_text)
-print("✓ render.set_prompt_footer task_items rendering in virt_lines verified")
+-- Verify highlights in NS_TASKS
+local t_marks = vim.api.nvim_buf_get_extmarks(footer_buf, render.NS_TASKS, 0, -1, { details = true })
+assert(#t_marks > 0, "Expected task highlights in NS_TASKS")
 
--- [Test 13] Testing protocol.update_footer with in_flight_subagents
-print("\n[Test 13] Testing protocol.update_footer live subagent tracking...")
+-- Verify clear_task_lines removes buffer lines
+render.clear_task_lines(footer_buf, task_ext_id)
+assert(vim.api.nvim_buf_line_count(footer_buf) == 3, "Expected buffer lines restored to 3 after clear_task_lines")
+print("✓ render.render_task_lines and clear_task_lines verified")
+
+-- [Test 13] Testing protocol.update_footer with in_flight_subagents as buffer lines
+print("\n[Test 13] Testing protocol.update_footer live subagent tracking as buffer lines...")
 local proto_buf = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_buf_set_lines(proto_buf, 0, -1, false, { "> prompt line" })
 protocol.buffers[proto_buf] = {
@@ -471,28 +464,55 @@ protocol.update_footer(proto_buf)
 local p_state = protocol.buffers[proto_buf]
 assert(p_state.footer_items and #p_state.footer_items >= 1, "Expected footer_items in buffer state")
 assert(p_state.footer_items[1].role == "DeepCoder", "Expected in-flight subagent in footer_items")
-print("✓ protocol.update_footer live subagent tracking verified")
+assert(p_state.tasks_extmark_id ~= nil, "Expected tasks_extmark_id in buffer state")
 
--- [Test 14] Testing <Down> navigation from prompt opens tasks panel
-print("\n[Test 14] Testing prompt navigation to tasks panel...")
-assert(p_state.footer_items and #p_state.footer_items > 0, "Expected footer items for navigation")
+-- Check that buffer now has 2 lines: prompt line and subagent line
+assert(vim.api.nvim_buf_line_count(proto_buf) == 2, "Expected 2 buffer lines (prompt + subagent)")
+local sub_buf_line = vim.api.nvim_buf_get_lines(proto_buf, 1, 2, false)[1]
+assert(sub_buf_line:find("DeepCoder", 1, true), "Expected DeepCoder in line 2: " .. sub_buf_line)
+print("✓ protocol.update_footer live subagent tracking as buffer lines verified")
+
+-- [Test 14] Testing prompt isolation, dynamic modifiable, and direct selection
+print("\n[Test 14] Testing prompt isolation and dynamic modifiable...")
 protocol._setup_buffer(proto_buf, "test-live-conv")
+
+-- Test extract_prompt extracts only the prompt line, ignoring the task lines below
+local extracted_text, extracted_start = protocol.extract_prompt(proto_buf)
+assert(extracted_text == "> prompt line", "Expected extracted prompt without task lines, got: " .. extracted_text)
+assert(extracted_start == 1, "Expected prompt_start_line = 1")
 
 local win = vim.api.nvim_get_current_win()
 vim.api.nvim_win_set_buf(win, proto_buf)
-vim.api.nvim_win_set_cursor(win, { 1, 0 })
 
--- Verify <Down> keymap exists on buffer
+-- Cursor on line 1 (prompt): modifiable should be true
+vim.api.nvim_win_set_cursor(win, { 1, 0 })
+protocol.update_modifiable(proto_buf)
+assert(vim.bo[proto_buf].modifiable == true, "Expected modifiable = true on prompt line")
+
+-- Cursor on line 2 (subagent item): modifiable should be false to protect it
+vim.api.nvim_win_set_cursor(win, { 2, 0 })
+protocol.update_modifiable(proto_buf)
+assert(vim.bo[proto_buf].modifiable == false, "Expected modifiable = false on task/subagent line")
+
+-- Moving back up to line 1 (prompt): modifiable restored
+vim.api.nvim_win_set_cursor(win, { 1, 0 })
+protocol.update_modifiable(proto_buf)
+assert(vim.bo[proto_buf].modifiable == true, "Expected modifiable = true when moving back to prompt")
+print("✓ prompt isolation and dynamic modifiable verified")
+
+-- [Test 15] Testing task line action keymaps (<CR>, d, x)
+print("\n[Test 15] Testing task line keymaps (<CR>, d, x)...")
 local keymaps = vim.api.nvim_buf_get_keymap(proto_buf, "n")
-local found_down = false
+local has_cr, has_d, has_x = false, false, false
 for _, km in ipairs(keymaps) do
-  if km.lhs == "<Down>" then
-    found_down = true
-    break
-  end
+  if km.lhs == "<CR>" or km.lhs == "<cr>" then has_cr = true end
+  if km.lhs == "d" then has_d = true end
+  if km.lhs == "x" then has_x = true end
 end
-assert(found_down == true, "Expected <Down> keymap registered on buffer")
-print("✓ prompt navigation keymap verified")
+assert(has_cr, "Expected <CR> keymap on buffer")
+assert(has_d, "Expected d keymap on buffer")
+assert(has_x, "Expected x keymap on buffer")
+print("✓ task line keymaps verified")
 
 -- Cleanup
 pcall(vim.fn.delete, tmp_app_dir, "rf")
