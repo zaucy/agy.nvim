@@ -1286,7 +1286,11 @@ function M.format_task_item_line(item, config)
 	local status_str = "Running"
 	if item.kind == "subagent" then
 		if item.status == "running" or item.status == "alive" then
-			status_str = "Running"
+			if item.current_action and item.current_action ~= "" and item.current_action ~= "Running" then
+				status_str = "Running (" .. item.current_action .. ")"
+			else
+				status_str = "Running"
+			end
 		elseif item.status == "killed" then
 			status_str = "Killed"
 		elseif item.status == "idle" then

@@ -19,6 +19,51 @@ function M.short_id(subagent_id)
   return subagent_id:sub(1, 8)
 end
 
+---Extract a concise human-readable description of what a subagent is currently doing
+---@param steps table[]
+---@return string? action
+function M.extract_current_action(steps)
+  if not steps or #steps == 0 then return nil end
+
+  local last_step = steps[#steps]
+
+  if last_step.type == "PLANNER_RESPONSE" and last_step.tool_calls and #last_step.tool_calls > 0 then
+    local tc = last_step.tool_calls[#last_step.tool_calls]
+    local act = nil
+    if tc.args and type(tc.args) == "table" then
+      act = tc.args.toolAction or tc.args.toolSummary or tc.args.Description
+      if not act and tc.args.CommandLine then
+        local cmd = tostring(tc.args.CommandLine):gsub('^["\']', ''):gsub('["\']$', '')
+        act = cmd:match("^%s*([^%s\r\n]+)")
+      end
+    end
+    if not act or act == "" then
+      act = tc.name
+    end
+    if act and act ~= "" then
+      act = act:gsub('^["\']', ''):gsub('["\']$', '')
+      if #act > 32 then
+        act = act:sub(1, 29) .. "..."
+      end
+      return act
+    end
+  end
+
+  if last_step.type == "GENERIC" or last_step.type == "tool" then
+    return "Thinking..."
+  end
+
+  if last_step.thinking and type(last_step.thinking) == "string" and last_step.thinking ~= "" then
+    return "Thinking..."
+  end
+
+  if last_step.type == "USER_INPUT" or last_step.type == "SYSTEM_MESSAGE" then
+    return "Starting..."
+  end
+
+  return nil
+end
+
 ---Parse subagents from parent conversation transcript steps
 ---@param steps table[]
 ---@return table<string, table> subagents_by_id
@@ -160,7 +205,8 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
               local status = (state_str == "SUBAGENT_STATE_KILLED") and "killed" or "running"
               local step_idx = parsed.spawnStepIndex or 0
 
-              -- If alive, inspect subagent's own transcript for completion
+              -- If alive, inspect subagent's own transcript for completion and current action
+              local current_action = nil
               if status == "running" then
                 local sub_log = utils.get_brain_dir(app_data_dir) .. "/" .. sid .. "/.system_generated/logs/transcript.jsonl"
                 if vim.fn.filereadable(sub_log) == 1 then
@@ -169,6 +215,8 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
                     local last_step = sub_steps[#sub_steps]
                     if last_step.type == "PLANNER_RESPONSE" and (not last_step.tool_calls or #last_step.tool_calls == 0) then
                       status = "completed"
+                    else
+                      current_action = M.extract_current_action(sub_steps)
                     end
                   end
                 end
@@ -185,6 +233,7 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
                 type_name = type_name,
                 status = status,
                 state = state_str,
+                current_action = current_action,
                 spawn_step_index = step_idx,
                 order_key = step_idx,
                 parent_conv_id = conv_id,
@@ -207,6 +256,17 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
         entry.kind = "subagent"
         entry.parent_conv_id = conv_id
         entry.transcript_path = vim.fs.normalize(utils.get_brain_dir(app_data_dir) .. "/" .. sid .. "/.system_generated/logs/transcript.jsonl")
+        if entry.status == "running" and vim.fn.filereadable(entry.transcript_path) == 1 then
+          local sub_steps = transcript_mod.read_transcript(sid, app_data_dir)
+          if #sub_steps > 0 then
+            local last_step = sub_steps[#sub_steps]
+            if last_step.type == "PLANNER_RESPONSE" and (not last_step.tool_calls or #last_step.tool_calls == 0) then
+              entry.status = "completed"
+            else
+              entry.current_action = M.extract_current_action(sub_steps)
+            end
+          end
+        end
         subagents_map[sid] = entry
       else
         -- Merge prompt or role if missing
@@ -246,6 +306,7 @@ function M.collect_subagents(conv_id, app_data_dir, pstate)
             name = role,
             type_name = first_sub.TypeName or first_sub.typeName or "self",
             status = "running",
+            current_action = "Starting...",
             spawn_step_index = 999999,
             order_key = 999999,
             parent_conv_id = conv_id,

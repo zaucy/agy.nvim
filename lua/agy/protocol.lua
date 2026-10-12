@@ -123,8 +123,8 @@ function M.ensure_prompt_line(buf)
     vim.bo[buf].modifiable = true
     pcall(function()
       vim.api.nvim_buf_set_lines(buf, task_start - 1, task_start - 1, false, { "" })
-      state.prompt_start_line = task_start - 1
-      state.prompt_extmark_id = render.set_divider(buf, task_start - 2, "user", nil, nil, true, state.prompt_extmark_id, state.config)
+      state.prompt_start_line = task_start
+      state.prompt_extmark_id = render.set_divider(buf, task_start - 1, "user", nil, nil, true, state.prompt_extmark_id, state.config)
     end)
     vim.bo[buf].modifiable = prev
     M._internal_guard = old_guard
@@ -881,14 +881,26 @@ function M._setup_buffer(buf, conversation_id)
         local min_sel = math.min(v_pos, cur_pos)
         local max_sel = math.max(v_pos, cur_pos)
         local line_count = vim.api.nvim_buf_line_count(buf)
+        local max_prompt_line = line_count
+        if state and state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+          local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+          if t_pos and #t_pos >= 1 then
+            max_prompt_line = t_pos[1]
+          end
+        end
 
         if min_sel < prompt_start then
           vim.notify("[agy.nvim] Cannot modify: selection includes protected conversation history.", vim.log.levels.WARN)
           return "\27"
         end
 
+        if max_sel > max_prompt_line then
+          vim.notify("[agy.nvim] Cannot modify: selection includes protected task area.", vim.log.levels.WARN)
+          return "\27"
+        end
+
         -- If deleting or changing the entire prompt area, preserve 1 empty prompt line
-        if min_sel == prompt_start and max_sel >= line_count then
+        if min_sel == prompt_start and max_sel >= max_prompt_line then
           if key == "d" or key == "D" or key == "x" or key == "X" or key == "<Del>" or key == "<BS>" then
             return "c\27"
           elseif key == "c" or key == "C" or key == "s" or key == "S" then
@@ -909,8 +921,15 @@ function M._setup_buffer(buf, conversation_id)
         local state = M.buffers[buf]
         local prompt_start = state and state.prompt_start_line or 1
         local line_count = vim.api.nvim_buf_line_count(buf)
+        local max_prompt_line = line_count
+        if state and state.tasks_extmark_id and vim.api.nvim_buf_is_valid(buf) then
+          local t_pos = vim.api.nvim_buf_get_extmark_by_id(buf, render.NS_UI, state.tasks_extmark_id, {})
+          if t_pos and #t_pos >= 1 then
+            max_prompt_line = t_pos[1]
+          end
+        end
 
-        if cur_line == prompt_start and line_count == prompt_start then
+        if cur_line == prompt_start and max_prompt_line <= prompt_start then
           if lk == "dd" then
             return "cc\27"
           elseif lk == "cc" or lk == "C" or lk == "S" then
@@ -921,6 +940,21 @@ function M._setup_buffer(buf, conversation_id)
         end
         return lk
       end, { buffer = buf, expr = true, silent = true, desc = "Protected prompt line delete" })
+    end
+
+    -- Insert mode backspace guard on first prompt line col 0 to prevent merging with history
+    local bs_keys = { "<BS>", "<C-h>" }
+    for _, bk in ipairs(bs_keys) do
+      vim.keymap.set("i", bk, function()
+        local cur_pos = vim.api.nvim_win_get_cursor(0)
+        local cur_line, cur_col = cur_pos[1], cur_pos[2]
+        local state = M.buffers[buf]
+        local prompt_start = state and state.prompt_start_line or 1
+        if cur_line <= prompt_start and cur_col == 0 then
+          return ""
+        end
+        return bk
+      end, { buffer = buf, expr = true, silent = true, desc = "Protected prompt insert backspace" })
     end
 
     -- Guard against stray operator motions (e.g. dgg) that modify history lines
@@ -2248,7 +2282,7 @@ function M.restore_prompt_area(buf)
     local badge = (is_thinking or (render.thinking_timers and render.thinking_timers[buf]))
       and (render.current_thinking_badge and render.current_thinking_badge[buf] or render.get_thinking_badge(state.config))
       or nil
-    state.prompt_extmark_id = render.set_divider(buf, insert_row, "user", badge, "AgyBadgeActive", true, nil, state.config)
+    state.prompt_extmark_id = render.set_divider(buf, insert_row + 1, "user", badge, "AgyBadgeActive", true, nil, state.config)
     state.prompt_start_line = insert_row + 2
 
     if state.prompt_queue and #state.prompt_queue > 0 then

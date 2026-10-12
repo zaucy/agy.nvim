@@ -514,6 +514,106 @@ assert(has_d, "Expected d keymap on buffer")
 assert(has_x, "Expected x keymap on buffer")
 print("✓ task line keymaps verified")
 
+-- [Test 16] Testing prompt deletion guard bounds and history protection with tasks present
+print("\n[Test 16] Testing prompt deletion guard bounds with task lines present...")
+local guard_buf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_lines(guard_buf, 0, -1, false, {
+  "Agent history line 1",
+  "",
+  "> user prompt line",
+})
+protocol.buffers[guard_buf] = {
+  buf = guard_buf,
+  conversation_id = "test-guard-conv",
+  config = cfg,
+  stream_info = { model = "gemini-3.8-flash", status = "ready" },
+  prompt_start_line = 3,
+  prompt_extmark_id = render.set_divider(guard_buf, 2, "user", nil, nil, true, nil, cfg),
+  tool_calls = {},
+}
+protocol.update_footer(guard_buf)
+protocol._setup_buffer(guard_buf, "test-guard-conv")
+
+-- Render 1 task line below prompt
+local g_tasks = {
+  { kind = "task", name = "npm test", short_id = "task-99", status = "running" }
+}
+local g_task_id = render.render_task_lines(guard_buf, g_tasks, cfg)
+protocol.buffers[guard_buf].tasks_extmark_id = g_task_id
+
+-- Total buffer lines: 4 (line 1: history, line 2: spacer, line 3: prompt, line 4: task)
+assert(vim.api.nvim_buf_line_count(guard_buf) == 4, "Expected 4 lines in buffer")
+local g_state = protocol.buffers[guard_buf]
+assert(g_state.prompt_start_line == 3, "Expected prompt_start_line == 3")
+
+-- Test normal mode dd keymap handler logic on single prompt line with task below
+local win_g = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_buf(win_g, guard_buf)
+vim.api.nvim_win_set_cursor(win_g, { 3, 0 })
+
+local keymaps_g = vim.api.nvim_buf_get_keymap(guard_buf, "n")
+local dd_km = nil
+for _, km in ipairs(keymaps_g) do
+  if km.lhs == "dd" then dd_km = km; break end
+end
+assert(dd_km ~= nil, "Expected dd keymap on guard buffer")
+assert(dd_km.callback() == "cc\27", "Expected dd on single prompt line to return cc<Esc>, protecting line from deletion")
+
+-- Test insert mode backspace keymap handler at col 0
+local i_keymaps = vim.api.nvim_buf_get_keymap(guard_buf, "i")
+local bs_km = nil
+for _, km in ipairs(i_keymaps) do
+  if km.lhs == "<BS>" then bs_km = km; break end
+end
+assert(bs_km ~= nil, "Expected insert <BS> keymap on guard buffer")
+vim.api.nvim_win_set_cursor(win_g, { 3, 0 })
+assert(bs_km.callback() == "", "Expected <BS> at col 0 of prompt line to return empty string to prevent merging with history")
+
+-- Verify history line 1 and spacer line 2 are completely intact
+local g_lines = vim.api.nvim_buf_get_lines(guard_buf, 0, 2, false)
+assert(g_lines[1] == "Agent history line 1", "History line 1 must not be modified")
+assert(g_lines[2] == "", "Spacer line 2 must not be modified")
+print("✓ prompt deletion guard bounds and history protection verified")
+
+-- [Test 17] Testing live subagent action extraction and formatted status
+print("\n[Test 17] Testing live subagent action extraction and formatted status...")
+local mock_sub_steps_tool = {
+  { step_index = 0, type = "SYSTEM_MESSAGE" },
+  {
+    step_index = 1,
+    type = "PLANNER_RESPONSE",
+    tool_calls = {
+      {
+        name = "view_file",
+        args = { toolAction = "Reading build_script.md", toolSummary = "View build_script.md" },
+      }
+    }
+  }
+}
+local act1 = subagents.extract_current_action(mock_sub_steps_tool)
+assert(act1 == "Reading build_script.md", "Expected Reading build_script.md, got: " .. tostring(act1))
+
+local mock_sub_steps_generic = {
+  { step_index = 0, type = "SYSTEM_MESSAGE" },
+  { step_index = 1, type = "PLANNER_RESPONSE", tool_calls = { { name = "view_file" } } },
+  { step_index = 2, type = "GENERIC", content = "file content" },
+}
+local act2 = subagents.extract_current_action(mock_sub_steps_generic)
+assert(act2 == "Thinking...", "Expected Thinking..., got: " .. tostring(act2))
+
+-- Test format_task_item_line displays Running (<action>)
+local live_sub_item = {
+  kind = "subagent",
+  role = "DevEx & CLI Specialist",
+  short_id = "dc4e7792",
+  status = "running",
+  current_action = "Reading build_script.md",
+}
+local formatted_live_line, _ = render.format_task_item_line(live_sub_item, cfg)
+print("Formatted live subagent line:\n  " .. formatted_live_line)
+assert(formatted_live_line:find("Running %(Reading build_script%.md%)"), "Expected Running (Reading build_script.md) in line: " .. formatted_live_line)
+print("✓ live subagent action extraction and formatted status verified")
+
 -- Cleanup
 pcall(vim.fn.delete, tmp_app_dir, "rf")
 pcall(vim.cmd, "bdelete! " .. sub_buf)

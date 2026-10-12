@@ -428,7 +428,11 @@ function M.build_content(pstate, cfg, width)
       if it.kind == "subagent" then
         subagent_count = subagent_count + 1
         if it.status == "running" or it.status == "alive" then
-          status_str = "Running"
+          if it.current_action and it.current_action ~= "" and it.current_action ~= "Running" then
+            status_str = "Running (" .. it.current_action .. ")"
+          else
+            status_str = "Running"
+          end
         elseif it.status == "killed" then
           status_str = "Killed"
         elseif it.status == "idle" then
