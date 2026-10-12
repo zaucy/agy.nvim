@@ -29,7 +29,7 @@ for _, em in ipairs(marks1) do
 	if em[4].virt_lines then
 		for _, line in ipairs(em[4].virt_lines) do
 			local text = line[1] and line[1][1] or ""
-			if text:find("⚡") then
+			if text:find("^──") then
 				footer1 = text
 				print("Footer after reload: " .. text)
 			end
@@ -69,7 +69,7 @@ for _, em in ipairs(marks2) do
 	if em[4].virt_lines then
 		for _, line in ipairs(em[4].virt_lines) do
 			local text = line[1] and line[1][1] or ""
-			if text:find("⚡") then
+			if text:find("^──") then
 				footer2 = text
 				print("Footer after reload: " .. text)
 			end

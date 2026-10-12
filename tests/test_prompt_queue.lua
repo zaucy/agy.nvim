@@ -8,32 +8,23 @@ print("=== Running Prompt Queue Tests ===")
 -- -----------------------------------------------------------------
 -- TEST 1: Config icons, assertions, and header detection
 -- -----------------------------------------------------------------
-print("\n[Test 1] Testing queue icon registration, assertion, and header detection...")
+print("\n[Test 1] Testing queue header detection...")
 
 local cfg = config.get()
-assert(cfg.icons.queue == "⏳", "Default queue icon must be '⏳', got: " .. tostring(cfg.icons.queue))
 
--- Verify fail-fast assertion on missing queue icon
-local broken_cfg = { icons = {} }
-local ok_assert, err_assert = pcall(function()
-  render.is_queue_header_line("⏳ Queued #1: test", broken_cfg)
-end)
-assert(not ok_assert, "Expected fail-fast assertion when icon 'queue' is missing")
-assert(err_assert:find("icon 'queue' is not defined"), "Error message should mention missing queue icon: " .. tostring(err_assert))
-
--- Verify is_queue_header_line with default and custom icons
-assert(render.is_queue_header_line("⏳ Queued #1: Fix the bugs", cfg) == true, "Should identify default queue header")
-assert(render.is_queue_header_line("⏳ Queued #2: Add tests", cfg) == true, "Should identify default queue header #2")
-assert(render.is_queue_header_line("⏳ Queued: Legacy format", cfg) == true, "Should identify unnumbered queue header")
+-- Verify is_queue_header_line with default (un-prefixed) and custom icons
+assert(render.is_queue_header_line("Queued #1: Fix the bugs", cfg) == true, "Should identify default queue header")
+assert(render.is_queue_header_line("Queued #2: Add tests", cfg) == true, "Should identify default queue header #2")
+assert(render.is_queue_header_line("Queued: Legacy format", cfg) == true, "Should identify unnumbered queue header")
 assert(render.is_queue_header_line("   indented line", cfg) == false, "Indented lines must not be queue headers")
 assert(render.is_queue_header_line("Regular message text", cfg) == false, "Regular text must not be queue header")
 
 local custom_cfg = {
-  icons = vim.tbl_extend("force", cfg.icons, { queue = "📬" }),
+  icons = vim.tbl_extend("force", cfg.icons or {}, { queue = "📬" }),
 }
 assert(render.is_queue_header_line("📬 Queued #1: Custom icon", custom_cfg) == true, "Should identify custom queue icon header")
 
-print("✓ Queue icon registration, assertions, and header line detection verified")
+print("✓ Queue header line detection verified")
 
 -- -----------------------------------------------------------------
 -- TEST 2: Low-level queue rendering and extmarks
@@ -69,8 +60,8 @@ local found_q1 = false
 local found_q2 = false
 local found_q2_subline = false
 for _, l in ipairs(buf_lines) do
-  if l:find("⏳ Queued #1: First queued message") then found_q1 = true end
-  if l:find("⏳ Queued #2: Second queued message") then found_q2 = true end
+  if l:find("Queued #1: First queued message") then found_q1 = true end
+  if l:find("Queued #2: Second queued message") then found_q2 = true end
   if l:find("   with a second line") then found_q2_subline = true end
 end
 assert(found_q1, "Queue item #1 header must be rendered")
@@ -153,8 +144,8 @@ local active_lines = vim.api.nvim_buf_get_lines(agy_buf, 0, -1, false)
 local has_vis_q1 = false
 local has_vis_q2 = false
 for _, l in ipairs(active_lines) do
-  if l:find("⏳ Queued #1: Run integration tests") then has_vis_q1 = true end
-  if l:find("⏳ Queued #2: Check git status") then has_vis_q2 = true end
+  if l:find("Queued #1: Run integration tests") then has_vis_q1 = true end
+  if l:find("Queued #2: Check git status") then has_vis_q2 = true end
 end
 assert(has_vis_q1, "Buffer must visually display Queued #1")
 assert(has_vis_q2, "Buffer must visually display Queued #2")
@@ -169,7 +160,7 @@ print("\n[Test 4] Testing unqueue_prompt_at_cursor on <CR>...")
 -- Locate the line number of Queued #1
 local q1_line = nil
 for idx, l in ipairs(vim.api.nvim_buf_get_lines(agy_buf, 0, -1, false)) do
-  if l:find("⏳ Queued #1:") then
+  if l:find("Queued #1:") then
     q1_line = idx
     break
   end

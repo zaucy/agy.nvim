@@ -49,7 +49,7 @@ assert(#footer_mark[4].virt_lines >= 2, "Footer extmark must have bottom border 
 local bottom_border_text = footer_mark[4].virt_lines[1][1][1]
 assert(bottom_border_text:find("^───"), "Bottom prompt border must be a horizontal line: " .. bottom_border_text)
 local footer_text = footer_mark[4].virt_lines[2][1][1]
-assert(footer_text:find("⚡"), "Footer status line must contain ⚡: " .. footer_text)
+assert(footer_text:find("^──"), "Footer status line must start with ──: " .. footer_text)
 
 -- Check prompt area background highlight and sign column background matching
 local prompt_bg_marks = vim.api.nvim_buf_get_extmarks(buf1, render.NS_PROMPT, 0, -1, { details = true })
@@ -166,7 +166,7 @@ for _, em in ipairs(extmarks_after_w) do
 				assert(em[4].sign_text == nil, "Submitted user divider must NOT have sign_text!")
 			elseif virt_text:find("Antigravity") then
 				agent_count = agent_count + 1
-			elseif virt_text:find("⚡") then
+			elseif virt_text:find("^──") then
 				footer_count = footer_count + 1
 			end
 		end

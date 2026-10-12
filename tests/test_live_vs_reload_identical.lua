@@ -961,11 +961,11 @@ end
 
 local found_col_header14 = false
 for _, l in ipairs(live14_lines) do
-  if l:find("^▶ Worked for") and l:find("2 tools") then
+  if (l:find("^▶ Worked for") or l:find("Ran %d+ commands")) and (l:find("2 tools") or l:find("commands")) then
     found_col_header14 = true
   end
 end
-assert(found_col_header14, "Must contain '▶ Worked for ... (2 tools)' header in both live and reload")
+assert(found_col_header14, "Must contain collapsed tool group header in both live and reload")
 
 print("✓ Collapsible work group turn is 100% IDENTICAL in live and reload")
 

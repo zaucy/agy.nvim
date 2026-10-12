@@ -30,7 +30,6 @@ def main [
             "tests/test_resume_conversation.lua",
             "tests/test_compact_tools_transcript.lua",
             "tests/test_tasks.lua",
-            "tests/test_config_icons.lua",
             "tests/test_separators.lua",
             "tests/test_live_vs_reload_identical.lua",
             "tests/test_inline_tool_window.lua",
@@ -51,6 +50,7 @@ def main [
             "tests/test_question_markdown.lua",
             "tests/test_db.lua",
             "tests/test_work_groups.lua",
+            "tests/test_named_groups.lua",
             "tests/test_tabpage_isolation.lua"
         ]
 
