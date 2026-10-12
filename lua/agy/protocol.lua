@@ -71,8 +71,8 @@ function M.ensure_prompt_line(buf)
   local state = M.buffers[buf]
   if not state or not vim.api.nvim_buf_is_valid(buf) then return false end
 
-  -- Don't manage active prompt while active question is present, or prompt uninitialized
-  if state.active_question or not state.prompt_extmark_id then
+  -- Don't manage active prompt while active question is present, subagent buffer, or prompt uninitialized
+  if state.active_question or not state.prompt_extmark_id or state.is_subagent then
     return false
   end
 
@@ -145,7 +145,7 @@ end
 ---@param buf number
 function M.update_modifiable(buf)
   local state = M.buffers[buf]
-  if not state or not vim.api.nvim_buf_is_valid(buf) then return end
+  if not state or not vim.api.nvim_buf_is_valid(buf) or state.is_subagent then return end
 
   local restored = M.ensure_prompt_line(buf)
 
@@ -1497,6 +1497,12 @@ function M.handle_write(buf)
     return
   end
 
+  if state.is_subagent then
+    vim.notify("[agy.nvim] Subagent inspection buffer is read-only. Press '-' to return to parent conversation.", vim.log.levels.INFO)
+    vim.bo[buf].modified = false
+    return
+  end
+
   if state.active_question then
     if state.active_question.ui and state.active_question.ui.is_visible() then
       state.active_question.ui.submit_all()
@@ -1798,7 +1804,7 @@ function M.handle_write(buf)
         "- `/context` — Inspect session context, memory, and workspaces",
         "- `/settings` — View active configuration and options",
         "- `/status` — View session and connection status",
-        "- `/tasks` — View and manage ongoing background tasks",
+        "- `/tasks` / `/subagent` — View and manage ongoing background tasks and subagents",
         "- `/artifacts [filename]` — Review artifacts produced in session",
         "- `/usage` / `/tokens` / `/cost` — View token metrics",
         "- `/doctor` — Verify system health and dependencies",
@@ -1827,8 +1833,8 @@ function M.handle_write(buf)
       M.show_info_float("Antigravity Help", lines, buf)
       return
 
-    -- 19. /tasks: view and manage background tasks
-    elseif first_token == "/tasks" then
+    -- 19. /tasks, /subagent, /subagents: view and manage background tasks & subagents
+    elseif first_token == "/tasks" or first_token == "/subagent" or first_token == "/subagents" then
       clear_prompt_and_clean()
       require("agy.tasks").open(buf)
       return
@@ -2445,6 +2451,13 @@ function M.cleanup_buffer(buf)
       M.buffers[buf] = nil
       return
     end
+    if state.is_subagent then
+      require("agy.subagents").stop_watcher(buf)
+      pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.subagents").NS_SUBAGENTS, 0, -1)
+      pcall(vim.api.nvim_buf_clear_namespace, buf, require("agy.subagents").NS_SUBAGENT_FOOTER, 0, -1)
+      M.buffers[buf] = nil
+      return
+    end
     if state.active_question and state.active_question.ui then
       state.active_question.ui.close()
       state.active_question = nil
@@ -2501,6 +2514,21 @@ function M.handle_buf_read(args)
     return
   end
 
+  -- Check if this is a subagent URL: agy://<conv_id>/subagent/<subagent_id>
+  local sub_conv_id, subagent_id = clean_raw:match("^([^/]+)/subagent/?(.*)$")
+  if sub_conv_id and subagent_id and subagent_id ~= "" then
+    local subagents_mod = require("agy.subagents")
+    subagents_mod.render_subagent(buf, sub_conv_id, subagent_id, cfg)
+    M.buffers[buf] = {
+      buf = buf,
+      conversation_id = sub_conv_id,
+      subagent_id = subagent_id,
+      is_subagent = true,
+      config = cfg,
+    }
+    return
+  end
+
   -- Check if this is the home buffer: agy:// or agy:/// or agy://home
   if clean_raw == "" or clean_raw == "/" or clean_raw == "home" then
     local existing_state = M.buffers[buf]
@@ -2520,9 +2548,12 @@ function M.handle_buf_read(args)
 
   local conv_id = clean_raw
 
-  -- If previous buffer state was an artifact buffer or home buffer, clear it
+  -- If previous buffer state was an artifact buffer, home buffer, or subagent buffer, clear it
   local existing_state = M.buffers[buf]
-  if existing_state and (existing_state.is_artifact or existing_state.is_home) then
+  if existing_state and (existing_state.is_artifact or existing_state.is_home or existing_state.is_subagent) then
+    if existing_state.is_subagent then
+      require("agy.subagents").stop_watcher(buf)
+    end
     M.buffers[buf] = nil
     existing_state = nil
   end

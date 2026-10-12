@@ -121,9 +121,15 @@ function M.context(caller_buf)
   return require("agy.context").open(caller_buf)
 end
 
----Show background tasks panel
+---Show background tasks and subagents panel
 ---@param caller_buf? number
 function M.tasks(caller_buf)
+  return require("agy.tasks").open(caller_buf)
+end
+
+---Show subagents and background tasks panel
+---@param caller_buf? number
+function M.subagents(caller_buf)
   return require("agy.tasks").open(caller_buf)
 end
 

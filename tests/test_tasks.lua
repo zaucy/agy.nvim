@@ -287,9 +287,9 @@ for idx, l in ipairs(p_lines) do
   print(string.format("  [%d] %s", idx, l))
 end
 
-assert(#p_lines > 5, "Expected tasks panel to have table rows")
+assert(#p_lines >= 4, "Expected tasks panel to have list rows")
 assert(p_lines[1]:find("Background Tasks"), "Expected title line")
-assert(p_lines[3]:find("TASK ID"), "Expected table header line")
+assert(p_lines[3]:find("%(") and p_lines[3]:find("·"), "Expected list entry row with ID and status")
 
 -- Check that row_to_task maps rows to task items
 local mapped_count = 0

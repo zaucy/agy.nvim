@@ -238,6 +238,8 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             tool = "  ",
             user = "👤",
             agent = "🤖",
+            run_command = "",       -- Icon for run_command / background tasks
+            subagent = "🤖",          -- Icon for subagents
             prompt_sign = "❯ ",
             cancelled = "⏹️",
             review_comment = "💬",

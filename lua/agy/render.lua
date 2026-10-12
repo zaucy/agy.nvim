@@ -1572,8 +1572,10 @@ end
 ---@param session_uri string e.g. "agy://new" or "agy://<conversation_id>"
 ---@param config? table
 ---@return number prompt_start_line
+---@param sub_text? string
+---@return number prompt_start_line
 ---@return number prompt_extmark_id
-function M.init_session_buffer(buf, session_uri, config)
+function M.init_session_buffer(buf, session_uri, config, sub_text)
 	M.setup_highlights()
 	pcall(vim.treesitter.start, buf, "markdown")
 	vim.api.nvim_buf_clear_namespace(buf, M.NS_UI, 0, -1)
@@ -1585,7 +1587,7 @@ function M.init_session_buffer(buf, session_uri, config)
 
 	local lines
 	if header_style == "banner" then
-		lines = M.build_banner_lines(session_uri, cfg)
+		lines = M.build_banner_lines(session_uri, cfg, sub_text)
 	else
 		lines = {
 			"# Antigravity Session: " .. session_uri,
@@ -1598,7 +1600,7 @@ function M.init_session_buffer(buf, session_uri, config)
 	local prompt_start_line = #lines
 
 	if header_style == "banner" then
-		M.render_banner_extmarks(buf, session_uri, cfg)
+		M.render_banner_extmarks(buf, session_uri, cfg, sub_text)
 		M.start_logo_animation(buf, cfg)
 	end
 
@@ -2073,16 +2075,20 @@ end
 ---@param steps? table[]
 ---@param config? table
 ---@param cwd? string|string[]
+---@param opts? { session_uri?: string, sub_text?: string, is_subagent?: boolean }
 ---@return number prompt_start_line
 ---@return number prompt_extmark_id
 ---@return table[] tool_calls
-function M.render_transcript(buf, conversation_id, steps, config, cwd)
+function M.render_transcript(buf, conversation_id, steps, config, cwd, opts)
 	assert(buf and vim.api.nvim_buf_is_valid(buf), "agy render: valid buffer is required")
 	assert(conversation_id, "agy render: conversation_id is required")
 	config = get_config(config)
 	cwd = cwd or vim.fn.getcwd()
 
-	local prompt_start_line, prompt_extmark_id = M.init_session_buffer(buf, "agy://" .. conversation_id, config)
+	local session_uri = (opts and opts.session_uri) or ("agy://" .. conversation_id)
+	local sub_text = opts and opts.sub_text
+
+	local prompt_start_line, prompt_extmark_id = M.init_session_buffer(buf, session_uri, config, sub_text)
 	if not steps or #steps == 0 then
 		return prompt_start_line, prompt_extmark_id, {}
 	end

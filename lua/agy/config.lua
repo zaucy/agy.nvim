@@ -52,6 +52,7 @@ local M = {}
 ---@field default? string Default fallback icon (default: "  ")
 ---@field tool? string Generic tool call icon (default: "🛠️")
 ---@field run_command? string Icon for run_command / background tasks (default: "")
+---@field subagent? string Icon for subagents (default: "🤖")
 ---@field view_file? string Icon for view_file tool call (default: "  ")
 ---@field thought? string Icon for agent thoughts (default: "💭")
 ---@field user? string Icon for user divider (default: "👤")
@@ -109,6 +110,8 @@ M.defaults = {
 		tool = "  ",
 		user = "👤",
 		agent = "🤖",
+		run_command = "",
+		subagent = "🤖",
 		prompt_sign = "❯ ",
 		cancelled = "⏹️",
 		work_collapsed = "▶",
