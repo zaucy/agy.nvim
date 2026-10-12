@@ -107,20 +107,10 @@ M.defaults = {
 	icons = {
 		default = "  ",
 		tool = "  ",
-		run_command = " ",
-		view_file = "  ",
-		thought = "💭",
 		user = "👤",
 		agent = "🤖",
 		prompt_sign = "❯ ",
-		footer = "⚡",
-		done = " ",
-		question = "❓",
-		error = " ",
 		cancelled = "⏹️",
-		queue = "⏳",
-		replace_file_content = " ",
-		write_to_file = " ",
 		work_collapsed = "▶",
 		work_expanded = "▼",
 		group_completed = "●",
@@ -214,10 +204,7 @@ function M.setup(opts)
 			)
 		end
 		if opts.ui and opts.ui.render_markdown ~= nil then
-			assert(
-				type(opts.ui.render_markdown) == "function",
-				"agy config: 'ui.render_markdown' must be a function"
-			)
+			assert(type(opts.ui.render_markdown) == "function", "agy config: 'ui.render_markdown' must be a function")
 		end
 		if opts.ui and opts.ui.verbosity ~= nil then
 			assert(
@@ -232,10 +219,7 @@ function M.setup(opts)
 			)
 		end
 		if opts.ui and opts.ui.collapse_work ~= nil then
-			assert(
-				type(opts.ui.collapse_work) == "boolean",
-				"agy config: 'ui.collapse_work' must be a boolean"
-			)
+			assert(type(opts.ui.collapse_work) == "boolean", "agy config: 'ui.collapse_work' must be a boolean")
 			if opts.ui.collapse_work == false and opts.ui.verbosity == nil then
 				opts.ui.verbosity = "high"
 			end

@@ -31,7 +31,7 @@ assert(#virt_lines_1 >= 2, "Idle footer must contain at least 2 virt_lines (bord
 assert(virt_lines_1[1][1][2] == "AgyPromptBorder", "First virt_line must be AgyPromptBorder")
 assert(virt_lines_1[1][1][1]:find("^───"), "Border line must start with horizontal divider characters")
 assert(virt_lines_1[2][1][2] == "AgyPromptFooter", "Second virt_line must be AgyPromptFooter")
-assert(virt_lines_1[2][1][1]:find("⚡"), "Footer line must contain ⚡ status icon")
+assert(virt_lines_1[2][1][1]:find("^──"), "Footer line must start with ──: " .. virt_lines_1[2][1][1])
 
 print("✓ Idle buffer renders upper divider, prompt line, bottom border line, and footer")
 

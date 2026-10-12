@@ -118,14 +118,12 @@ end
 local function get_icon(name, cfg)
 	local icons = get_icons(cfg)
 	local icon = icons[name]
-	assert(icon, string.format("agy config: icon '%s' is not defined in config.icons", name))
-	return icon
+	return icon or ""
 end
 
 local function get_tool_icon(tool_name, cfg)
 	local icons = get_icons(cfg)
-	local icon = icons[tool_name] or icons.tool or icons.default
-	assert(icon, string.format("agy config: no icon found for tool '%s'", tool_name))
+	local icon = icons[tool_name] or icons.tool or icons.default or ""
 	return icon
 end
 
@@ -829,10 +827,12 @@ function M.is_queue_header_line(line, config)
 		return false
 	end
 	local icon = get_icon("queue", config)
-	assert(icon, "agy config: icon 'queue' is not defined in config.icons")
-	local trimmed_icon = utils.trim(icon)
-	return (vim.startswith(line, trimmed_icon) or vim.startswith(line, icon))
-		and line:find("Queued%s*#?%d*") ~= nil
+	if icon and icon ~= "" then
+		local trimmed_icon = utils.trim(icon)
+		return (vim.startswith(line, trimmed_icon) or vim.startswith(line, icon))
+			and line:find("Queued%s*#?%d*") ~= nil
+	end
+	return line:find("^Queued%s*#?%d*") ~= nil
 end
 
 ---Get the 0-indexed row of any divider or queue below the active agent divider, if present
@@ -1267,7 +1267,8 @@ function M.set_prompt_footer(buf, footer_text, extmark_id, is_prompt_active, con
 
 	if footer_text and footer_text ~= "" then
 		local footer_icon = get_icon("footer", config)
-		table.insert(virt_lines, { { string.format("── %s %s", footer_icon, footer_text), "AgyPromptFooter" } })
+		local sep = (footer_icon ~= "") and (footer_icon .. " ") or ""
+		table.insert(virt_lines, { { string.format("── %s%s", sep, footer_text), "AgyPromptFooter" } })
 	end
 
 	if #virt_lines == 0 then
@@ -1791,13 +1792,13 @@ function M.render_historical_question(buf, params, output, config, cwd)
 
 	for q_idx, q in ipairs(q_list) do
 		local raw_q_text = clean_question_text(q.question)
-		local q_prefix
+		local q_p = (q_icon ~= "") and (q_icon .. " ") or ""
 		if raw_q_text ~= "" then
-			q_prefix = (#q_list > 1) and string.format("%s Question %d: ", q_icon, q_idx)
-				or string.format("%s Question: ", q_icon)
+			q_prefix = (#q_list > 1) and string.format("%sQuestion %d: ", q_p, q_idx)
+				or string.format("%sQuestion: ", q_p)
 		else
-			q_prefix = (#q_list > 1) and string.format("%s Question %d", q_icon, q_idx)
-				or string.format("%s Question", q_icon)
+			q_prefix = (#q_list > 1) and string.format("%sQuestion %d", q_p, q_idx)
+				or string.format("%sQuestion", q_p)
 		end
 
 		local clean_q, q_inlines, q_links = markdown_mod.parse_inline_formatting(raw_q_text)
@@ -2619,7 +2620,8 @@ end
 function M.append_thought_block(buf, thought, duration_seconds, config)
 	pcall(require("agy.markdown").finalize, buf, config)
 	local thought_icon = get_icon("thought", config)
-	local line_text = string.format("%s Thought", thought_icon)
+	local t_sep = (thought_icon ~= "") and (thought_icon .. " ") or ""
+	local line_text = string.format("%sThought", t_sep)
 
 	local boundary_row, agent_row = M.get_agent_boundary(buf)
 	local thought_line
@@ -4842,13 +4844,13 @@ function M.render_question_block(buf, question_list, config)
 	local q_icon = get_icon("question", config)
 	for q_idx, q in ipairs(question_list) do
 		local raw_q_text = clean_question_text(q.question)
-		local q_prefix
+		local q_p = (q_icon ~= "") and (q_icon .. " ") or ""
 		if raw_q_text ~= "" then
-			q_prefix = (#question_list > 1) and string.format("%s Question %d: ", q_icon, q_idx)
-				or string.format("%s Question: ", q_icon)
+			q_prefix = (#question_list > 1) and string.format("%sQuestion %d: ", q_p, q_idx)
+				or string.format("%sQuestion: ", q_p)
 		else
-			q_prefix = (#question_list > 1) and string.format("%s Question %d", q_icon, q_idx)
-				or string.format("%s Question", q_icon)
+			q_prefix = (#question_list > 1) and string.format("%sQuestion %d", q_p, q_idx)
+				or string.format("%sQuestion", q_p)
 		end
 
 		local clean_q, q_inlines, q_links = markdown_mod.parse_inline_formatting(raw_q_text)
@@ -5172,8 +5174,9 @@ function M.finalize_turn(buf, agent_extmark_id, agent_line, result, config)
 	end
 
 	local done_icon = get_icon("done", config)
-	local badge_text = #stats > 0 and string.format(" [%s %s]", done_icon, table.concat(stats, " • "))
-		or string.format(" [%s]", done_icon)
+	local d_sep = (done_icon ~= "") and (done_icon .. " ") or ""
+	local badge_text = #stats > 0 and string.format(" [%s%s]", d_sep, table.concat(stats, " • "))
+		or (done_icon ~= "" and string.format(" [%s]", done_icon) or "")
 	local badge_hl = (result.status == "ERROR") and "AgyBadgeError" or "AgyBadgeDone"
 
 	-- Update agent divider
@@ -5261,7 +5264,8 @@ end
 function M.render_error(buf, err_message, config)
 	M.stop_thinking_animation(buf)
 	local err_icon = get_icon("error", config)
-	local err_text = string.format("%s Error: %s", err_icon, err_message)
+	local e_prefix = (err_icon ~= "") and (err_icon .. " ") or ""
+	local err_text = string.format("%sError: %s", e_prefix, err_message)
 
 	local boundary_row = M.get_agent_boundary(buf)
 	if boundary_row then
@@ -5329,7 +5333,8 @@ function M.render_cancelled(buf, config)
 	M.stop_thinking_animation(buf)
 
 	local cancel_icon = get_icon("cancelled", config)
-	local cancel_text = string.format("%s Turn cancelled", cancel_icon)
+	local c_prefix = (cancel_icon ~= "") and (cancel_icon .. " ") or ""
+	local cancel_text = string.format("%sTurn cancelled", c_prefix)
 
 	local boundary_row = M.get_agent_boundary(buf)
 	if boundary_row then
@@ -5465,7 +5470,6 @@ function M.render_queue(buf, queue, prompt_start_line, config)
 	end
 
 	local queue_icon = get_icon("queue", config)
-	assert(queue_icon, "agy config: icon 'queue' is not defined in config.icons")
 
 	-- Resolve actual prompt start line dynamically from prompt extmark if available
 	local protocol = package.loaded["agy.protocol"]
@@ -5538,7 +5542,8 @@ function M.render_queue(buf, queue, prompt_start_line, config)
 	for i, item in ipairs(queue) do
 		local item_lines = utils.split_lines(item.text)
 		local header_offset = #lines_to_insert
-		local header = string.format("%s Queued #%d: %s", queue_icon, item.id or i, item_lines[1] or "")
+		local q_sep = (queue_icon ~= "") and (queue_icon .. " ") or ""
+		local header = string.format("%sQueued #%d: %s", q_sep, item.id or i, item_lines[1] or "")
 		table.insert(lines_to_insert, header)
 		for j = 2, #item_lines do
 			table.insert(lines_to_insert, string.format("   %s", item_lines[j]))

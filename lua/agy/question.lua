@@ -64,8 +64,7 @@ local function get_icon(name, cfg)
   assert(c, "agy config: configuration is required")
   assert(type(c.icons) == "table", "agy config: 'icons' table is required")
   local icon = c.icons[name]
-  assert(icon, string.format("agy config: icon '%s' is not defined in config.icons", name))
-  return icon
+  return icon or ""
 end
 
 local function get_horizontal_sep(cfg)
@@ -397,7 +396,6 @@ function M.render_buffer()
   ensure_highlights()
 
   local cfg = M.state.config or config_mod.get()
-  local q_icon = get_icon("question", cfg)
   local horiz_char = get_horizontal_sep(cfg)
 
   local win_width = 80

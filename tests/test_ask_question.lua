@@ -70,7 +70,7 @@ local found_opts = 0
 local found_write_in = false
 
 for _, l in ipairs(lines) do
-  if l:find("❓ Question: Where should self%-hosted tools live%?") then
+  if l:find("Question: Where should self%-hosted tools live%?") then
     found_header = true
     assert(not l:find(">"), "Question header should not contain '>'")
     assert(not l:find("%*%*"), "Question header should not contain '**'")
@@ -266,7 +266,7 @@ do
   local found_notes = false
 
   for _, l in ipairs(hist_lines) do
-    if l:find("❓ Question: Which database backend should we use%?") then
+    if l:find("Question: Which database backend should we use%?") then
       found_q_header = true
       assert(not l:find(">"), "Question header should not contain '>'")
       assert(not l:find("%*%*"), "Question header should not contain '**'")

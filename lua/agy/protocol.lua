@@ -267,9 +267,9 @@ function M.update_footer(buf)
       end
 
       if info.status == "question" then
-        assert(state.config and state.config.icons and state.config.icons.question, "agy config: config.icons.question is required")
-        local q_icon = state.config.icons.question
-        parts[#parts + 1] = q_icon .. " [Awaiting answer - navigate with j/k, select with <CR>]"
+        local q_icon = (state.config and state.config.icons and state.config.icons.question) or ""
+        local q_sep = (q_icon ~= "") and (q_icon .. " ") or ""
+        parts[#parts + 1] = q_sep .. "[Awaiting answer - navigate with j/k, select with <CR>]"
       elseif info.status and info.status:sub(1, 5) == "tool:" then
         parts[#parts + 1] = "[Running " .. info.status:sub(6) .. "...]"
       elseif info.status == "generating" then

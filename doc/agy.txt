@@ -235,19 +235,11 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
         -- Icons used in session buffers and panels
         icons = {
             default = "  ",
-            tool = "🛠️",
-            run_command = "",       -- fa-circle (Nerd Font), status indicated by color
-            view_file = "  ",         -- Default 2 blank spaces (aligns with 2-char icons)
-            thought = "💭",
+            tool = "  ",
             user = "👤",
             agent = "🤖",
             prompt_sign = "❯ ",
-            footer = "⚡",
-            done = "✓",
-            question = "❓",
-            error = "❌",
             cancelled = "⏹️",
-            queue = "⏳",
             review_comment = "💬",
             new_session = "󰐕 ",      -- Icon for agy://new in home buffer
             conversation = "󰭹 ",     -- Icon for conversation entries in home buffer
@@ -257,6 +249,10 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
             step_line = "─",         -- Connecting line between question steps
             work_collapsed = "▶",    -- Icon for collapsed work group
             work_expanded = "▼",     -- Icon for expanded work group
+            group_completed = "●",   -- Bullet icon for completed named tool group
+            group_running = "●",     -- Bullet icon for running named tool group
+            middle_dot = "·",        -- Middle dot separator for group details
+            multiply = "×",          -- Multiplication symbol for repeated commands
             spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
             table = {
                 top_left = "╭",
