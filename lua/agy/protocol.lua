@@ -1377,6 +1377,9 @@ function M.set_mode(buf, mode_name)
   local state = M.buffers[buf]
   if not state then return end
 
+  if mode_name ~= nil and mode_name ~= "accept-edits" and mode_name ~= "plan" and mode_name ~= "default" then
+    error("agy protocol.set_mode: invalid mode '" .. tostring(mode_name) .. "' (expected 'accept-edits', 'plan', or 'default')")
+  end
   if mode_name == "default" then mode_name = nil end
 
   if state.session then
@@ -1568,7 +1571,7 @@ function M.handle_write(buf)
       M.record_command_history(buf, "/model " .. resolved_model, sw_prefix .. "Switched model to " .. resolved_model)
       return
 
-    -- 2. /mode: switch agent mode (accept-edits, plan, default, fast, planning)
+    -- 2. /mode: switch agent mode (accept-edits, plan, default)
     elseif first_token == "/mode" then
       local mode_arg = trimmed:match("^/mode%s+(%S+)")
       if not mode_arg or mode_arg == "" then
@@ -1577,14 +1580,13 @@ function M.handle_write(buf)
         vim.notify("[agy.nvim] Current agent mode: " .. cur, vim.log.levels.INFO)
         return
       end
-      local target_mode = mode_arg
-      if mode_arg == "fast" then
-        target_mode = "accept-edits"
-      elseif mode_arg == "planning" then
-        target_mode = "plan"
+      if mode_arg ~= "accept-edits" and mode_arg ~= "plan" and mode_arg ~= "default" then
+        clear_prompt_and_clean()
+        vim.notify("[agy.nvim] Invalid agent mode '" .. mode_arg .. "'. Valid modes: accept-edits, plan, default", vim.log.levels.WARN)
+        return
       end
-      M.set_mode(buf, target_mode)
-      M.record_command_history(buf, "/mode " .. mode_arg, sw_prefix .. "Switched agent mode to " .. target_mode)
+      M.set_mode(buf, mode_arg)
+      M.record_command_history(buf, "/mode " .. mode_arg, sw_prefix .. "Switched agent mode to " .. mode_arg)
       return
 
     -- 2b. /fast: shorthand to switch to accept-edits mode
@@ -1684,8 +1686,8 @@ function M.handle_write(buf)
         local steps = transcript_mod.read_transcript(state.conversation_id, cfg.app_data_dir)
         for i = #steps, 1, -1 do
           local s = steps[i]
-          if s.type == "PLANNER_RESPONSE" and s.response and s.response ~= "" then
-            last_resp = s.response
+          if s.type == "PLANNER_RESPONSE" and s.content and s.content ~= "" then
+            last_resp = s.content
             break
           end
         end

@@ -268,6 +268,15 @@ protocol.handle_write(sbuf)
 assert(sstate.session.mode == "plan", "/planning must set session mode to plan")
 assert(sstate.stream_info.permission_mode == "plan", "/planning must set stream_info.permission_mode to plan")
 
+-- 2b. /mode rejects non-canonical synonyms (fast, planning)
+protocol.with_modifiable(sbuf, function()
+	vim.api.nvim_buf_set_lines(sbuf, sstate.prompt_start_line - 1, -1, false, { "/mode fast" })
+end)
+protocol.handle_write(sbuf)
+assert(sstate.session.mode == "plan", "/mode fast must be rejected and not alias to accept-edits")
+local ok_bad_mode = pcall(protocol.set_mode, sbuf, "fast")
+assert(not ok_bad_mode, "protocol.set_mode must assert on non-canonical mode 'fast'")
+
 -- 3. /effort xhigh and /effort max
 local effort_comp = completion.get_completions("/effort ", 8)
 assert(effort_comp and #effort_comp.items == 5, "Expected 5 effort choices (low, medium, high, xhigh, max)")
@@ -283,7 +292,7 @@ end)
 protocol.handle_write(sbuf)
 assert(sstate.session.effort == "max", "/effort max must set session effort to max")
 
--- 4. /copy
+-- 4. /copy (from last_agent_response and from transcript s.content fallback)
 sstate.last_agent_response = "Here is the assistant response to copy."
 vim.fn.setreg('"', "")
 protocol.with_modifiable(sbuf, function()
@@ -291,6 +300,28 @@ protocol.with_modifiable(sbuf, function()
 end)
 protocol.handle_write(sbuf)
 assert(vim.fn.getreg('"') == "Here is the assistant response to copy.", "/copy must copy last_agent_response to register")
+
+-- 4b. /copy transcript fallback when state.last_agent_response is empty
+local test_helpers = require("tests.test_helpers")
+local tmp_copy_dir, copy_cid = test_helpers.create_mock_environment()
+local orig_conv_id = sstate.conversation_id
+local orig_app_data = sstate.config.app_data_dir
+sstate.last_agent_response = ""
+sstate.conversation_id = copy_cid
+sstate.config.app_data_dir = tmp_copy_dir
+vim.fn.setreg('"', "")
+protocol.with_modifiable(sbuf, function()
+	vim.api.nvim_buf_set_lines(sbuf, sstate.prompt_start_line - 1, -1, false, { "/copy" })
+end)
+protocol.handle_write(sbuf)
+local copied_from_transcript = vim.fn.getreg('"')
+assert(
+	copied_from_transcript == "I have viewed the file.",
+	"/copy must fall back to reading PLANNER_RESPONSE s.content from transcript when last_agent_response is empty, got: "
+		.. tostring(copied_from_transcript)
+)
+sstate.conversation_id = orig_conv_id
+sstate.config.app_data_dir = orig_app_data
 
 -- 5. /undo reverts the last turn in the buffer and state and restores the prompt
 local lines_before_turn = vim.api.nvim_buf_get_lines(sbuf, 0, sstate.prompt_start_line - 1, false)
@@ -307,7 +338,7 @@ table.insert(sstate.tool_calls, { name = "view_file", status = "success" })
 table.insert(sstate.work_groups, { title = "Group 1" })
 protocol.with_modifiable(sbuf, function()
 	vim.api.nvim_buf_set_lines(sbuf, -1, -1, false, { "Assistant response line 1", "Assistant response line 2" })
-	local new_p_line, new_p_ext = render.finalize_turn(sbuf, nil, nil, sstate.config)
+	local new_p_line, new_p_ext = render.finalize_turn(sbuf, nil, nil, {}, sstate.config)
 	sstate.prompt_start_line = new_p_line
 	sstate.prompt_extmark_id = new_p_ext
 end)
@@ -406,9 +437,9 @@ pcall(vim.api.nvim_buf_delete, th_buf, { force = true })
 print("✓ context.build_content nil cfg and tasks canonical status highlights verified")
 
 -- ============================================================================
--- [Test 10] Pruned Hallucinated No-Op Control Commands
+-- [Test 10] Pruned Hallucinated No-Op Control & Modifier Commands + /compact
 -- ============================================================================
-print("\n[Test 10] Testing hallucinated no-op control commands are pruned...")
+print("\n[Test 10] Testing hallucinated control & modifier commands are pruned and /compact exists...")
 local pruned_commands = {
 	"/agents", "/auth", "/compress", "/feedback", "/forget", "/git", "/hooks",
 	"/init", "/lint", "/log", "/mcp", "/memory", "/notify", "/permissions",
@@ -416,11 +447,17 @@ local pruned_commands = {
 	"/restore", "/rules", "/save", "/scratch", "/search", "/share", "/sidecar",
 	"/skills", "/stats", "/subagent", "/summary", "/tags", "/telemetry",
 	"/theme", "/timeout", "/tools", "/verbose",
+	"/architect", "/bug", "/flow", "/mutate", "/pair",
 }
 for _, cmd_name in ipairs(pruned_commands) do
-	assert(not completion.is_control(cmd_name), "Hallucinated no-op command must be pruned: " .. cmd_name)
+	assert(not completion.is_control(cmd_name), "Hallucinated command must not be in control commands: " .. cmd_name)
+	assert(not completion.is_modifier(cmd_name), "Hallucinated command must not be in modifier commands: " .. cmd_name)
+	assert(completion.find_command(cmd_name) == nil, "Hallucinated command must be pruned from M.COMMANDS: " .. cmd_name)
 end
-print("✓ All 37 hallucinated no-op control slash commands pruned")
+assert(completion.is_modifier("/compact"), "/compact must be registered as a modifier command")
+local compact_cmd = completion.find_command("/compact")
+assert(compact_cmd and compact_cmd.category == "modifier", "/compact must exist in M.COMMANDS with category 'modifier'")
+print("✓ All 42 hallucinated control & modifier slash commands pruned and /compact verified")
 
 -- ============================================================================
 -- [Test 11] expr = true Insert-Mode Completion Keymaps

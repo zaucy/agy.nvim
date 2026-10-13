@@ -1085,20 +1085,19 @@ local function get_treesitter_lang(lang)
 			return mapped
 		end
 	end
-	local alias_map = {
-		js = "javascript",
-		ts = "typescript",
-		py = "python",
-		rb = "ruby",
-		rs = "rust",
-		sh = "bash",
-		bash = "bash",
-		zsh = "bash",
-		shell = "bash",
-		yml = "yaml",
-		md = "markdown",
-	}
-	return alias_map[lower] or lower
+	if vim.filetype and vim.filetype.match then
+		local ft = vim.filetype.match({ filename = "file." .. lower })
+		if ft then
+			if vim.treesitter and vim.treesitter.language and vim.treesitter.language.get_lang then
+				local mapped_ft = vim.treesitter.language.get_lang(ft)
+				if mapped_ft then
+					return mapped_ft
+				end
+			end
+			return ft
+		end
+	end
+	return lower
 end
 
 ---Apply treesitter highlight captures to code block lines

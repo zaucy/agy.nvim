@@ -382,6 +382,8 @@ assert(completion.is_control("/diff"), "Expected /diff to be control")
 -- Prompt modifiers / directives
 assert(completion.is_modifier("/plan"), "Expected /plan to be modifier")
 assert(completion.is_modifier("/boost"), "Expected /boost to be modifier")
+assert(completion.is_modifier("/btw"), "Expected /btw to be modifier")
+assert(completion.is_modifier("/compact"), "Expected /compact to be modifier")
 assert(completion.is_modifier("/grill-me"), "Expected /grill-me to be modifier")
 assert(completion.is_modifier("/goal"), "Expected /goal to be modifier")
 assert(completion.is_modifier("/browser"), "Expected /browser to be modifier")
@@ -402,6 +404,7 @@ assert(token1_map["/context"] ~= nil, "Expected /context at token 1")
 assert(token1_map["/settings"] ~= nil, "Expected /settings at token 1")
 assert(token1_map["/plan"] ~= nil, "Expected /plan at token 1")
 assert(token1_map["/boost"] ~= nil, "Expected /boost at token 1")
+assert(token1_map["/compact"] ~= nil, "Expected /compact at token 1")
 print("✓ Command taxonomy and token 1 suggestion verified")
 
 -- [Test 13] Testing local execution of control commands on submit
