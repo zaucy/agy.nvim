@@ -2713,9 +2713,6 @@ function M.append_thought_block(buf, thought, duration_seconds, config)
 	return tc_rec
 end
 
----Backwards compatibility alias
-M.append_thought = M.append_thought_block
-
 ---Render a tool invocation step
 ---@param buf number
 ---@param tool_name string

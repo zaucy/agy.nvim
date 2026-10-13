@@ -1081,7 +1081,7 @@ local function get_treesitter_lang(lang)
 	local lower = lang:lower()
 	if vim.treesitter and vim.treesitter.language and vim.treesitter.language.get_lang then
 		local mapped = vim.treesitter.language.get_lang(lower)
-		if mapped then
+		if mapped and mapped ~= lower then
 			return mapped
 		end
 	end
@@ -1099,6 +1099,8 @@ local function get_treesitter_lang(lang)
 	end
 	return lower
 end
+
+M.get_treesitter_lang = get_treesitter_lang
 
 ---Apply treesitter highlight captures to code block lines
 ---@param code_text string

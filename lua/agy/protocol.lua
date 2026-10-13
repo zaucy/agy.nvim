@@ -1680,7 +1680,12 @@ function M.handle_write(buf)
 
     -- 6b. /copy: copy last assistant response to clipboard
     elseif first_token == "/copy" then
+      local copy_arg = trimmed:match("^/copy%s+(%S+)")
       clear_prompt_and_clean()
+      if copy_arg and copy_arg ~= "response" and copy_arg ~= "code" and copy_arg ~= "btw" then
+        vim.notify("[agy.nvim] Invalid /copy argument '" .. copy_arg .. "'. Valid choices: response, code, btw", vim.log.levels.WARN)
+        return
+      end
       local last_resp = state.last_agent_response
       if (not last_resp or last_resp == "") and state.conversation_id and state.conversation_id ~= "new" then
         local steps = transcript_mod.read_transcript(state.conversation_id, cfg.app_data_dir)
@@ -1696,9 +1701,21 @@ function M.handle_write(buf)
         vim.notify("[agy.nvim] No assistant response available to copy.", vim.log.levels.WARN)
         return
       end
-      pcall(vim.fn.setreg, '"', last_resp)
-      pcall(vim.fn.setreg, "+", last_resp)
-      pcall(vim.fn.setreg, "*", last_resp)
+      local text_to_copy = last_resp
+      if copy_arg == "code" then
+        local blocks = {}
+        for block in last_resp:gmatch("```[^\r\n]*\r?\n(.-)\r?\n```") do
+          table.insert(blocks, block)
+        end
+        if #blocks == 0 then
+          vim.notify("[agy.nvim] No code blocks found in last assistant response.", vim.log.levels.WARN)
+          return
+        end
+        text_to_copy = table.concat(blocks, "\n\n")
+      end
+      pcall(vim.fn.setreg, '"', text_to_copy)
+      pcall(vim.fn.setreg, "+", text_to_copy)
+      pcall(vim.fn.setreg, "*", text_to_copy)
       vim.notify("[agy.nvim] Copied last assistant response to clipboard.", vim.log.levels.INFO)
       return
 
@@ -1955,6 +1972,8 @@ function M.handle_write(buf)
         "### Prompt Modifiers / Directives (Chainable)",
         "- `/plan` — Deep planning, verification steps, and user alignment",
         "- `/boost` — Deep thinking, strategic planning, and verification",
+        "- `/btw` — Ask a side-question without disrupting conversation",
+        "- `/compact` — Compact conversation context to free up the context window",
         "- `/grill-me` — Interactive interview to resolve design decisions",
         "- `/goal` — Autonomous goal task",
         "- `/browser` — Web browsing and search automation",

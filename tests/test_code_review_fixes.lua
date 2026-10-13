@@ -323,6 +323,18 @@ assert(
 sstate.conversation_id = orig_conv_id
 sstate.config.app_data_dir = orig_app_data
 
+-- 4c. /copy code extracts fenced code blocks
+sstate.last_agent_response = "Here is some code:\n```lua\nlocal x = 42\n```\nAnd another:\n```lua\nreturn x\n```"
+vim.fn.setreg('"', "")
+protocol.with_modifiable(sbuf, function()
+	vim.api.nvim_buf_set_lines(sbuf, sstate.prompt_start_line - 1, -1, false, { "/copy code" })
+end)
+protocol.handle_write(sbuf)
+assert(
+	vim.fn.getreg('"') == "local x = 42\n\nreturn x",
+	"/copy code must extract fenced code blocks from last_agent_response, got: " .. tostring(vim.fn.getreg('"'))
+)
+
 -- 5. /undo reverts the last turn in the buffer and state and restores the prompt
 local lines_before_turn = vim.api.nvim_buf_get_lines(sbuf, 0, sstate.prompt_start_line - 1, false)
 protocol.with_modifiable(sbuf, function()
@@ -543,6 +555,34 @@ vim.api.nvim_set_hl(0, "@keyword", { fg = 0x123456 })
 render.setup_highlights()
 local kw_hl = vim.api.nvim_get_hl(0, { name = "@keyword", link = false })
 assert(kw_hl and kw_hl.fg == 0x123456, "setup_highlights must not overwrite user @keyword highlight group")
+assert(render.append_thought == nil, "render.append_thought backwards-compatibility alias must be removed")
 print("✓ Empty icon compact header detection and Tree-sitter highlight preservation verified")
+
+-- ============================================================================
+-- [Test 14] Markdown get_treesitter_lang Filetype & Tree-sitter Resolution
+-- ============================================================================
+print("\n[Test 14] Testing markdown.get_treesitter_lang filetype and Tree-sitter resolution...")
+local markdown_mod = require("agy.markdown")
+assert(markdown_mod.get_treesitter_lang("js") == "javascript", "Expected 'js' to resolve to 'javascript'")
+assert(markdown_mod.get_treesitter_lang("ts") == "typescript", "Expected 'ts' to resolve to 'typescript'")
+assert(markdown_mod.get_treesitter_lang("py") == "python", "Expected 'py' to resolve to 'python'")
+assert(markdown_mod.get_treesitter_lang("rs") == "rust", "Expected 'rs' to resolve to 'rust'")
+assert(markdown_mod.get_treesitter_lang("yml") == "yaml", "Expected 'yml' to resolve to 'yaml'")
+assert(markdown_mod.get_treesitter_lang("md") == "markdown", "Expected 'md' to resolve to 'markdown'")
+assert(markdown_mod.get_treesitter_lang("lua") == "lua", "Expected 'lua' to resolve to 'lua'")
+
+local md_buf = vim.api.nvim_create_buf(false, true)
+markdown_mod.render(md_buf, "```md\n# Heading\n\nParagraph\n```\n", true, config.get())
+local md_marks = vim.api.nvim_buf_get_extmarks(md_buf, markdown_mod.NS_MARKDOWN, 0, -1, { details = true })
+local has_ts_hl = false
+for _, m in ipairs(md_marks) do
+	if m[4].hl_group and m[4].hl_group:match("^@") then
+		has_ts_hl = true
+		break
+	end
+end
+assert(has_ts_hl, "markdown.render must apply Tree-sitter highlights to ```md code blocks via filetype resolution")
+pcall(vim.api.nvim_buf_delete, md_buf, { force = true })
+print("✓ markdown.get_treesitter_lang and ```md Tree-sitter highlights verified")
 
 print("\nALL CODE REVIEW FIXES VERIFICATION TESTS PASSED!")
