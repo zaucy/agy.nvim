@@ -1034,7 +1034,7 @@ function M.intercept_ask_question(buf, state, q_list, preloaded_steps)
   })
 
   state.active_question = {
-    ui = question_mod,
+    ui = question_mod.bind_buffer(buf),
     questions = q_list,
   }
 
@@ -1112,7 +1112,7 @@ function M.intercept_artifact_review(buf, state, filename, summary, preloaded_st
   })
 
   state.active_question = {
-    ui = question_mod,
+    ui = question_mod.bind_buffer(buf),
     questions = q_list,
     is_artifact_review = true,
     artifact_filename = filename,
@@ -1623,6 +1623,9 @@ function M.handle_write(buf)
       local full_dir = vim.fs.normalize(vim.fn.expand(dir))
       state.session:add_workspace(full_dir)
       state.workspaces = state.session.workspaces
+      pcall(function()
+        completion.refresh_workspace_files_async(full_dir)
+      end)
       state.session:start()
       M.record_command_history(buf, "/add-dir " .. dir, add_prefix .. "Added workspace: " .. full_dir)
       vim.notify("[agy.nvim] Added workspace: " .. full_dir, vim.log.levels.INFO)
@@ -1658,6 +1661,9 @@ function M.handle_write(buf)
         local full_dir = vim.fs.normalize(vim.fn.expand(dir))
         state.session:add_workspace(full_dir)
         state.workspaces = state.session.workspaces
+        pcall(function()
+          completion.refresh_workspace_files_async(full_dir)
+        end)
         state.session:start()
         M.record_command_history(buf, "/workspace " .. dir, add_prefix .. "Added workspace: " .. full_dir)
         vim.notify("[agy.nvim] Added workspace: " .. full_dir, vim.log.levels.INFO)
@@ -1742,14 +1748,61 @@ function M.handle_write(buf)
       require("agy").diff()
       return
 
-    -- 10. /undo: restore previous sent prompt to input or undo prompt edits
+    -- 10. /undo: revert last turn in buffer/state and restore previous prompt to input
     elseif first_token == "/undo" then
-      if state.last_sent_prompt and state.last_sent_prompt ~= "" then
-        local restored = state.last_sent_prompt
+      local snap = (state.turn_snapshots and #state.turn_snapshots > 0)
+          and table.remove(state.turn_snapshots)
+          or nil
+      local restored = (snap and snap.prompt_text) or state.last_sent_prompt
+      if restored and restored ~= "" then
+        if state.session and state.session.turn_active then
+          pcall(function() state.session:stop() end)
+        end
+        render.stop_thinking_animation(buf)
+        local target_prompt_line = (snap and snap.prompt_start_line) or state.prompt_start_line or 1
+        if snap then
+          if state.tool_calls and snap.tool_calls_count then
+            for i = #state.tool_calls, snap.tool_calls_count + 1, -1 do
+              local tc = state.tool_calls[i]
+              if tc and tc.is_open then
+                pcall(render.close_tool_window, state, tc)
+              end
+              state.tool_calls[i] = nil
+            end
+          end
+          if state.work_groups and snap.work_groups_count then
+            for i = #state.work_groups, snap.work_groups_count + 1, -1 do
+              state.work_groups[i] = nil
+            end
+          end
+          state.last_agent_response = snap.last_agent_response or ""
+        end
+        state.last_sent_prompt = (state.turn_snapshots and #state.turn_snapshots > 0)
+            and state.turn_snapshots[#state.turn_snapshots].prompt_text
+            or nil
+        state.agent_extmark_id = nil
+        state.agent_line = nil
+        if state.stream_info then
+          state.stream_info.status = "ready"
+        end
+        M.reset_turn_work_state(state)
+
         local p_lines = utils.split_lines(restored)
-        vim.cmd("stopinsert")
+        pcall(vim.cmd, "stopinsert")
         M.with_modifiable(buf, function()
-          vim.api.nvim_buf_set_lines(buf, state.prompt_start_line - 1, -1, false, p_lines)
+          local start_row = math.max(0, target_prompt_line - 1)
+          vim.api.nvim_buf_clear_namespace(buf, render.NS_UI, start_row, -1)
+          vim.api.nvim_buf_clear_namespace(buf, render.NS_HISTORY, start_row, -1)
+          vim.api.nvim_buf_clear_namespace(buf, render.NS_PROMPT, 0, -1)
+          pcall(function()
+            local md = require("agy.markdown")
+            vim.api.nvim_buf_clear_namespace(buf, md.NS_MARKDOWN, start_row, -1)
+          end)
+          vim.api.nvim_buf_set_lines(buf, start_row, -1, false, p_lines)
+          state.prompt_start_line = target_prompt_line
+          state.prompt_extmark_id = render.set_divider(buf, start_row, "user", nil, nil, true, nil, state.config)
+          render.apply_history_highlights(buf, target_prompt_line, state.config)
+          render.apply_prompt_highlights(buf, target_prompt_line, state.config)
         end)
         vim.bo[buf].modified = false
         completion.close()
@@ -1759,7 +1812,7 @@ function M.handle_write(buf)
         end
         M.update_modifiable(buf)
         M.update_footer(buf)
-        vim.notify("[agy.nvim] Restored previous prompt to input.", vim.log.levels.INFO)
+        vim.notify("[agy.nvim] Reverted last turn and restored prompt to input.", vim.log.levels.INFO)
       else
         clear_prompt_and_clean()
         vim.cmd("silent! undo")
@@ -1949,14 +2002,19 @@ function M.handle_write(buf)
       vim.notify("[agy.nvim] agy.nvim 1.0.0 (" .. cmd_name .. " CLI " .. (exe_ok and "ready" or "missing") .. ")", vim.log.levels.INFO)
       return
 
-    -- 22. Generic fallback for any other control command
     else
-      clear_prompt_and_clean()
-      vim.notify("[agy.nvim] Handled control command " .. first_token, vim.log.levels.INFO)
-      return
+      error("agy protocol: unhandled control command: " .. tostring(first_token))
     end
   end
 
+  state.turn_snapshots = state.turn_snapshots or {}
+  table.insert(state.turn_snapshots, {
+    prompt_start_line = state.prompt_start_line,
+    prompt_text = prompt_text,
+    tool_calls_count = #(state.tool_calls or {}),
+    work_groups_count = #(state.work_groups or {}),
+    last_agent_response = state.last_agent_response,
+  })
   state.last_sent_prompt = prompt_text
   state.last_agent_response = ""
   M.flush_stream_delta(buf, false)

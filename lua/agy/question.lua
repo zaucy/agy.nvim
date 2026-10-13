@@ -29,26 +29,68 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_question")
 ---@field on_submit? fun(answer_payload: string, answered_questions: table[])
 ---@field on_cancel? fun()
 
+---@return AgyQuestionUIState
+local function new_question_state()
+  return {
+    win = nil,
+    buf = nil,
+    target_win = nil,
+    target_buf = nil,
+    mapped_buf = nil,
+    start_line = nil,
+    questions = {},
+    current_q_idx = 1,
+    selected_idx = 1,
+    scroll_offset = 1,
+    selected_answers = {},
+    write_in_text = {},
+    items = {},
+    is_editing_write_in = false,
+    config = nil,
+    on_submit = nil,
+    on_cancel = nil,
+  }
+end
+
+---@type table<number, AgyQuestionUIState>
+M.states = {}
+
 ---@type AgyQuestionUIState
-M.state = {
-  win = nil,
-  buf = nil,
-  target_win = nil,
-  target_buf = nil,
-  mapped_buf = nil,
-  start_line = nil,
-  questions = {},
-  current_q_idx = 1,
-  selected_idx = 1,
-  scroll_offset = 1,
-  selected_answers = {},
-  write_in_text = {},
-  items = {},
-  is_editing_write_in = false,
-  config = nil,
-  on_submit = nil,
-  on_cancel = nil,
-}
+M.state = new_question_state()
+
+---Activate question state for a specific buffer (or current buffer if it has an active question)
+---@param buf? number
+---@return AgyQuestionUIState
+function M.activate_buf(buf)
+  if type(buf) == "number" and M.states[buf] then
+    M.state = M.states[buf]
+    return M.state
+  end
+  local cur_buf = vim.api.nvim_get_current_buf()
+  if cur_buf and M.states[cur_buf] and #M.states[cur_buf].questions > 0 then
+    M.state = M.states[cur_buf]
+  end
+  return M.state
+end
+
+---Return a buffer-bound question UI controller that isolates state per buffer
+---@param buf number
+---@return table
+function M.bind_buffer(buf)
+  return setmetatable({}, {
+    __index = function(_, k)
+      M.activate_buf(buf)
+      local v = M[k]
+      if type(v) == "function" then
+        return function(...)
+          M.activate_buf(buf)
+          return v(...)
+        end
+      end
+      return v
+    end,
+  })
+end
 
 local QUESTION_BUF_KEYS = {
   "j", "k", "<Down>", "<Up>", "<C-n>", "<C-p>",
@@ -232,8 +274,14 @@ function M.get_question_lines()
 end
 
 ---Check whether the interactive question UI is currently active and visible
+---@param target_buf? number
 ---@return boolean
-function M.is_visible()
+function M.is_visible(target_buf)
+  if type(target_buf) == "number" then
+    local st = M.states[target_buf]
+    return st ~= nil and vim.api.nvim_buf_is_valid(target_buf) and #st.questions > 0
+  end
+  M.activate_buf()
   local b = M.state.buf or M.state.target_buf
   return b ~= nil and vim.api.nvim_buf_is_valid(b) and #M.state.questions > 0
 end
@@ -263,13 +311,18 @@ function M.clear_keymaps()
 end
 
 ---Close question UI, clear buffer lines, delete keymaps, and reset state
-function M.close()
+---@param target_buf? number
+function M.close(target_buf)
+  M.activate_buf(target_buf)
   pcall(vim.cmd, "stopinsert")
   M.state.is_editing_write_in = false
+  local b = M.state.buf or M.state.target_buf
   pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn")
+  if b then
+    pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn_" .. b)
+  end
   M.clear_keymaps()
 
-  local b = M.state.buf or M.state.target_buf
   if b and vim.api.nvim_buf_is_valid(b) then
     local start_line = M.get_start_line()
     local start_row = start_line - 1
@@ -305,12 +358,34 @@ function M.close()
   M.state.is_editing_write_in = false
   M.state.on_submit = nil
   M.state.on_cancel = nil
+
+  if b then
+    M.states[b] = nil
+  end
+
+  local next_state = nil
+  local cur_buf = vim.api.nvim_get_current_buf()
+  if cur_buf and M.states[cur_buf] and #M.states[cur_buf].questions > 0 then
+    next_state = M.states[cur_buf]
+  else
+    for k_buf, st in pairs(M.states) do
+      if vim.api.nvim_buf_is_valid(k_buf) and #st.questions > 0 then
+        next_state = st
+        break
+      end
+    end
+  end
+  if next_state then
+    M.state = next_state
+  end
 end
 
 ---Cancel active question and invoke on_cancel callback
-function M.cancel()
+---@param target_buf? number
+function M.cancel(target_buf)
+  M.activate_buf(target_buf)
   local cb = M.state.on_cancel
-  M.close()
+  M.close(target_buf)
   if cb then
     cb()
   end
@@ -1030,6 +1105,7 @@ end
 
 ---Select next item
 function M.select_next()
+  M.activate_buf()
   if #M.state.items == 0 then return end
   M.state.selected_idx = (M.state.selected_idx % #M.state.items) + 1
   M.render_buffer()
@@ -1038,6 +1114,7 @@ end
 
 ---Select previous item
 function M.select_prev()
+  M.activate_buf()
   if #M.state.items == 0 then return end
   M.state.selected_idx = (M.state.selected_idx - 2 + #M.state.items) % #M.state.items + 1
   M.render_buffer()
@@ -1047,6 +1124,7 @@ end
 ---Navigate to a specific question by index (1-based)
 ---@param idx number
 function M.go_to_question(idx)
+  M.activate_buf()
   local total_pages = M.get_total_pages()
   assert(type(idx) == "number", "agy question: idx must be a number")
   assert(idx >= 1 and idx <= total_pages, "agy question: question index out of range: " .. tostring(idx))
@@ -1075,6 +1153,7 @@ end
 
 ---Navigate to next question or summary page (clamped, no wrap)
 function M.next_question()
+  M.activate_buf()
   local total = M.get_total_pages()
   if total <= 1 then return end
   if M.state.current_q_idx < total then
@@ -1084,6 +1163,7 @@ end
 
 ---Navigate to previous question (clamped, no wrap)
 function M.prev_question()
+  M.activate_buf()
   local total = M.get_total_pages()
   if total <= 1 then return end
   if M.state.current_q_idx > 1 then
@@ -1094,6 +1174,7 @@ end
 ---Jump directly to a numbered option (1-9)
 ---@param idx number
 function M.jump_to(idx)
+  M.activate_buf()
   if #M.state.items == 0 then return end
   if M.is_summary_page() then
     if idx >= 1 and idx <= #M.state.questions then
@@ -1124,6 +1205,7 @@ end
 
 ---Toggle selection for current item (primarily for multi-select)
 function M.toggle()
+  M.activate_buf()
   if #M.state.items == 0 then return end
   local it = M.state.items[M.state.selected_idx]
   if not it then return end
@@ -1156,6 +1238,7 @@ end
 
 ---Accept current item
 function M.accept()
+  M.activate_buf()
   if #M.state.items == 0 then return end
   local it = M.state.items[M.state.selected_idx]
   if not it then return end
@@ -1193,6 +1276,11 @@ local function clear_inline_insert_keymaps()
   for _, k in ipairs(keys) do
     pcall(vim.keymap.del, "i", k, { buffer = b })
   end
+  local protocol = package.loaded["agy.protocol"]
+  if protocol and protocol.buffers and protocol.buffers[b] then
+    local completion = require("agy.completion")
+    pcall(completion.setup_buffer, b)
+  end
 end
 
 ---Finish inline editing mode for write-in response
@@ -1202,9 +1290,12 @@ function M.finish_inline_write_in(confirmed, text)
   pcall(vim.cmd, "stopinsert")
   M.state.is_editing_write_in = false
   clear_inline_insert_keymaps()
-  pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn")
-
   local b = M.state.buf or M.state.target_buf
+  pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn")
+  if b then
+    pcall(vim.api.nvim_del_augroup_by_name, "AgyQuestionInlineWriteIn_" .. b)
+  end
+
   if b and vim.api.nvim_buf_is_valid(b) then
     vim.bo[b].modifiable = false
   end
@@ -1253,6 +1344,7 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   local win = M.state.win or M.state.target_win or vim.api.nvim_get_current_win()
 
   local function get_input_text()
+    M.activate_buf(b)
     if not b or not vim.api.nvim_buf_is_valid(b) then return "" end
     local line = vim.api.nvim_buf_get_lines(b, write_line - 1, write_line, false)[1] or ""
     if #line >= prefix_end then
@@ -1262,11 +1354,13 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   end
 
   local function handle_esc()
+    M.activate_buf(b)
     local text = get_input_text()
     M.finish_inline_write_in(false, text)
   end
 
   vim.keymap.set("i", "<CR>", function()
+    M.activate_buf(b)
     local text = get_input_text()
     M.finish_inline_write_in(true, text)
   end, { buffer = b, silent = true, nowait = true })
@@ -1275,11 +1369,13 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
   vim.keymap.set("i", "<C-c>", handle_esc, { buffer = b, silent = true, nowait = true })
 
   vim.keymap.set("i", "<Up>", function()
+    M.activate_buf(b)
     handle_esc()
     M.select_prev()
   end, { buffer = b, silent = true, nowait = true })
 
   vim.keymap.set("i", "<Down>", function()
+    M.activate_buf(b)
     handle_esc()
     M.select_next()
   end, { buffer = b, silent = true, nowait = true })
@@ -1339,12 +1435,13 @@ function M.setup_inline_insert_keymaps(write_line, prefix_end)
     return ""
   end, { buffer = b, silent = true })
 
-  local group = vim.api.nvim_create_augroup("AgyQuestionInlineWriteIn", { clear = true })
+  local group = vim.api.nvim_create_augroup("AgyQuestionInlineWriteIn_" .. b, { clear = true })
   vim.api.nvim_create_autocmd("InsertLeave", {
     group = group,
     buffer = b,
     once = true,
     callback = function()
+      M.activate_buf(b)
       if M.state.is_editing_write_in then
         handle_esc()
       end
@@ -1354,6 +1451,7 @@ end
 
 ---Start inline editing for the write-in response on the current question
 function M.start_inline_write_in()
+  M.activate_buf()
   if M.is_summary_page() then return end
   local q = M.state.questions[M.state.current_q_idx]
   if not q then return end
@@ -1421,6 +1519,7 @@ end
 ---Programmatically set write-in response text or start inline editing
 ---@param text? string If provided, sets write-in text directly; otherwise starts inline editing
 function M.prompt_write_in(text)
+  M.activate_buf()
   if text ~= nil then
     M.set_write_in(text)
   else
@@ -1431,6 +1530,7 @@ end
 ---Programmatically set write-in response text for the current question
 ---@param text string
 function M.set_write_in(text)
+  M.activate_buf()
   if M.is_summary_page() then return end
   local trimmed = utils.trim(text or "")
   M.state.write_in_text[M.state.current_q_idx] = trimmed
@@ -1516,6 +1616,8 @@ end
 
 ---Validate and submit all answers across questions
 function M.submit_all()
+  M.activate_buf()
+  local active_buf = M.state.buf or M.state.target_buf
   for q_idx = 1, #M.state.questions do
     if not M.has_question_answer(q_idx) then
       M.go_to_question(q_idx)
@@ -1526,7 +1628,7 @@ function M.submit_all()
 
   local answer_payload, answered_questions = M.format_answers()
   local on_sub = M.state.on_submit
-  M.close()
+  M.close(active_buf)
   if on_sub then
     on_sub(answer_payload, answered_questions)
   end
@@ -1534,6 +1636,7 @@ end
 
 ---Confirm current question answer and advance or complete
 function M.confirm_current_question()
+  M.activate_buf()
   local q = M.state.questions[M.state.current_q_idx]
   if not q then return end
 
@@ -1553,9 +1656,11 @@ end
 ---@param target_buf number
 function M.setup_keymaps(target_buf)
   if not target_buf or not vim.api.nvim_buf_is_valid(target_buf) then return end
+  M.activate_buf(target_buf)
   M.state.mapped_buf = target_buf
 
   local function is_in_question()
+    M.activate_buf(target_buf)
     local start_line = M.get_start_line()
     local win = vim.api.nvim_get_current_win()
     if not win or not vim.api.nvim_win_is_valid(win) then return false end
@@ -1564,6 +1669,7 @@ function M.setup_keymaps(target_buf)
   end
 
   local function handle_down()
+    M.activate_buf(target_buf)
     if is_in_question() then
       M.select_next()
     else
@@ -1583,6 +1689,7 @@ function M.setup_keymaps(target_buf)
   end
 
   local function handle_up()
+    M.activate_buf(target_buf)
     if is_in_question() then
       if M.state.selected_idx > 1 then
         M.select_prev()
@@ -1608,6 +1715,7 @@ function M.setup_keymaps(target_buf)
 
   local function pass_or(fn, fallback_key)
     return function()
+      M.activate_buf(target_buf)
       if is_in_question() then
         fn()
       else
@@ -1654,6 +1762,7 @@ function M.setup_keymaps(target_buf)
 
   -- <CR>: if in question, accept; if in history, toggle tool output
   local function handle_cr()
+    M.activate_buf(target_buf)
     if is_in_question() then
       M.accept()
     else
@@ -1670,7 +1779,10 @@ function M.setup_keymaps(target_buf)
   end
   vim.keymap.set("n", "<CR>", handle_cr, q_opts)
 
-  vim.keymap.set("n", "<C-s>", function() M.submit_all() end, q_opts)
+  vim.keymap.set("n", "<C-s>", function()
+    M.activate_buf(target_buf)
+    M.submit_all()
+  end, q_opts)
 
   for _, k in ipairs({ "w", "i", "a" }) do
     vim.keymap.set("n", k, pass_or(function() M.prompt_write_in() end, k), q_opts)
@@ -1681,10 +1793,13 @@ function M.setup_keymaps(target_buf)
   end
 
   for _, k in ipairs({ "q", "<Esc>" }) do
-    vim.keymap.set("n", k, pass_or(function() M.cancel() end, k), q_opts)
+    vim.keymap.set("n", k, pass_or(function() M.cancel(target_buf) end, k), q_opts)
   end
 
-  vim.keymap.set("n", "<C-c>", function() M.cancel() end, q_opts)
+  vim.keymap.set("n", "<C-c>", function()
+    M.activate_buf(target_buf)
+    M.cancel(target_buf)
+  end, q_opts)
 
   -- Cursor tracking in target_buf: sync selected_idx if cursor moves via motion
   local q_group = vim.api.nvim_create_augroup("AgyQuestionCursor_" .. target_buf, { clear = true })
@@ -1692,7 +1807,8 @@ function M.setup_keymaps(target_buf)
     group = q_group,
     buffer = target_buf,
     callback = function()
-      if not M.is_visible() then return end
+      M.activate_buf(target_buf)
+      if not M.is_visible(target_buf) then return end
       if M.state.is_editing_write_in then return end
       local cur_win = vim.api.nvim_get_current_win()
       local cur_tab = vim.api.nvim_get_current_tabpage()
@@ -1763,6 +1879,15 @@ function M.show(target_win, target_buf, questions, opts)
     target_win = cur_win
   end
 
+  if M.states[target_buf] then
+    M.activate_buf(target_buf)
+    M.clear_keymaps()
+  end
+
+  local st = new_question_state()
+  M.states[target_buf] = st
+  M.state = st
+
   M.state.target_win = target_win
   M.state.target_buf = target_buf
   M.state.win = target_win
@@ -1793,8 +1918,15 @@ local resize_group = vim.api.nvim_create_augroup("AgyQuestionResize", { clear = 
 vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
   group = resize_group,
   callback = function()
-    if M.is_visible() then
-      M.update_win_config()
+    local prev_state = M.state
+    for buf, st in pairs(M.states) do
+      if vim.api.nvim_buf_is_valid(buf) and #st.questions > 0 then
+        M.state = st
+        M.update_win_config()
+      end
+    end
+    if prev_state and prev_state.target_buf and M.states[prev_state.target_buf] then
+      M.state = prev_state
     end
   end,
 })

@@ -380,7 +380,9 @@ function M.setup_highlights()
 	}
 
 	for name, val in pairs(defs) do
-		vim.api.nvim_set_hl(0, name, val)
+		if name:sub(1, 1) ~= "@" or vim.tbl_isempty(vim.api.nvim_get_hl(0, { name = name })) then
+			vim.api.nvim_set_hl(0, name, val)
+		end
 	end
 
 	M.reset_logo_highlights()
@@ -815,11 +817,21 @@ function M.is_compact_header_line(line, config)
 			and k ~= "checkbox_unchecked"
 			and k ~= "checkbox_checked"
 			and type(icon_val) == "string"
-			and icon_val ~= ""
 		then
 			local trimmed_icon = utils.trim(icon_val)
-			if trimmed_icon ~= "" and (vim.startswith(line, trimmed_icon) or vim.startswith(line, icon_val)) then
-				return true
+			if trimmed_icon ~= "" then
+				if vim.startswith(line, trimmed_icon) or vim.startswith(line, icon_val) then
+					return true
+				end
+			elseif k == "thought" then
+				if vim.startswith(utils.trim(line), "Thought") then
+					return true
+				end
+			else
+				local trimmed_line = utils.trim(line)
+				if trimmed_line == k or vim.startswith(trimmed_line, k .. " ") then
+					return true
+				end
 			end
 		end
 	end

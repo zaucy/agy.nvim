@@ -466,9 +466,9 @@ function M.apply_highlights(buf, meta)
 
       -- Highlight status
       local status_hl = "AgyTaskRunning"
-      if task.status == "success" or task.status == "done" then
+      if task.status == "success" then
         status_hl = "AgyTaskSuccess"
-      elseif task.status == "failed" or task.status == "error" then
+      elseif task.status == "failed" then
         status_hl = "AgyTaskFailed"
       end
 
@@ -561,7 +561,7 @@ function M.open(caller_buf)
           task.tool_rec.exit_code = 130
           pcall(function()
             local render_mod = require("agy.render")
-            render_mod.update_task_status(caller_buf, task.tool_rec, "failed", 130)
+            render_mod.update_task_status(caller_buf, task.tool_rec, "failed", 130, cfg)
           end)
         end
         vim.notify("[agy.nvim] Terminated background task: " .. task.short_id, vim.log.levels.INFO)

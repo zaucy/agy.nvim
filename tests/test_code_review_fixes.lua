@@ -292,8 +292,29 @@ end)
 protocol.handle_write(sbuf)
 assert(vim.fn.getreg('"') == "Here is the assistant response to copy.", "/copy must copy last_agent_response to register")
 
--- 5. /undo restores last_sent_prompt into prompt area
-sstate.last_sent_prompt = "My previously submitted prompt\nLine 2 of prompt"
+-- 5. /undo reverts the last turn in the buffer and state and restores the prompt
+local lines_before_turn = vim.api.nvim_buf_get_lines(sbuf, 0, sstate.prompt_start_line - 1, false)
+protocol.with_modifiable(sbuf, function()
+	vim.api.nvim_buf_set_lines(sbuf, sstate.prompt_start_line - 1, -1, false, {
+		"My previously submitted prompt",
+		"Line 2 of prompt",
+	})
+end)
+protocol.handle_write(sbuf)
+-- Simulate assistant output and tool call in the turn
+sstate.session.turn_active = false
+table.insert(sstate.tool_calls, { name = "view_file", status = "success" })
+table.insert(sstate.work_groups, { title = "Group 1" })
+protocol.with_modifiable(sbuf, function()
+	vim.api.nvim_buf_set_lines(sbuf, -1, -1, false, { "Assistant response line 1", "Assistant response line 2" })
+	local new_p_line, new_p_ext = render.finalize_turn(sbuf, nil, nil, sstate.config)
+	sstate.prompt_start_line = new_p_line
+	sstate.prompt_extmark_id = new_p_ext
+end)
+local full_before_undo = table.concat(vim.api.nvim_buf_get_lines(sbuf, 0, -1, false), "\n")
+assert(full_before_undo:find("Assistant response line 1", 1, true) ~= nil, "Turn output must exist before /undo")
+assert(#sstate.tool_calls == 1, "Tool call must exist before /undo")
+
 protocol.with_modifiable(sbuf, function()
 	vim.api.nvim_buf_set_lines(sbuf, sstate.prompt_start_line - 1, -1, false, { "/undo" })
 end)
@@ -303,6 +324,17 @@ assert(
 	restored_prompt == "My previously submitted prompt\nLine 2 of prompt",
 	"/undo must restore last_sent_prompt into prompt input, got: " .. tostring(restored_prompt)
 )
+local full_after_undo = table.concat(vim.api.nvim_buf_get_lines(sbuf, 0, sstate.prompt_start_line - 1, false), "\n")
+assert(
+	full_after_undo:find("Assistant response line 1", 1, true) == nil,
+	"/undo must remove the reverted turn's assistant output from buffer"
+)
+assert(
+	#vim.api.nvim_buf_get_lines(sbuf, 0, sstate.prompt_start_line - 1, false) == #lines_before_turn,
+	"/undo must restore buffer history above prompt to pre-turn state"
+)
+assert(#sstate.tool_calls == 0, "/undo must revert tool_calls added during the undone turn")
+assert(#sstate.work_groups == 0, "/undo must revert work_groups added during the undone turn")
 
 -- 6. /open completion and execution
 local open_comp = completion.get_completions("/open init", 10, nil, { vim.fn.getcwd() })
@@ -341,5 +373,139 @@ assert(ext_pos and ext_pos[1] == cleared_p_line - 1, "Prompt divider extmark row
 protocol.buffers[qbuf2] = nil
 pcall(vim.api.nvim_buf_delete, qbuf2, { force = true })
 print("✓ render.render_queue prompt extmark update verified")
+
+-- ============================================================================
+-- [Test 9] Context Nil Config & Tasks Canonical Status Highlights
+-- ============================================================================
+print("\n[Test 9] Testing context.build_content with nil cfg and tasks canonical highlights...")
+local ctx_nil_lines = context_mod.build_content({}, nil, 80)
+assert(type(ctx_nil_lines) == "table" and #ctx_nil_lines > 0, "context.build_content must work when cfg is nil")
+
+local th_buf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_lines(th_buf, 0, -1, false, {
+	"header",
+	"  task-1    ✓ Success   0   echo 1",
+	"  task-2    ✓ Success   0   echo 2",
+})
+tasks_mod.apply_highlights(th_buf, {
+	{ type = "task_row", row = 1, extra = { task = { status = "done" } } },
+	{ type = "task_row", row = 2, extra = { task = { status = "success" } } },
+})
+local th_marks = vim.api.nvim_buf_get_extmarks(th_buf, tasks_mod.NS_TASKS, 0, -1, { details = true })
+local row1_hl, row2_hl
+for _, m in ipairs(th_marks) do
+	if m[2] == 1 and m[4].hl_group ~= "AgyTaskId" and m[4].hl_group ~= "AgyTaskCommand" then
+		row1_hl = m[4].hl_group
+	elseif m[2] == 2 and m[4].hl_group ~= "AgyTaskId" and m[4].hl_group ~= "AgyTaskCommand" then
+		row2_hl = m[4].hl_group
+	end
+end
+assert(row1_hl == "AgyTaskRunning", "Non-canonical 'done' status must not alias to 'success', got: " .. tostring(row1_hl))
+assert(row2_hl == "AgyTaskSuccess", "Canonical 'success' status must highlight with AgyTaskSuccess, got: " .. tostring(row2_hl))
+pcall(vim.api.nvim_buf_delete, th_buf, { force = true })
+print("✓ context.build_content nil cfg and tasks canonical status highlights verified")
+
+-- ============================================================================
+-- [Test 10] Pruned Hallucinated No-Op Control Commands
+-- ============================================================================
+print("\n[Test 10] Testing hallucinated no-op control commands are pruned...")
+local pruned_commands = {
+	"/agents", "/auth", "/compress", "/feedback", "/forget", "/git", "/hooks",
+	"/init", "/lint", "/log", "/mcp", "/memory", "/notify", "/permissions",
+	"/plugins", "/profile", "/rag", "/reload", "/remote-control", "/replay",
+	"/restore", "/rules", "/save", "/scratch", "/search", "/share", "/sidecar",
+	"/skills", "/stats", "/subagent", "/summary", "/tags", "/telemetry",
+	"/theme", "/timeout", "/tools", "/verbose",
+}
+for _, cmd_name in ipairs(pruned_commands) do
+	assert(not completion.is_control(cmd_name), "Hallucinated no-op command must be pruned: " .. cmd_name)
+end
+print("✓ All 37 hallucinated no-op control slash commands pruned")
+
+-- ============================================================================
+-- [Test 11] expr = true Insert-Mode Completion Keymaps
+-- ============================================================================
+print("\n[Test 11] Testing completion insert-mode keymaps use expr = true...")
+local expr_buf = vim.api.nvim_create_buf(false, true)
+completion.setup_buffer(expr_buf)
+vim.api.nvim_set_current_buf(expr_buf)
+for _, lhs in ipairs({ "<CR>", "<Up>", "<Down>", "<Tab>", "<S-Tab>", "<C-n>", "<C-p>", "<Esc>" }) do
+	local m = vim.fn.maparg(lhs, "i", false, true)
+	assert(m and m.expr == 1, "Completion insert keymap " .. lhs .. " must use expr = true")
+end
+pcall(vim.api.nvim_buf_delete, expr_buf, { force = true })
+print("✓ Completion insert-mode keymaps verified with expr = true")
+
+-- ============================================================================
+-- [Test 12] Multi-Buffer Question State Isolation (question.lua)
+-- ============================================================================
+print("\n[Test 12] Testing multi-buffer question state isolation...")
+local question_mod = require("agy.question")
+local q_buf_a = vim.api.nvim_create_buf(false, true)
+local q_buf_b = vim.api.nvim_create_buf(false, true)
+local q_win = vim.api.nvim_get_current_win()
+
+local submitted_a = nil
+local submitted_b = nil
+vim.api.nvim_win_set_buf(q_win, q_buf_a)
+question_mod.show(q_win, q_buf_a, {
+	{ question = "Question in Buffer A?", options = { "Alpha 1", "Alpha 2" }, is_multi_select = false },
+}, {
+	on_submit = function(payload)
+		submitted_a = payload
+	end,
+})
+assert(question_mod.is_visible(q_buf_a), "Question in Buffer A must be visible")
+
+vim.api.nvim_win_set_buf(q_win, q_buf_b)
+question_mod.show(q_win, q_buf_b, {
+	{ question = "Question in Buffer B?", options = { "Beta 1", "Beta 2" }, is_multi_select = false },
+}, {
+	on_submit = function(payload)
+		submitted_b = payload
+	end,
+})
+assert(question_mod.is_visible(q_buf_a), "Question in Buffer A must remain visible when Buffer B opens a question")
+assert(question_mod.is_visible(q_buf_b), "Question in Buffer B must be visible")
+
+-- Submit Buffer B's question via bound controller
+local ui_b = question_mod.bind_buffer(q_buf_b)
+ui_b.select_next()
+ui_b.accept()
+assert(submitted_b == "A: Beta 2", "Buffer B must submit Beta 2, got: " .. tostring(submitted_b))
+assert(not question_mod.is_visible(q_buf_b), "Buffer B question must close after submit")
+assert(question_mod.is_visible(q_buf_a), "Buffer A question must still be active after Buffer B closes")
+
+-- Submit Buffer A's question via bound controller
+local ui_a = question_mod.bind_buffer(q_buf_a)
+ui_a.accept()
+assert(submitted_a == "A: Alpha 1", "Buffer A must submit Alpha 1, got: " .. tostring(submitted_a))
+assert(not question_mod.is_visible(q_buf_a), "Buffer A question must close after submit")
+
+pcall(vim.api.nvim_buf_delete, q_buf_a, { force = true })
+pcall(vim.api.nvim_buf_delete, q_buf_b, { force = true })
+print("✓ Multi-buffer question state isolation verified")
+
+-- ============================================================================
+-- [Test 13] Empty Icon Support in is_compact_header_line & Highlight Preservation
+-- ============================================================================
+print("\n[Test 13] Testing is_compact_header_line with empty string icons & highlight preservation...")
+local empty_icon_cfg = vim.deepcopy(config.get())
+empty_icon_cfg.icons.view_file = ""
+empty_icon_cfg.icons.thought = ""
+assert(
+	render.is_compact_header_line(" view_file `lua/agy/init.lua`", empty_icon_cfg) == true,
+	"is_compact_header_line must recognize tool header when tool icon is empty string"
+)
+assert(
+	render.is_compact_header_line("Thought (1.2s)", empty_icon_cfg) == true,
+	"is_compact_header_line must recognize thought header when thought icon is empty string"
+)
+
+vim.api.nvim_set_hl(0, "@keyword", { fg = 0x123456 })
+render.setup_highlights()
+local kw_hl = vim.api.nvim_get_hl(0, { name = "@keyword", link = false })
+assert(kw_hl and kw_hl.fg == 0x123456, "setup_highlights must not overwrite user @keyword highlight group")
+print("✓ Empty icon compact header detection and Tree-sitter highlight preservation verified")
 
 print("\nALL CODE REVIEW FIXES VERIFICATION TESTS PASSED!")

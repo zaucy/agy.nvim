@@ -1,6 +1,7 @@
 local utils = require("agy.utils")
 local panel = require("agy.panel")
 local transcript_mod = require("agy.transcript")
+local config_mod = require("agy.config")
 
 local M = {}
 
@@ -116,7 +117,7 @@ end
 function M.build_content(pstate, cfg, width)
   pstate = pstate or {}
   if not cfg or next(cfg) == nil then
-    cfg = pstate.config or config.get()
+    cfg = pstate.config or config_mod.get()
   end
   assert(cfg and type(cfg.icons) == "table", "agy context: config.icons is required")
   assert(cfg.icons.user ~= nil, "agy context: config.icons.user is required")
