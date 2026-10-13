@@ -27,7 +27,7 @@ function M.parse_task_info(output, params)
     return nil
   end
 
-  local has_cmd_param = params and (params.CommandLine or params.command or params.cmd)
+  local has_cmd_param = params and params.CommandLine
   local is_bg = output:find("Tool is running as a background task", 1, true) ~= nil
     or output:find("Task logs are available", 1, true) ~= nil
     or output:find("task id:%s*[%w%-_/]+") ~= nil
@@ -55,7 +55,7 @@ function M.parse_task_info(output, params)
   end
 
   local desc = output:match("Task Description:%s*([^\r\n]+)")
-  local cmd = (params and (params.CommandLine or params.command or params.cmd)) or desc or ""
+  local cmd = (params and params.CommandLine) or desc or ""
   if type(cmd) == "string" then
     cmd = cmd:gsub("^[\"']", ""):gsub("[\"']$", "")
   end
@@ -172,7 +172,7 @@ function M.collect_tasks(conv_id, app_data_dir, pstate)
             short_id = sid,
             status = tc.task_status or "running",
             exit_code = tc.exit_code,
-            command = (info and info.command) or (tc.params and (tc.params.CommandLine or tc.params.command)) or tc.param_str or "command",
+            command = (info and info.command) or (tc.params and tc.params.CommandLine) or tc.param_str or "command",
             log_path = tc.log_path or (info and info.log_path),
             duration_seconds = tc.duration_seconds,
             tool_rec = tc,
@@ -328,7 +328,13 @@ end
 ---@return string[] lines, table[] meta, table<number, table> row_to_task
 function M.build_content(pstate, cfg, width)
   pstate = pstate or {}
-  cfg = cfg or {}
+  if not cfg or next(cfg) == nil then
+    cfg = pstate.config or require("agy.config").get()
+  end
+  assert(cfg and type(cfg.icons) == "table", "agy tasks: config.icons is required")
+  assert(cfg.icons.tasks ~= nil, "agy tasks: config.icons.tasks is required")
+  assert(cfg.icons.run_command ~= nil, "agy tasks: config.icons.run_command is required")
+  assert(cfg.icons.table and cfg.icons.table.horizontal ~= nil, "agy tasks: config.icons.table.horizontal is required")
   width = math.max(80, width or 80)
 
   local session = pstate.session or {}
@@ -349,7 +355,9 @@ function M.build_content(pstate, cfg, width)
     })
   end
 
-  add_line("📋 Background Tasks", "title")
+  local t_icon = cfg.icons.tasks
+  local title_prefix = (t_icon ~= "") and (t_icon .. " ") or ""
+  add_line(title_prefix .. "Background Tasks", "title")
   add_line("", "empty")
 
   if #tasks == 0 then
@@ -369,21 +377,21 @@ function M.build_content(pstate, cfg, width)
 
     local hdr = string.format("%-" .. col1_w .. "s%-" .. col2_w .. "s%-" .. col3_w .. "s%s", hdr_id, hdr_status, hdr_exit, hdr_cmd)
     add_line(hdr, "header")
-    add_line("  " .. string.rep("─", math.min(width - 4, 76)), "border")
+    add_line("  " .. string.rep(cfg.icons.table.horizontal, math.min(width - 4, 76)), "border")
 
     local success_count = 0
     local failed_count = 0
     local running_count = 0
 
+    local c_icon = cfg.icons.run_command
+    local c_prefix = (c_icon ~= "") and (c_icon .. " ") or ""
     for _, t in ipairs(tasks) do
-      local cfg_icons = (cfg and cfg.icons) or {}
-      local c_icon = cfg_icons.run_command or ""
-      local status_str = c_icon .. " Running"
-      if t.status == "success" or t.status == "done" then
-        status_str = c_icon .. " Success"
+      local status_str = c_prefix .. "Running"
+      if t.status == "success" then
+        status_str = c_prefix .. "Success"
         success_count = success_count + 1
-      elseif t.status == "failed" or t.status == "error" then
-        status_str = c_icon .. " Failed"
+      elseif t.status == "failed" then
+        status_str = c_prefix .. "Failed"
         failed_count = failed_count + 1
       else
         running_count = running_count + 1

@@ -118,12 +118,20 @@ end
 local function get_icon(name, cfg)
 	local icons = get_icons(cfg)
 	local icon = icons[name]
-	return icon or ""
+	assert(icon ~= nil, string.format("agy config: icon '%s' is not defined in config.icons", tostring(name)))
+	return icon
 end
 
 local function get_tool_icon(tool_name, cfg)
 	local icons = get_icons(cfg)
-	local icon = icons[tool_name] or icons.tool or icons.default or ""
+	local icon = icons[tool_name]
+	if icon == nil then
+		icon = icons.tool
+	end
+	assert(
+		icon ~= nil,
+		string.format("agy config: icon for tool '%s' (or 'tool') is not defined in config.icons", tostring(tool_name))
+	)
 	return icon
 end
 
@@ -1793,6 +1801,7 @@ function M.render_historical_question(buf, params, output, config, cwd)
 	for q_idx, q in ipairs(q_list) do
 		local raw_q_text = clean_question_text(q.question)
 		local q_p = (q_icon ~= "") and (q_icon .. " ") or ""
+		local q_prefix
 		if raw_q_text ~= "" then
 			q_prefix = (#q_list > 1) and string.format("%sQuestion %d: ", q_p, q_idx)
 				or string.format("%sQuestion: ", q_p)
@@ -4857,6 +4866,7 @@ function M.render_question_block(buf, question_list, config)
 	for q_idx, q in ipairs(question_list) do
 		local raw_q_text = clean_question_text(q.question)
 		local q_p = (q_icon ~= "") and (q_icon .. " ") or ""
+		local q_prefix
 		if raw_q_text ~= "" then
 			q_prefix = (#question_list > 1) and string.format("%sQuestion %d: ", q_p, q_idx)
 				or string.format("%sQuestion: ", q_p)
@@ -5487,8 +5497,9 @@ function M.render_queue(buf, queue, prompt_start_line, config)
 	local protocol = package.loaded["agy.protocol"]
 	local state = protocol and protocol.buffers and protocol.buffers[buf]
 	local actual_prompt_line = prompt_start_line
-	if state and state.prompt_extmark_id then
-		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, state.prompt_extmark_id, {})
+	local prompt_ext_id = state and state.prompt_extmark_id
+	if prompt_ext_id then
+		local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.NS_UI, prompt_ext_id, {})
 		if pos and #pos >= 1 then
 			actual_prompt_line = pos[1] + 1
 		end
@@ -5496,6 +5507,7 @@ function M.render_queue(buf, queue, prompt_start_line, config)
 		local ui_marks = vim.api.nvim_buf_get_extmarks(buf, M.NS_UI, 0, -1, { details = true })
 		for _, m in ipairs(ui_marks) do
 			if m[4].sign_hl_group == "AgyUserSign" or m[4].number_hl_group == "AgyPromptArea" then
+				prompt_ext_id = m[1]
 				actual_prompt_line = m[2] + 1
 				break
 			end

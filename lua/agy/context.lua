@@ -83,6 +83,31 @@ function M.detect_customizations(app_data_dir, workspace_dir)
   return math.max(2, skills_count), rules_count
 end
 
+---Helper to wrap text for quote block
+---@param text string
+---@param max_len number
+---@return string[]
+local function wrap_text(text, max_len)
+  local words = vim.split(text, "%s+", { trimempty = true })
+  local res = {}
+  local cur = ""
+
+  for _, w in ipairs(words) do
+    if #cur == 0 then
+      cur = w
+    elseif #cur + 1 + #w <= max_len then
+      cur = cur .. " " .. w
+    else
+      table.insert(res, cur)
+      cur = w
+    end
+  end
+  if #cur > 0 then
+    table.insert(res, cur)
+  end
+  return res
+end
+
 ---Build context breakdown lines and metadata
 ---@param pstate table
 ---@param cfg table
@@ -90,7 +115,16 @@ end
 ---@return string[] lines, table[] meta
 function M.build_content(pstate, cfg, width)
   pstate = pstate or {}
-  cfg = cfg or {}
+  if not cfg or next(cfg) == nil then
+    cfg = pstate.config or config.get()
+  end
+  assert(cfg and type(cfg.icons) == "table", "agy context: config.icons is required")
+  assert(cfg.icons.user ~= nil, "agy context: config.icons.user is required")
+  assert(cfg.icons.agent ~= nil, "agy context: config.icons.agent is required")
+  assert(cfg.icons.context ~= nil, "agy context: config.icons.context is required")
+  assert(cfg.icons.bar_fill ~= nil, "agy context: config.icons.bar_fill is required")
+  assert(cfg.icons.bar_empty ~= nil, "agy context: config.icons.bar_empty is required")
+
   local session_info = pstate.stream_info or {}
   local session = pstate.session or {}
 
@@ -125,12 +159,38 @@ function M.build_content(pstate, cfg, width)
   end
 
   if user_turns == 0 and pstate.prompt_start_line and pstate.buf and vim.api.nvim_buf_is_valid(pstate.buf) then
-    local prompt_lines = vim.api.nvim_buf_get_lines(pstate.buf, 0, pstate.prompt_start_line - 1, false)
-    for _, l in ipairs(prompt_lines) do
-      if l:find("── 👤 User") then
-        user_turns = user_turns + 1
-      elseif l:find("── 🤖 Antigravity") then
-        agent_turns = agent_turns + 1
+    local render_mod = require("agy.render")
+    local max_row = math.max(0, pstate.prompt_start_line - 2)
+    local ui_marks = vim.api.nvim_buf_get_extmarks(pstate.buf, render_mod.NS_UI, { 0, 0 }, { max_row, -1 }, { details = true })
+    for _, em in ipairs(ui_marks) do
+      local details = em[4]
+      if details and details.virt_lines then
+        for _, vline in ipairs(details.virt_lines) do
+          for _, chunk in ipairs(vline) do
+            if chunk[2] == "AgyUserDivider" and chunk[1] and chunk[1]:find("User", 1, true) then
+              user_turns = user_turns + 1
+              break
+            elseif chunk[2] == "AgyAgentDivider" and chunk[1] and chunk[1]:find("Antigravity", 1, true) then
+              agent_turns = agent_turns + 1
+              break
+            end
+          end
+        end
+      end
+    end
+
+    if user_turns == 0 and agent_turns == 0 then
+      local u_sep = (cfg.icons.user ~= "") and (cfg.icons.user .. " ") or ""
+      local a_sep = (cfg.icons.agent ~= "") and (cfg.icons.agent .. " ") or ""
+      local user_pat = "── " .. u_sep .. "User"
+      local agent_pat = "── " .. a_sep .. "Antigravity"
+      local prompt_lines = vim.api.nvim_buf_get_lines(pstate.buf, 0, pstate.prompt_start_line - 1, false)
+      for _, l in ipairs(prompt_lines) do
+        if l:find(user_pat, 1, true) then
+          user_turns = user_turns + 1
+        elseif l:find(agent_pat, 1, true) then
+          agent_turns = agent_turns + 1
+        end
       end
     end
   end
@@ -191,14 +251,16 @@ function M.build_content(pstate, cfg, width)
   end
 
   -- Header
-  add_line("🗎 Context Breakdown", "title")
+  local ctx_icon = cfg.icons.context
+  local title_prefix = (ctx_icon ~= "") and (ctx_icon .. " ") or ""
+  add_line(title_prefix .. "Context Breakdown", "title")
   add_line("", "empty")
 
   add_line("Active Model:    " .. model_name, "model_info", { label = "Active Model:", val = model_name })
   local ctx_line = string.format("Context Window:  %s / %s tokens (%.2f%%)", utils.format_tokens(total_used), utils.format_tokens(max_limit), pct)
   add_line(ctx_line, "window_info", { label = "Context Window:", val = string.format("%s / %s tokens (%.2f%%)", utils.format_tokens(total_used), utils.format_tokens(max_limit), pct) })
 
-  local bar_str = string.format("  [%s%s] %.2f%% used", string.rep("█", filled), string.rep("░", empty), pct)
+  local bar_str = string.format("  [%s%s] %.2f%% used", string.rep(cfg.icons.bar_fill, filled), string.rep(cfg.icons.bar_empty, empty), pct)
   add_line(bar_str, "progress_bar", {
     fraction = total_used / max_limit,
     filled = filled,
@@ -256,7 +318,7 @@ function M.build_content(pstate, cfg, width)
 
   -- Explanatory Quote block
   local desc_text = "Context represents the tokens loaded into the model's active attention window. When the context approaches capacity, conversation history is automatically compacted to preserve essential instructions, system prompt, and active workspace files."
-  local quote_lines = quota_wrap_text(desc_text, math.min(74, width - 4))
+  local quote_lines = wrap_text(desc_text, math.min(74, width - 4))
   for _, ql in ipairs(quote_lines) do
     add_line("│ " .. ql, "quote")
   end
@@ -271,31 +333,6 @@ function M.build_content(pstate, cfg, width)
   add_line(footer_str, "footer", { text = footer_str })
 
   return lines, meta
-end
-
----Helper to wrap text for quote block
----@param text string
----@param max_len number
----@return string[]
-function quota_wrap_text(text, max_len)
-  local words = vim.split(text, "%s+", { trimempty = true })
-  local res = {}
-  local cur = ""
-
-  for _, w in ipairs(words) do
-    if #cur == 0 then
-      cur = w
-    elseif #cur + 1 + #w <= max_len then
-      cur = cur .. " " .. w
-    else
-      table.insert(res, cur)
-      cur = w
-    end
-  end
-  if #cur > 0 then
-    table.insert(res, cur)
-  end
-  return res
 end
 
 ---Apply syntax highlights to the context breakdown panel

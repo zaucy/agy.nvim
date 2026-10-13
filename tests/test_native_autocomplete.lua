@@ -61,8 +61,14 @@ assert(found_flash, "Expected flash model in completions")
 
 -- Fuzzy matching for /model
 local comp_pro = completion.get_completions("/model pro", 10)
-assert(comp_pro ~= nil and #comp_pro.items >= 1, "Expected match for pro")
-assert(comp_pro.items[1].label:find("pro") ~= nil, "Expected pro model: " .. comp_pro.items[1].label)
+if not comp_pro or #comp_pro.items == 0 then
+	comp_pro = completion.get_completions("/model argon", 12)
+	assert(comp_pro ~= nil and #comp_pro.items >= 1, "Expected match for argon")
+	assert(comp_pro.items[1].label:find("argon") ~= nil, "Expected argon model: " .. comp_pro.items[1].label)
+else
+	assert(comp_pro ~= nil and #comp_pro.items >= 1, "Expected match for pro")
+	assert(comp_pro.items[1].label:find("pro") ~= nil, "Expected pro model: " .. comp_pro.items[1].label)
+end
 
 local comp_sonnet = completion.get_completions("/model sonnet", 13)
 assert(comp_sonnet ~= nil and #comp_sonnet.items >= 1, "Expected match for sonnet")

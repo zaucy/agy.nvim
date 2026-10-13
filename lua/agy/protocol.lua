@@ -282,7 +282,11 @@ function M.update_footer(buf)
       end
 
       if info.status == "question" then
-        local q_icon = (state.config and state.config.icons and state.config.icons.question) or ""
+        assert(
+          state.config and state.config.icons and state.config.icons.question ~= nil,
+          "agy protocol: config.icons.question is required"
+        )
+        local q_icon = state.config.icons.question
         local q_sep = (q_icon ~= "") and (q_icon .. " ") or ""
         parts[#parts + 1] = q_sep .. "[Awaiting answer - navigate with j/k, select with <CR>]"
       elseif info.status and info.status:sub(1, 5) == "tool:" then
@@ -761,7 +765,8 @@ end
 ---@param buf number
 ---@param state table
 ---@param conv_id? string
-function M.reconcile_background_tasks(buf, state, conv_id)
+---@param preloaded_steps? table[]
+function M.reconcile_background_tasks(buf, state, conv_id, preloaded_steps)
   assert(buf and vim.api.nvim_buf_is_valid(buf), "reconcile_background_tasks: valid buffer required")
   assert(state, "reconcile_background_tasks: buffer state required")
   assert(type(state.tool_calls) == "table", "reconcile_background_tasks: state.tool_calls table required")
@@ -784,12 +789,11 @@ function M.reconcile_background_tasks(buf, state, conv_id)
   end
 
   local tasks_mod = require("agy.tasks")
-  local transcript_mod = require("agy.transcript")
   assert(state.config, "reconcile_background_tasks: state.config required")
   local app_dir = state.config.app_data_dir
   assert(app_dir and app_dir ~= "", "reconcile_background_tasks: config.app_data_dir required")
 
-  local steps = transcript_mod.read_transcript(cid, app_dir)
+  local steps = preloaded_steps or transcript_mod.read_transcript(cid, app_dir)
   local outcomes = tasks_mod.collect_task_outcomes(steps)
 
   for _, tc in ipairs(state.tool_calls) do
@@ -829,7 +833,8 @@ end
 
 ---Check transcript file for newly recorded agent thoughts before tool calls and render them into the buffer
 ---@param buf number
-function M.check_and_render_pending_thoughts(buf)
+---@param preloaded_steps? table[]
+function M.check_and_render_pending_thoughts(buf, preloaded_steps)
   local state = M.buffers[buf]
   if not state or not state.conversation_id then return end
   if not state.config or not state.config.ui or state.config.ui.show_thoughts == false then return end
@@ -843,7 +848,7 @@ function M.check_and_render_pending_thoughts(buf)
 
   local cid = state.conversation_id
   local app_data = state.config.app_data_dir
-  local steps = transcript_mod.read_transcript(cid, app_data)
+  local steps = preloaded_steps or transcript_mod.read_transcript(cid, app_data)
   if not steps or #steps == 0 then return end
 
   for idx, step in ipairs(steps) do
@@ -865,9 +870,14 @@ function M.check_and_render_pending_thoughts(buf)
           end
 
           if verbosity == "medium" and state.current_work_group and state.current_work_group.header_extmark_id and not state.current_work_group.is_open then
-            local t_icon = (state.config and state.config.icons and state.config.icons.thought) or "💭"
+            assert(
+              state.config and state.config.icons and state.config.icons.thought ~= nil,
+              "agy protocol: config.icons.thought is required"
+            )
+            local t_icon = state.config.icons.thought
+            local t_prefix = (t_icon ~= "") and (t_icon .. " ") or ""
             local dur_str = (dur and dur > 0) and string.format(" %s", utils.format_duration(dur)) or ""
-            local child_line = string.format("%s Thought%s", t_icon, dur_str)
+            local child_line = string.format("%sThought%s", t_prefix, dur_str)
             local tc_rec = {
               id = #state.tool_calls + 1,
               is_thought = true,
@@ -901,7 +911,8 @@ end
 ---Mark all thinking steps in current transcript as acknowledged without modifying buffer lines
 ---@param buf number
 ---@param state? table
-function M.mark_transcript_thoughts_rendered(buf, state)
+---@param preloaded_steps? table[]
+function M.mark_transcript_thoughts_rendered(buf, state, preloaded_steps)
   local s = state or M.buffers[buf]
   if not s or not s.conversation_id then return end
 
@@ -909,7 +920,7 @@ function M.mark_transcript_thoughts_rendered(buf, state)
 
   local cid = s.conversation_id
   local app_data = s.config and s.config.app_data_dir
-  local steps = transcript_mod.read_transcript(cid, app_data)
+  local steps = preloaded_steps or transcript_mod.read_transcript(cid, app_data)
   if not steps or #steps == 0 then return end
 
   for idx, step in ipairs(steps) do
@@ -949,13 +960,12 @@ local function check_artifact_feedback_request(tool_name, params)
   return false
 end
 
----Intercept ask_question tool call by cancelling the in-flight turn and displaying the question UI
+---Shared helper to stop the in-flight turn, finalize turn UI state, and prepare for question/artifact prompt
 ---@param buf number
 ---@param state table
----@param q_list table[]
-function M.intercept_ask_question(buf, state, q_list)
-  if state.active_question then return end
-
+---@param preloaded_steps? table[]
+---@return number|nil target_win
+local function prepare_question_interception(buf, state, preloaded_steps)
   -- Stop in-flight turn immediately to prevent print-mode auto-skipping or default continuation
   if state.session and state.session.turn_active then
     state.session:stop()
@@ -969,9 +979,9 @@ function M.intercept_ask_question(buf, state, q_list)
 
   -- Render thoughts prior to question
   if not state.active_agent_started_output then
-    M.check_and_render_pending_thoughts(buf)
+    M.check_and_render_pending_thoughts(buf, preloaded_steps)
   else
-    M.mark_transcript_thoughts_rendered(buf, state)
+    M.mark_transcript_thoughts_rendered(buf, state, preloaded_steps)
   end
 
   M.collapse_active_work_group(buf)
@@ -998,6 +1008,18 @@ function M.intercept_ask_question(buf, state, q_list)
   if target_win == -1 or not vim.api.nvim_win_is_valid(target_win) then
     target_win = nil
   end
+  return target_win
+end
+
+---Intercept ask_question tool call by cancelling the in-flight turn and displaying the question UI
+---@param buf number
+---@param state table
+---@param q_list table[]
+---@param preloaded_steps? table[]
+function M.intercept_ask_question(buf, state, q_list, preloaded_steps)
+  if state.active_question then return end
+
+  local target_win = prepare_question_interception(buf, state, preloaded_steps)
 
   question_mod.show(target_win, buf, q_list, {
     config = state.config,
@@ -1037,55 +1059,15 @@ end
 ---@param state table
 ---@param filename string
 ---@param summary? string
-function M.intercept_artifact_review(buf, state, filename, summary)
+---@param preloaded_steps? table[]
+function M.intercept_artifact_review(buf, state, filename, summary, preloaded_steps)
   assert(buf and vim.api.nvim_buf_is_valid(buf), "agy protocol: valid buffer is required")
   assert(state, "agy protocol: state is required")
   assert(filename and filename ~= "", "agy protocol: filename is required")
 
   if state.active_question then return end
 
-  -- Stop in-flight turn immediately to prevent print-mode auto-skipping or default continuation
-  if state.session and state.session.turn_active then
-    state.session:stop()
-  end
-
-  -- Discard pending stream deltas from cancelled turn
-  state.stream_delta_queue = {}
-  if state.stream_flush_timer then
-    pcall(function() state.stream_flush_timer:stop() end)
-  end
-
-  -- Render thoughts prior to question
-  if not state.active_agent_started_output then
-    M.check_and_render_pending_thoughts(buf)
-  else
-    M.mark_transcript_thoughts_rendered(buf, state)
-  end
-
-  M.collapse_active_work_group(buf)
-
-  if state.agent_extmark_id and state.agent_line then
-    M.with_modifiable(buf, function()
-      local next_line, prompt_extmark_id = render.finalize_turn(buf, state.agent_extmark_id, state.agent_line, {}, state.config)
-      state.prompt_start_line = next_line
-      state.prompt_extmark_id = prompt_extmark_id
-      state.agent_extmark_id = nil
-      state.agent_line = nil
-    end)
-  end
-  M.reset_turn_work_state(state)
-
-  render.stop_thinking_animation(buf)
-  M.ensure_prompt_line(buf)
-  M.update_prompt_divider(buf)
-
-  state.stream_info.status = "question"
-  M.update_footer(buf)
-
-  local target_win = vim.fn.bufwinid(buf)
-  if target_win == -1 or not vim.api.nvim_win_is_valid(target_win) then
-    target_win = nil
-  end
+  local target_win = prepare_question_interception(buf, state, preloaded_steps)
 
   local q_text
   if summary and summary ~= "" then
@@ -1255,15 +1237,16 @@ end
 ---Check if recent transcript contains an ask_question tool call to intercept
 ---@param buf number
 ---@param state table
+---@param preloaded_steps? table[]
 ---@return boolean intercepted
-function M.check_and_intercept_ask_question(buf, state)
+function M.check_and_intercept_ask_question(buf, state, preloaded_steps)
   if state.active_question then return true end
   if not state.session or not state.session.turn_active then return false end
   if not state.conversation_id or state.conversation_id == "" or state.conversation_id == "new" then return false end
 
   local cid = state.conversation_id
   local app_data = state.config and state.config.app_data_dir
-  local steps = transcript_mod.read_transcript(cid, app_data)
+  local steps = preloaded_steps or transcript_mod.read_transcript(cid, app_data)
   if not steps or #steps == 0 then return false end
 
   for i = #steps, 1, -1 do
@@ -1273,7 +1256,7 @@ function M.check_and_intercept_ask_question(buf, state)
         if tc.name == "ask_question" then
           local q_list = render.parse_question_params(tc.args)
           if #q_list > 0 then
-            M.intercept_ask_question(buf, state, q_list)
+            M.intercept_ask_question(buf, state, q_list, steps)
             return true
           end
         end
@@ -1289,15 +1272,16 @@ end
 ---Check if recent transcript contains an artifact requesting feedback to intercept
 ---@param buf number
 ---@param state table
+---@param preloaded_steps? table[]
 ---@return boolean intercepted
-function M.check_and_intercept_artifact_review(buf, state)
+function M.check_and_intercept_artifact_review(buf, state, preloaded_steps)
   if state.active_question then return true end
   if not state.session or not state.session.turn_active then return false end
   if not state.conversation_id or state.conversation_id == "" or state.conversation_id == "new" then return false end
 
   local cid = state.conversation_id
   local app_data = state.config and state.config.app_data_dir
-  local steps = transcript_mod.read_transcript(cid, app_data)
+  local steps = preloaded_steps or transcript_mod.read_transcript(cid, app_data)
   if not steps or #steps == 0 then return false end
 
   for i = #steps, 1, -1 do
@@ -1314,7 +1298,7 @@ function M.check_and_intercept_artifact_review(buf, state)
           if not (state.handled_artifact_reviews and state.handled_artifact_reviews[review_key]) then
             state.handled_artifact_reviews = state.handled_artifact_reviews or {}
             state.handled_artifact_reviews[review_key] = true
-            M.intercept_artifact_review(buf, state, fname, summary)
+            M.intercept_artifact_review(buf, state, fname, summary, steps)
             return true
           end
         end
@@ -1375,7 +1359,11 @@ function M.set_model(buf, model_id, record_in_history)
   state.stream_info.model = model_id
 
   if record_in_history then
-    M.record_command_history(buf, "/model " .. model_id, "⚡ Switched model to " .. model_id)
+    local cfg = state.config or config_mod.get()
+    assert(cfg.icons and cfg.icons.status_switch ~= nil, "agy protocol: config.icons.status_switch is required")
+    local sw_icon = cfg.icons.status_switch
+    local sw_prefix = sw_icon ~= "" and (sw_icon .. " ") or ""
+    M.record_command_history(buf, "/model " .. model_id, sw_prefix .. "Switched model to " .. model_id)
   end
 
   M.update_footer(buf)
@@ -1420,8 +1408,6 @@ function M.set_effort(buf, effort_level)
   vim.notify("[agy.nvim] Switched reasoning effort to " .. (effort_level or "default"), vim.log.levels.INFO)
 end
 
----Display a formatted informational floating popup window
----@param title string
 ---Display informational text in the bottom panel below the prompt
 ---@param title string
 ---@param lines string[]
@@ -1437,6 +1423,11 @@ function M.show_info_float(title, lines, caller_buf)
 
   local panel_mod = require("agy.panel")
   local state = M.buffers[caller_buf]
+  local cfg = (state and state.config) or config_mod.get()
+  assert(cfg.icons and cfg.icons.info ~= nil, "agy protocol: config.icons.info is required")
+  local info_icon = cfg.icons.info
+  local info_prefix = info_icon ~= "" and (info_icon .. " ") or ""
+
   local info = state and state.stream_info or {}
   local model_str = info.model or (state and state.session and state.session.model) or "default"
   local effort_str = (state and state.session and state.session.effort) or "high"
@@ -1444,7 +1435,7 @@ function M.show_info_float(title, lines, caller_buf)
   -- Add title and footer if not already present
   local content = {}
   if lines[1] and not lines[1]:find(title, 1, true) then
-    table.insert(content, "ℹ️ " .. title)
+    table.insert(content, info_prefix .. title)
     table.insert(content, "")
   end
   for _, l in ipairs(lines) do
@@ -1555,6 +1546,14 @@ function M.handle_write(buf)
   -- Intercept and automatically process CONTROL slash commands locally
   -- Control commands must ONLY execute locally and never be sent to stream-json print mode
   if first_token and first_token:match("^/") and completion.is_control(first_token) then
+    local cfg = state.config or config_mod.get()
+    assert(cfg.icons and cfg.icons.status_switch ~= nil, "agy protocol: config.icons.status_switch is required")
+    assert(cfg.icons and cfg.icons.status_added ~= nil, "agy protocol: config.icons.status_added is required")
+    local sw_icon = cfg.icons.status_switch
+    local sw_prefix = sw_icon ~= "" and (sw_icon .. " ") or ""
+    local add_icon = cfg.icons.status_added
+    local add_prefix = add_icon ~= "" and (add_icon .. " ") or ""
+
     -- 1. /model: switch model or open interactive picker
     if first_token == "/model" then
       local model_arg = trimmed:match("^/model%s+(%S+)")
@@ -1566,10 +1565,10 @@ function M.handle_write(buf)
 
       local resolved_model = completion.resolve_model(model_arg)
       M.set_model(buf, resolved_model, false)
-      M.record_command_history(buf, "/model " .. resolved_model, "⚡ Switched model to " .. resolved_model)
+      M.record_command_history(buf, "/model " .. resolved_model, sw_prefix .. "Switched model to " .. resolved_model)
       return
 
-    -- 2. /mode: switch agent mode (accept-edits, plan, default)
+    -- 2. /mode: switch agent mode (accept-edits, plan, default, fast, planning)
     elseif first_token == "/mode" then
       local mode_arg = trimmed:match("^/mode%s+(%S+)")
       if not mode_arg or mode_arg == "" then
@@ -1578,11 +1577,29 @@ function M.handle_write(buf)
         vim.notify("[agy.nvim] Current agent mode: " .. cur, vim.log.levels.INFO)
         return
       end
-      M.set_mode(buf, mode_arg)
-      M.record_command_history(buf, "/mode " .. mode_arg, "⚡ Switched agent mode to " .. mode_arg)
+      local target_mode = mode_arg
+      if mode_arg == "fast" then
+        target_mode = "accept-edits"
+      elseif mode_arg == "planning" then
+        target_mode = "plan"
+      end
+      M.set_mode(buf, target_mode)
+      M.record_command_history(buf, "/mode " .. mode_arg, sw_prefix .. "Switched agent mode to " .. target_mode)
       return
 
-    -- 3. /effort: switch reasoning effort (low, medium, high)
+    -- 2b. /fast: shorthand to switch to accept-edits mode
+    elseif first_token == "/fast" then
+      M.set_mode(buf, "accept-edits")
+      M.record_command_history(buf, "/fast", sw_prefix .. "Switched agent mode to accept-edits")
+      return
+
+    -- 2c. /planning: shorthand to switch to plan mode
+    elseif first_token == "/planning" then
+      M.set_mode(buf, "plan")
+      M.record_command_history(buf, "/planning", sw_prefix .. "Switched agent mode to plan")
+      return
+
+    -- 3. /effort: switch reasoning effort (low, medium, high, xhigh, max)
     elseif first_token == "/effort" then
       local effort_arg = trimmed:match("^/effort%s+(%S+)")
       if not effort_arg or effort_arg == "" then
@@ -1592,7 +1609,7 @@ function M.handle_write(buf)
         return
       end
       M.set_effort(buf, effort_arg)
-      M.record_command_history(buf, "/effort " .. effort_arg, "⚡ Switched reasoning effort to " .. effort_arg)
+      M.record_command_history(buf, "/effort " .. effort_arg, sw_prefix .. "Switched reasoning effort to " .. effort_arg)
       return
 
     -- 4. /add-dir: add workspace directory
@@ -1604,9 +1621,10 @@ function M.handle_write(buf)
       end
       dir = dir:gsub('^["\']', ''):gsub('["\']$', '')
       local full_dir = vim.fs.normalize(vim.fn.expand(dir))
-      table.insert(state.session.workspaces, full_dir)
+      state.session:add_workspace(full_dir)
+      state.workspaces = state.session.workspaces
       state.session:start()
-      M.record_command_history(buf, "/add-dir " .. dir, "✓ Added workspace: " .. full_dir)
+      M.record_command_history(buf, "/add-dir " .. dir, add_prefix .. "Added workspace: " .. full_dir)
       vim.notify("[agy.nvim] Added workspace: " .. full_dir, vim.log.levels.INFO)
       return
 
@@ -1626,8 +1644,9 @@ function M.handle_write(buf)
         end
       end
       state.session.workspaces = new_ws
+      state.workspaces = new_ws
       state.session:start()
-      M.record_command_history(buf, "/drop " .. dir, "✓ Dropped workspace: " .. full_dir)
+      M.record_command_history(buf, "/drop " .. dir, add_prefix .. "Dropped workspace: " .. full_dir)
       vim.notify("[agy.nvim] Dropped workspace: " .. full_dir, vim.log.levels.INFO)
       return
 
@@ -1637,9 +1656,10 @@ function M.handle_write(buf)
       if dir and not dir:match("^%s*$") then
         dir = dir:gsub('^["\']', ''):gsub('["\']$', '')
         local full_dir = vim.fs.normalize(vim.fn.expand(dir))
-        table.insert(state.session.workspaces, full_dir)
+        state.session:add_workspace(full_dir)
+        state.workspaces = state.session.workspaces
         state.session:start()
-        M.record_command_history(buf, "/workspace " .. dir, "✓ Added workspace: " .. full_dir)
+        M.record_command_history(buf, "/workspace " .. dir, add_prefix .. "Added workspace: " .. full_dir)
         vim.notify("[agy.nvim] Added workspace: " .. full_dir, vim.log.levels.INFO)
         return
       else
@@ -1649,6 +1669,55 @@ function M.handle_write(buf)
         vim.notify("[agy.nvim] Active workspaces: " .. msg, vim.log.levels.INFO)
         return
       end
+
+    -- 6b. /copy: copy last assistant response to clipboard
+    elseif first_token == "/copy" then
+      clear_prompt_and_clean()
+      local last_resp = state.last_agent_response
+      if (not last_resp or last_resp == "") and state.conversation_id and state.conversation_id ~= "new" then
+        local steps = transcript_mod.read_transcript(state.conversation_id, cfg.app_data_dir)
+        for i = #steps, 1, -1 do
+          local s = steps[i]
+          if s.type == "PLANNER_RESPONSE" and s.response and s.response ~= "" then
+            last_resp = s.response
+            break
+          end
+        end
+      end
+      if not last_resp or last_resp == "" then
+        vim.notify("[agy.nvim] No assistant response available to copy.", vim.log.levels.WARN)
+        return
+      end
+      pcall(vim.fn.setreg, '"', last_resp)
+      pcall(vim.fn.setreg, "+", last_resp)
+      pcall(vim.fn.setreg, "*", last_resp)
+      vim.notify("[agy.nvim] Copied last assistant response to clipboard.", vim.log.levels.INFO)
+      return
+
+    -- 6c. /open: open file in Neovim
+    elseif first_token == "/open" then
+      local file_arg = trimmed:match("^/open%s+(.+)$")
+      if not file_arg or file_arg:match("^%s*$") then
+        vim.notify("[agy.nvim] Usage: /open <path>", vim.log.levels.WARN)
+        return
+      end
+      file_arg = utils.trim(file_arg):gsub('^["\']', ''):gsub('["\']$', '')
+      clear_prompt_and_clean()
+      local resolved = vim.fn.expand(file_arg)
+      if vim.fn.filereadable(resolved) == 0 then
+        local ws_list = (state.session and state.session.workspaces and #state.session.workspaces > 0)
+            and state.session.workspaces
+            or (state.workspaces or { (state.session and state.session.cwd) or vim.fn.getcwd() })
+        for _, ws in ipairs(ws_list) do
+          local candidate = vim.fs.normalize(ws .. "/" .. file_arg)
+          if vim.fn.filereadable(candidate) == 1 then
+            resolved = candidate
+            break
+          end
+        end
+      end
+      vim.cmd("edit " .. vim.fn.fnameescape(resolved))
+      return
 
     -- 7. /clear or /new: fresh conversation session
     elseif first_token == "/clear" or first_token == "/new" then
@@ -1673,11 +1742,29 @@ function M.handle_write(buf)
       require("agy").diff()
       return
 
-    -- 10. /undo: undo changes
+    -- 10. /undo: restore previous sent prompt to input or undo prompt edits
     elseif first_token == "/undo" then
-      clear_prompt_and_clean()
-      vim.cmd("silent! undo")
-      vim.notify("[agy.nvim] Undo executed.", vim.log.levels.INFO)
+      if state.last_sent_prompt and state.last_sent_prompt ~= "" then
+        local restored = state.last_sent_prompt
+        local p_lines = utils.split_lines(restored)
+        vim.cmd("stopinsert")
+        M.with_modifiable(buf, function()
+          vim.api.nvim_buf_set_lines(buf, state.prompt_start_line - 1, -1, false, p_lines)
+        end)
+        vim.bo[buf].modified = false
+        completion.close()
+        local win = vim.fn.bufwinid(buf)
+        if win ~= -1 and vim.api.nvim_win_is_valid(win) then
+          pcall(vim.api.nvim_win_set_cursor, win, { state.prompt_start_line, 0 })
+        end
+        M.update_modifiable(buf)
+        M.update_footer(buf)
+        vim.notify("[agy.nvim] Restored previous prompt to input.", vim.log.levels.INFO)
+      else
+        clear_prompt_and_clean()
+        vim.cmd("silent! undo")
+        vim.notify("[agy.nvim] Undo executed.", vim.log.levels.INFO)
+      end
       return
 
     -- 11. /redo: redo changes
@@ -1701,7 +1788,6 @@ function M.handle_write(buf)
 
     -- 14. /settings: view configuration settings
     elseif first_token == "/settings" then
-      local cfg = state.config or config_mod.get()
       local cur_model = (state.stream_info and state.stream_info.model) or completion.get_default_model(cfg.app_data_dir, cfg.default_model)
       local lines = {
         "# Antigravity Configuration",
@@ -1718,7 +1804,7 @@ function M.handle_write(buf)
         "- **Prompt Footer**: " .. tostring(cfg.ui and cfg.ui.prompt_footer),
         "",
         "### Keymaps:",
-        "- **Submit**: `" .. (cfg.keymaps and cfg.keymaps.submit or "<leader>aa") .. "`",
+        "- **Submit**: `" .. (cfg.keymaps and cfg.keymaps.submit or "<C-s>") .. "`",
         "- **Stop**: `" .. (cfg.keymaps and cfg.keymaps.stop or "<C-c>") .. "`",
         "- **Toggle Tool / Option**: `" .. (cfg.keymaps and cfg.keymaps.toggle_tool or "<CR>") .. "`",
       }
@@ -1758,7 +1844,6 @@ function M.handle_write(buf)
           "# Antigravity Doctor Health Check",
           "",
         }
-        local cfg = state.config or config_mod.get()
         local cmd_name = cfg.agy_cmd or "agy"
         local agy_exe = vim.fn.exepath(cmd_name)
         if agy_exe ~= "" then
@@ -1791,10 +1876,14 @@ function M.handle_write(buf)
         "### Standalone Control Commands (First-only)",
         "- `/model [id]` — Switch or pick active LLM model",
         "- `/mode [accept-edits|plan|default]` — Switch agent mode",
-        "- `/effort [low|medium|high]` — Switch reasoning effort",
+        "- `/fast` — Switch agent mode to Fast (`accept-edits`)",
+        "- `/planning` — Switch agent mode to Planning (`plan`)",
+        "- `/effort [low|medium|high|xhigh|max]` — Switch reasoning effort",
         "- `/add-dir <path>` — Add directory to workspace",
         "- `/drop <path>` — Drop directory from workspace",
         "- `/workspace [path]` — View or add workspace directories",
+        "- `/copy` — Copy the last assistant response to clipboard",
+        "- `/open <path>` — Open a file in Neovim",
         "- `/context` — Inspect session context, memory, and workspaces",
         "- `/settings` — View active configuration and options",
         "- `/status` — View session and connection status",
@@ -1805,7 +1894,7 @@ function M.handle_write(buf)
         "- `/diff` — View git diff of changes",
         "- `/new` / `/clear` — Start a fresh conversation",
         "- `/resume [id]` — Resume past conversation",
-        "- `/undo` / `/redo` — Undo or redo changes",
+        "- `/undo` / `/redo` — Restore previous prompt or undo/redo edits",
         "- `/exit` / `/quit` — Close session buffer",
         "",
         "### Prompt Modifiers / Directives (Chainable)",
@@ -1819,7 +1908,7 @@ function M.handle_write(buf)
         "- `/teamwork-preview` — Multi-agent collaboration",
         "",
         "### Keymaps",
-        "- `:w` or `<leader>aa` — Submit prompt / answers",
+        "- `:w` or `<C-s>` — Submit prompt / answers",
         "- `<C-c>` — Stop in-flight response",
         "- `<CR>` — Toggle thought or tool call details / select options",
       }
@@ -1855,13 +1944,12 @@ function M.handle_write(buf)
     -- 21. /version: show version info
     elseif first_token == "/version" then
       clear_prompt_and_clean()
-      local cfg = state.config or config_mod.get()
       local cmd_name = cfg.agy_cmd or "agy"
       local exe_ok = vim.fn.executable(cmd_name) == 1
       vim.notify("[agy.nvim] agy.nvim 1.0.0 (" .. cmd_name .. " CLI " .. (exe_ok and "ready" or "missing") .. ")", vim.log.levels.INFO)
       return
 
-    -- 20. Generic fallback for any other control command
+    -- 22. Generic fallback for any other control command
     else
       clear_prompt_and_clean()
       vim.notify("[agy.nvim] Handled control command " .. first_token, vim.log.levels.INFO)
@@ -1869,6 +1957,8 @@ function M.handle_write(buf)
     end
   end
 
+  state.last_sent_prompt = prompt_text
+  state.last_agent_response = ""
   M.flush_stream_delta(buf, false)
   state.follow_bottom = (state.config and state.config.ui and state.config.ui.auto_scroll ~= false)
   state.active_agent_started_output = false
@@ -2462,6 +2552,83 @@ function M.cleanup_buffer(buf)
   end
 end
 
+---Shared helper to render a new or existing conversation into a buffer and resolve its state
+---@param buf number
+---@param target_id string
+---@param cfg AgyConfig
+---@param render_workspaces any
+---@return table rendered_info
+local function render_conversation_view(buf, target_id, cfg, render_workspaces)
+  local is_new = (target_id == "" or target_id == "new")
+  local steps = nil
+  local prompt_line, prompt_ext_id, tool_calls, work_groups, middle_actions
+  local rendered_thinking = {}
+  local last_agent_response = nil
+
+  if not is_new then
+    steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
+  end
+
+  M.with_modifiable(buf, function()
+    if is_new then
+      prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
+      tool_calls = {}
+      work_groups = {}
+      middle_actions = {}
+    else
+      for idx, s in ipairs(steps or {}) do
+        if s.type == "PLANNER_RESPONSE" then
+          if s.thinking and s.thinking ~= "" then
+            local key = (s.step_index or tostring(idx)) .. ":" .. s.thinking
+            rendered_thinking[key] = true
+          end
+          if s.content and s.content ~= "" then
+            last_agent_response = s.content
+          end
+        end
+      end
+      prompt_line, prompt_ext_id, tool_calls, work_groups, middle_actions = render.render_transcript(buf, target_id, steps, cfg, render_workspaces)
+    end
+  end)
+
+  local active_model = nil
+  if not is_new and steps then
+    local conv_model = transcript_mod.extract_model_from_steps(steps)
+    if conv_model then
+      active_model = completion.resolve_model(conv_model)
+    end
+  end
+  if not active_model or active_model == "" then
+    active_model = completion.get_default_model(cfg.app_data_dir, cfg.default_model, cfg.agy_cmd)
+  end
+
+  vim.bo[buf].modified = false
+  local win = vim.fn.bufwinid(buf)
+  if win ~= -1 then
+    pcall(vim.api.nvim_win_set_cursor, win, { prompt_line, 0 })
+  end
+
+  return {
+    steps = steps,
+    prompt_line = prompt_line,
+    prompt_ext_id = prompt_ext_id,
+    tool_calls = tool_calls or {},
+    work_groups = work_groups or {},
+    middle_actions = middle_actions or {},
+    rendered_thinking = rendered_thinking,
+    last_agent_response = last_agent_response,
+    active_model = active_model,
+  }
+end
+
+local FILE_MODIFYING_TOOLS = {
+  replace_file_content = true,
+  multi_replace_file_content = true,
+  write_to_file = true,
+  run_command = true,
+  execute_command = true,
+}
+
 ---Main handler for BufReadCmd agy://*
 ---@param args table
 function M.handle_buf_read(args)
@@ -2549,34 +2716,16 @@ function M.handle_buf_read(args)
       end
     end
 
-    vim.bo[buf].buftype = "acwrite"
-    vim.bo[buf].filetype = "agy"
-    pcall(vim.treesitter.start, buf, "markdown")
-    vim.bo[buf].swapfile = false
-    vim.bo[buf].bufhidden = "hide"
+    local ws = existing_state.workspaces
+      or (existing_state.session and (existing_state.session.workspaces or existing_state.session.cwd))
+      or vim.fn.getcwd()
+    local view = render_conversation_view(buf, target_id, cfg, ws)
 
-    local steps = nil
-    local prompt_line, prompt_ext_id, tool_calls, work_groups, middle_actions
-    M.with_modifiable(buf, function()
-      if target_id == "" or target_id == "new" then
-        prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
-        tool_calls = {}
-        work_groups = {}
-        middle_actions = {}
-      else
-        steps = transcript_mod.read_transcript(target_id, cfg.app_data_dir)
-        local ws = existing_state.workspaces
-          or (existing_state.session and (existing_state.session.workspaces or existing_state.session.cwd))
-          or vim.fn.getcwd()
-        prompt_line, prompt_ext_id, tool_calls, work_groups, middle_actions = render.render_transcript(buf, target_id, steps, cfg, ws)
-      end
-    end)
-
-    existing_state.prompt_start_line = prompt_line
-    existing_state.prompt_extmark_id = prompt_ext_id
-    existing_state.tool_calls = tool_calls or {}
-    existing_state.work_groups = work_groups or {}
-    existing_state.middle_actions_list = middle_actions or {}
+    existing_state.prompt_start_line = view.prompt_line
+    existing_state.prompt_extmark_id = view.prompt_ext_id
+    existing_state.tool_calls = view.tool_calls
+    existing_state.work_groups = view.work_groups
+    existing_state.middle_actions_list = view.middle_actions
     M.reset_turn_work_state(existing_state)
     existing_state.active_tool_record = nil
     existing_state.footer_extmark_id = nil
@@ -2584,68 +2733,19 @@ function M.handle_buf_read(args)
     existing_state.agent_line = nil
     existing_state.active_tool_line = nil
     existing_state.active_tool_extmark_id = nil
-    existing_state.rendered_thinking = {}
-    if target_id ~= "" and target_id ~= "new" and steps then
-      for idx, s in ipairs(steps) do
-        if s.type == "PLANNER_RESPONSE" and s.thinking and s.thinking ~= "" then
-          local key = (s.step_index or tostring(idx)) .. ":" .. s.thinking
-          existing_state.rendered_thinking[key] = true
-        end
-      end
-    end
+    existing_state.rendered_thinking = view.rendered_thinking
+    existing_state.last_agent_response = view.last_agent_response
 
     if not existing_state.stream_info then
       existing_state.stream_info = {}
     end
     if not existing_state.stream_info.model or existing_state.stream_info.model == "" then
-      if target_id ~= "" and target_id ~= "new" and steps then
-        local conv_model = transcript_mod.extract_model_from_steps(steps)
-        existing_state.stream_info.model = conv_model and completion.resolve_model(conv_model) or completion.get_default_model(cfg.app_data_dir, cfg.default_model, cfg.agy_cmd)
-      else
-        existing_state.stream_info.model = completion.get_default_model(cfg.app_data_dir, cfg.default_model, cfg.agy_cmd)
-      end
+      existing_state.stream_info.model = view.active_model
     end
 
-    vim.bo[buf].buftype = "acwrite"
-    vim.bo[buf].filetype = "agy"
-    pcall(vim.treesitter.start, buf, "markdown")
-    vim.bo[buf].swapfile = false
-    vim.bo[buf].bufhidden = "hide"
-
-    pcall(function()
-      local win = vim.fn.bufwinid(buf)
-      if win ~= -1 then
-        vim.wo[win].wrap = cfg.ui.wrap
-        vim.wo[win].linebreak = cfg.ui.linebreak
-        vim.wo[win].conceallevel = (cfg.ui and cfg.ui.conceallevel ~= nil) and cfg.ui.conceallevel or 0
-        vim.wo[win].concealcursor = ""
-      else
-        vim.wo.wrap = cfg.ui.wrap
-        vim.wo.linebreak = cfg.ui.linebreak
-        vim.wo.conceallevel = (cfg.ui and cfg.ui.conceallevel ~= nil) and cfg.ui.conceallevel or 0
-        vim.wo.concealcursor = ""
-      end
-    end)
-
-    completion.setup_buffer(buf)
-
-    -- Up navigation to agy:// home
-    vim.keymap.set("n", "-", function()
-      vim.cmd("edit agy://")
-    end, {
-      buffer = buf,
-      silent = true,
-      desc = "Navigate up to agy:// home",
-    })
-
-    vim.bo[buf].modified = false
     pcall(function() vim.cmd("let &undolevels = &undolevels") end)
 
-    local win = vim.fn.bufwinid(buf)
-    if win ~= -1 then
-      pcall(vim.api.nvim_win_set_cursor, win, { prompt_line, 0 })
-    end
-
+    completion.setup_buffer(buf)
     M.update_modifiable(buf)
     M.update_footer(buf)
     vim.notify("[agy.nvim] Reloaded conversation " .. (target_id ~= "" and target_id or "new"), vim.log.levels.INFO)
@@ -2664,9 +2764,6 @@ function M.handle_buf_read(args)
   M._setup_buffer(buf, conv_id)
 
   local is_new = (conv_id == "new")
-  local prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups, initial_middle_actions
-  local rendered_thinking = {}
-
   local workspaces = nil
   if cfg.workspaces then
     if type(cfg.workspaces) == "function" then
@@ -2696,69 +2793,27 @@ function M.handle_buf_read(args)
     workspaces = { vim.fn.getcwd() }
   end
 
-  local steps = nil
-  if not is_new then
-    steps = transcript_mod.read_transcript(conv_id, cfg.app_data_dir)
-  end
-
-  M.with_modifiable(buf, function()
-    if is_new then
-      prompt_line, prompt_ext_id = render.render_new_session(buf, cfg)
-      initial_tool_calls = {}
-      initial_work_groups = {}
-      initial_middle_actions = {}
-    else
-      for idx, s in ipairs(steps) do
-        if s.type == "PLANNER_RESPONSE" and s.thinking and s.thinking ~= "" then
-          local key = (s.step_index or tostring(idx)) .. ":" .. s.thinking
-          rendered_thinking[key] = true
-        end
-      end
-      prompt_line, prompt_ext_id, initial_tool_calls, initial_work_groups, initial_middle_actions = render.render_transcript(buf, conv_id, steps, cfg, render_workspaces)
-    end
-  end)
-
-  vim.bo[buf].modified = false
-
-  -- Position cursor at the prompt line
-  pcall(function()
-    local win = vim.fn.bufwinid(buf)
-    if win ~= -1 then
-      vim.api.nvim_win_set_cursor(win, { prompt_line, 0 })
-    end
-  end)
-
-  -- Resolve active model for buffer session:
-  -- 1. If resuming existing conversation, check transcript for latest model change
-  -- 2. Otherwise default model from user config, settings.json, or agy models
-  local active_model = nil
-  if not is_new and steps then
-    local conv_model = transcript_mod.extract_model_from_steps(steps)
-    if conv_model then
-      active_model = completion.resolve_model(conv_model)
-    end
-  end
-  if not active_model or active_model == "" then
-    active_model = completion.get_default_model(cfg.app_data_dir, cfg.default_model, cfg.agy_cmd)
-  end
+  local view = render_conversation_view(buf, conv_id, cfg, render_workspaces)
+  local active_model = view.active_model
 
   -- Initialize session state
   local state = {
     buf = buf,
     conversation_id = is_new and nil or conv_id,
     config = cfg,
-    prompt_start_line = prompt_line,
-    prompt_extmark_id = prompt_ext_id,
+    prompt_start_line = view.prompt_line,
+    prompt_extmark_id = view.prompt_ext_id,
     footer_extmark_id = nil,
     workspaces = render_workspaces,
-    tool_calls = initial_tool_calls or {},
-    work_groups = initial_work_groups or {},
-    middle_actions_list = initial_middle_actions or {},
+    tool_calls = view.tool_calls,
+    work_groups = view.work_groups,
+    middle_actions_list = view.middle_actions,
     current_work_group = nil,
     turn_work_groups = {},
     middle_actions = nil,
     active_tool_record = nil,
-    rendered_thinking = rendered_thinking,
+    rendered_thinking = view.rendered_thinking,
+    last_agent_response = view.last_agent_response,
     stream_info = {
       model = active_model,
       permission_mode = nil,
@@ -2778,6 +2833,9 @@ function M.handle_buf_read(args)
     agy_cmd = cfg.agy_cmd,
     mode = cfg.default_mode,
     model = active_model,
+    agent = cfg.agent,
+    sandbox = cfg.sandbox,
+    dangerously_skip_permissions = cfg.dangerously_skip_permissions,
     cwd = vim.fn.getcwd(),
     workspaces = workspaces,
 
@@ -2835,23 +2893,31 @@ function M.handle_buf_read(args)
         return
       end
 
+      local cached_steps = nil
+      local function get_step_transcript()
+        if cached_steps == nil and state.conversation_id then
+          cached_steps = transcript_mod.read_transcript(state.conversation_id, state.config and state.config.app_data_dir)
+        end
+        return cached_steps
+      end
+
       -- Check direct ask_question tool step
       if stype == "tool" and (step.tool_name == "ask_question" or (step.tool_info and step.tool_info.name == "ask_question")) then
         local params = step.tool_info and step.tool_info.parameters
         local q_list = render.parse_question_params(params)
         if #q_list > 0 then
-          M.intercept_ask_question(buf, state, q_list)
+          M.intercept_ask_question(buf, state, q_list, get_step_transcript())
           return
         end
       end
 
       -- Check transcript for ask_question
-      if M.check_and_intercept_ask_question(buf, state) then
+      if M.check_and_intercept_ask_question(buf, state, get_step_transcript()) then
         return
       end
 
       -- Check transcript for artifact review
-      if M.check_and_intercept_artifact_review(buf, state) then
+      if M.check_and_intercept_artifact_review(buf, state, get_step_transcript()) then
         return
       end
 
@@ -2859,22 +2925,23 @@ function M.handle_buf_read(args)
         if state.pending_artifact_feedback then
           local paf = state.pending_artifact_feedback
           state.pending_artifact_feedback = nil
-          M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
+          M.intercept_artifact_review(buf, state, paf.filename, paf.summary, get_step_transcript())
           return
         end
 
         local has_delta = (step.text_delta and step.text_delta ~= "")
         if has_delta and not state.active_agent_started_output then
-          M.reconcile_background_tasks(buf, state, state.conversation_id)
+          M.reconcile_background_tasks(buf, state, state.conversation_id, get_step_transcript())
           M.collapse_active_work_group(buf)
-          M.check_and_render_pending_thoughts(buf)
+          M.check_and_render_pending_thoughts(buf, get_step_transcript())
           state.active_agent_started_output = true
         elseif not state.active_agent_started_output then
-          M.reconcile_background_tasks(buf, state, state.conversation_id)
-          M.check_and_render_pending_thoughts(buf)
+          M.reconcile_background_tasks(buf, state, state.conversation_id, get_step_transcript())
+          M.check_and_render_pending_thoughts(buf, get_step_transcript())
         end
         M.handle_post_task_bottom_visibility(buf, state)
         if has_delta then
+          state.last_agent_response = (state.last_agent_response or "") .. step.text_delta
           M.queue_stream_delta(buf, step.text_delta)
         end
 
@@ -2888,7 +2955,7 @@ function M.handle_buf_read(args)
         if state.pending_artifact_feedback and step.state == "ACTIVE" then
           local paf = state.pending_artifact_feedback
           state.pending_artifact_feedback = nil
-          M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
+          M.intercept_artifact_review(buf, state, paf.filename, paf.summary, get_step_transcript())
           return
         end
 
@@ -2902,9 +2969,9 @@ function M.handle_buf_read(args)
             }
           end
 
-          M.reconcile_background_tasks(buf, state, state.conversation_id)
+          M.reconcile_background_tasks(buf, state, state.conversation_id, get_step_transcript())
           M.handle_post_task_bottom_visibility(buf, state)
-          M.check_and_render_pending_thoughts(buf)
+          M.check_and_render_pending_thoughts(buf, get_step_transcript())
           state.stream_info.status = "tool:" .. tool_name
           local status_text = render.get_tool_status_text(tool_name)
           state.active_tool_status_text = status_text
@@ -2949,12 +3016,14 @@ function M.handle_buf_read(args)
                 local thought_lines = {}
                 local min_thought_row = nil
                 local max_thought_row = nil
+                assert(state.config and state.config.icons and state.config.icons.thought ~= nil, "agy protocol: config.icons.thought is required")
+                local t_icon = state.config.icons.thought
+                local t_prefix = t_icon ~= "" and (t_icon .. " ") or ""
                 for i = #state.tool_calls - 1, 1, -1 do
                   local prev_it = state.tool_calls[i]
                   if prev_it and prev_it.is_thought and not prev_it._in_work_group then
                     table.insert(preceding_thoughts, 1, prev_it)
-                    local t_icon = state.config.icons and state.config.icons.thought or "💭"
-                    table.insert(thought_lines, 1, string.format("%s Thought", t_icon))
+                    table.insert(thought_lines, 1, t_prefix .. "Thought")
                     if prev_it.header_line_idx then
                       if not min_thought_row or prev_it.header_line_idx < min_thought_row then
                         min_thought_row = prev_it.header_line_idx
@@ -3062,6 +3131,9 @@ function M.handle_buf_read(args)
           local is_feedback = false
           local fname, summary
           local tool_name = step.tool_name or (step.tool_info and step.tool_info.name) or "tool"
+          if FILE_MODIFYING_TOOLS[tool_name] then
+            pcall(vim.cmd, "silent! checktime")
+          end
           if state.pending_artifact_feedback then
             is_feedback = true
             fname = state.pending_artifact_feedback.filename
@@ -3119,7 +3191,7 @@ function M.handle_buf_read(args)
           end
 
           if is_feedback then
-            M.intercept_artifact_review(buf, state, fname, summary)
+            M.intercept_artifact_review(buf, state, fname, summary, get_step_transcript())
             return
           end
 
@@ -3147,7 +3219,7 @@ function M.handle_buf_read(args)
 
       elseif stype == "system_message" and step.state == "DONE" then
         M.flush_stream_delta(buf, false)
-        M.reconcile_background_tasks(buf, state, state.conversation_id)
+        M.reconcile_background_tasks(buf, state, state.conversation_id, get_step_transcript())
       else
         M.flush_stream_delta(buf, false)
       end
@@ -3155,6 +3227,7 @@ function M.handle_buf_read(args)
 
     on_result = function(s, result)
       M.flush_stream_delta(buf, false)
+      pcall(vim.cmd, "silent! checktime")
       if not state.active_question and not (state.stream_info and state.stream_info.status == "question") then
         state.stream_info.status = "ready"
       end
@@ -3177,10 +3250,18 @@ function M.handle_buf_read(args)
         return
       end
 
+      local cached_steps = nil
+      local function get_result_transcript()
+        if cached_steps == nil and state.conversation_id then
+          cached_steps = transcript_mod.read_transcript(state.conversation_id, state.config and state.config.app_data_dir)
+        end
+        return cached_steps
+      end
+
       if not state.active_agent_started_output then
-        M.check_and_render_pending_thoughts(buf)
+        M.check_and_render_pending_thoughts(buf, get_result_transcript())
       else
-        M.mark_transcript_thoughts_rendered(buf, state)
+        M.mark_transcript_thoughts_rendered(buf, state, get_result_transcript())
       end
       state.active_agent_started_output = false
       M.collapse_active_work_group(buf)
@@ -3195,7 +3276,7 @@ function M.handle_buf_read(args)
       end
 
       -- Reconcile any remaining running background tasks from disk transcript outcomes
-      M.reconcile_background_tasks(buf, state, state.conversation_id)
+      M.reconcile_background_tasks(buf, state, state.conversation_id, get_result_transcript())
       M.handle_post_task_bottom_visibility(buf, state)
 
       if state.agent_extmark_id and state.agent_line then
@@ -3239,7 +3320,7 @@ function M.handle_buf_read(args)
       if state.pending_artifact_feedback then
         local paf = state.pending_artifact_feedback
         state.pending_artifact_feedback = nil
-        M.intercept_artifact_review(buf, state, paf.filename, paf.summary)
+        M.intercept_artifact_review(buf, state, paf.filename, paf.summary, get_result_transcript())
         return
       end
 
