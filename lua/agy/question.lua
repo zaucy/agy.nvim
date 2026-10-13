@@ -52,12 +52,16 @@ M.states = {}
 ---@type AgyQuestionUIState
 M.state = new_question_state()
 
+---@type number?
+M._pinned_buf = nil
+
 ---Activate question state for a specific buffer (or current buffer if it has an active question)
 ---@param buf? number
 ---@return AgyQuestionUIState
 function M.activate_buf(buf)
-  if type(buf) == "number" and M.states[buf] then
-    M.state = M.states[buf]
+  local target = (type(buf) == "number" and buf) or M._pinned_buf
+  if type(target) == "number" then
+    M.state = M.states[target] or new_question_state()
     return M.state
   end
   local cur_buf = vim.api.nvim_get_current_buf()
@@ -73,12 +77,26 @@ end
 function M.bind_buffer(buf)
   return setmetatable({}, {
     __index = function(_, k)
-      M.activate_buf(buf)
+      if k == "state" then
+        return M.states[buf] or new_question_state()
+      end
       local v = M[k]
       if type(v) == "function" then
         return function(...)
+          local prev_pinned = M._pinned_buf
+          local prev_state = M.state
+          local was_active = (M.states[buf] ~= nil)
+          M._pinned_buf = buf
           M.activate_buf(buf)
-          return v(...)
+          local ok, res1, res2 = pcall(v, ...)
+          M._pinned_buf = prev_pinned
+          if not was_active and not M.states[buf] and prev_state and prev_state.buf and M.states[prev_state.buf] then
+            M.state = prev_state
+          end
+          if not ok then
+            error(res1, 0)
+          end
+          return res1, res2
         end
       end
       return v
@@ -99,7 +117,9 @@ local function get_icon(name, cfg)
   local c = cfg or config_mod.get()
   assert(c, "agy config: configuration is required")
   assert(type(c.icons) == "table", "agy config: 'icons' table is required")
-  return c.icons[name] or ""
+  local icon = c.icons[name]
+  assert(icon ~= nil, string.format("agy config: icon '%s' is not defined in config.icons", tostring(name)))
+  return icon
 end
 
 local function get_horizontal_sep(cfg)
@@ -123,7 +143,12 @@ local function find_tab_win(b, fallback_win)
   if tab_win ~= -1 and vim.api.nvim_win_is_valid(tab_win) and vim.api.nvim_win_get_tabpage(tab_win) == cur_tab then
     return tab_win
   end
-  if fallback_win and vim.api.nvim_win_is_valid(fallback_win) and vim.api.nvim_win_get_tabpage(fallback_win) == cur_tab then
+  if
+    fallback_win
+    and vim.api.nvim_win_is_valid(fallback_win)
+    and vim.api.nvim_win_get_tabpage(fallback_win) == cur_tab
+    and vim.api.nvim_win_get_buf(fallback_win) == b
+  then
     return fallback_win
   end
   return nil
@@ -199,7 +224,7 @@ local function build_progression(cfg, base_col)
     local sym
     local hl_group
     if is_curr then
-      sym = answered and (step_current or step_answered) or step_unanswered
+      sym = answered and step_current or step_unanswered
       hl_group = "AgyQuestionStepCurrent"
     elseif answered then
       sym = step_answered
@@ -299,7 +324,11 @@ end
 ---Close question UI, clear buffer lines, delete keymaps, and reset state
 ---@param target_buf? number
 function M.close(target_buf)
-  M.activate_buf(target_buf)
+  local explicit_buf = (type(target_buf) == "number" and target_buf) or M._pinned_buf
+  if type(explicit_buf) == "number" and not M.states[explicit_buf] then
+    return
+  end
+  M.activate_buf(explicit_buf)
   pcall(vim.cmd, "stopinsert")
   M.state.is_editing_write_in = false
   local b = M.state.buf
@@ -346,9 +375,13 @@ end
 ---Cancel active question and invoke on_cancel callback
 ---@param target_buf? number
 function M.cancel(target_buf)
-  M.activate_buf(target_buf)
+  local explicit_buf = (type(target_buf) == "number" and target_buf) or M._pinned_buf
+  if type(explicit_buf) == "number" and not M.states[explicit_buf] then
+    return
+  end
+  M.activate_buf(explicit_buf)
   local cb = M.state.on_cancel
-  M.close(target_buf)
+  M.close(explicit_buf)
   if cb then
     cb()
   end

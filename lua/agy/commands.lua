@@ -421,6 +421,7 @@ M.handlers = {
 			"- `/new` / `/clear` — Start a fresh conversation",
 			"- `/resume [id]` — Resume past conversation",
 			"- `/undo` / `/redo` — Restore previous prompt or undo/redo edits",
+			"- `/stop` — Stop in-flight response",
 			"- `/exit` / `/quit` — Close session buffer",
 			"",
 			"### Prompt Modifiers / Directives (Chainable)",
@@ -442,6 +443,11 @@ M.handlers = {
 		}
 		ctx.clear_prompt()
 		ctx.protocol.show_info_float("Antigravity Help", lines, ctx.buf)
+	end,
+
+	["/stop"] = function(ctx)
+		ctx.clear_prompt()
+		ctx.protocol.stop_turn(ctx.buf)
 	end,
 
 	["/tasks"] = function(ctx)

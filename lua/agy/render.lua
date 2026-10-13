@@ -1,15 +1,37 @@
 local utils = require("agy.utils")
 local logo = require("agy.ui.logo")
 
-local M = setmetatable({}, { __index = logo })
+local LOGO_KEYS = {
+	NS_LOGO = true,
+	active_logo_buffers = true,
+	logo_timer = true,
+	logo_animation_angle = true,
+	get_logo_row_info = true,
+	reset_logo_highlights = true,
+	apply_logo_animation_frame = true,
+	start_logo_animation = true,
+	stop_logo_animation = true,
+	build_banner_lines = true,
+	render_banner_extmarks = true,
+	update_session_id = true,
+}
+
+local M = setmetatable({}, {
+	__index = logo,
+	__newindex = function(t, k, v)
+		if LOGO_KEYS[k] then
+			logo[k] = v
+		else
+			rawset(t, k, v)
+		end
+	end,
+})
 
 M.NS_UI = vim.api.nvim_create_namespace("agy_ui")
 M.NS_HISTORY = vim.api.nvim_create_namespace("agy_history")
 M.NS_PROMPT = vim.api.nvim_create_namespace("agy_prompt")
 M.NS_SPACER = vim.api.nvim_create_namespace("agy_tool_spacer")
 M.NS_QUEUE = vim.api.nvim_create_namespace("agy_queue")
-M.NS_LOGO = logo.NS_LOGO
-M.active_logo_buffers = logo.active_logo_buffers
 
 local function clean_question_text(text)
 	if not text then

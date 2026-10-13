@@ -1492,21 +1492,13 @@ function M.handle_write(buf)
     return
   end
 
-  if state.session and state.session.turn_active then
-    local prompt_text = M.extract_prompt(buf)
-    if prompt_text == "" then
-      vim.notify("[agy.nvim] Prompt is empty. Type your message below the prompt divider and press " .. (state.config.keymaps.submit or "<C-s>") .. " to queue.", vim.log.levels.INFO)
-      vim.bo[buf].modified = false
-      return
-    end
-
-    M.queue_prompt(buf, prompt_text)
-    return
-  end
-
   local prompt_text = M.extract_prompt(buf)
   if prompt_text == "" then
-    vim.notify("[agy.nvim] Prompt is empty. Type your message below the User divider and run :w", vim.log.levels.INFO)
+    if state.session and state.session.turn_active then
+      vim.notify("[agy.nvim] Prompt is empty. Type your message below the prompt divider and press " .. (state.config.keymaps.submit or "<C-s>") .. " to queue.", vim.log.levels.INFO)
+    else
+      vim.notify("[agy.nvim] Prompt is empty. Type your message below the User divider and run :w", vim.log.levels.INFO)
+    end
     vim.bo[buf].modified = false
     return
   end
@@ -1516,6 +1508,11 @@ function M.handle_write(buf)
 
   if first_token and first_token:match("^/") and completion.is_control(first_token) then
     require("agy.commands").dispatch(buf, state, first_token, trimmed, M)
+    return
+  end
+
+  if state.session and state.session.turn_active then
+    M.queue_prompt(buf, prompt_text)
     return
   end
 

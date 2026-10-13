@@ -514,19 +514,33 @@ question_mod.show(q_win, q_buf_b, {
 assert(question_mod.is_visible(q_buf_a), "Question in Buffer A must remain visible when Buffer B opens a question")
 assert(question_mod.is_visible(q_buf_b), "Question in Buffer B must be visible")
 
--- Submit Buffer B's question via bound controller
+-- Verify operating on ui_a (Buffer A) while Buffer B is the current buffer does NOT hijack Buffer B
+local ui_a = question_mod.bind_buffer(q_buf_a)
 local ui_b = question_mod.bind_buffer(q_buf_b)
+assert(vim.api.nvim_get_current_buf() == q_buf_b, "Current buffer must be Buffer B")
+
+-- Operating on ui_a while q_buf_b is current must mutate/submit Buffer A, leaving Buffer B open!
+ui_a.select_next()
+assert(ui_a.state.selected_idx == 2, "ui_a.select_next() must update Buffer A's selected_idx")
+assert(ui_b.state.selected_idx == 1, "ui_a.select_next() must not mutate Buffer B's selected_idx")
+ui_a.accept()
+assert(submitted_a == "A: Alpha 2", "Buffer A must submit Alpha 2 when accepted via ui_a, got: " .. tostring(submitted_a))
+assert(submitted_b == nil, "Buffer B must not be submitted when ui_a.accept() is called")
+assert(not question_mod.is_visible(q_buf_a), "Buffer A question must close after submit")
+assert(not ui_a.is_visible(), "ui_a.is_visible() must return false after Buffer A closes")
+assert(question_mod.is_visible(q_buf_b), "Buffer B question must still be active after Buffer A closes")
+
+-- Calling close/cancel on already-closed Buffer A must be a no-op and must not close Buffer B
+ui_a.close()
+question_mod.close(q_buf_a)
+question_mod.cancel(q_buf_a)
+assert(question_mod.is_visible(q_buf_b), "Closing already-closed Buffer A must not clobber open Buffer B")
+
+-- Now submit Buffer B's question via bound controller
 ui_b.select_next()
 ui_b.accept()
 assert(submitted_b == "A: Beta 2", "Buffer B must submit Beta 2, got: " .. tostring(submitted_b))
 assert(not question_mod.is_visible(q_buf_b), "Buffer B question must close after submit")
-assert(question_mod.is_visible(q_buf_a), "Buffer A question must still be active after Buffer B closes")
-
--- Submit Buffer A's question via bound controller
-local ui_a = question_mod.bind_buffer(q_buf_a)
-ui_a.accept()
-assert(submitted_a == "A: Alpha 1", "Buffer A must submit Alpha 1, got: " .. tostring(submitted_a))
-assert(not question_mod.is_visible(q_buf_a), "Buffer A question must close after submit")
 
 pcall(vim.api.nvim_buf_delete, q_buf_a, { force = true })
 pcall(vim.api.nvim_buf_delete, q_buf_b, { force = true })
@@ -593,16 +607,47 @@ assert(render.finalize_question_block == nil, "Legacy render.finalize_question_b
 
 local commands_mod = require("agy.commands")
 assert(type(commands_mod.handlers) == "table", "commands.handlers table must exist")
+for _, cmd_entry in ipairs(completion.COMMANDS) do
+	if cmd_entry.category == "control" then
+		assert(
+			type(commands_mod.handlers[cmd_entry.name]) == "function",
+			"Every control command in completion.COMMANDS must have a handler in commands.handlers: " .. cmd_entry.name
+		)
+	end
+end
 local ok_nil = pcall(commands_mod.dispatch, 0, {}, nil, "", protocol)
 assert(not ok_nil, "commands.dispatch must fail fast with assertion for nil token")
 local ok_unk = pcall(commands_mod.dispatch, 0, {}, "/unknown-cmd", "/unknown-cmd", protocol)
 assert(not ok_unk, "commands.dispatch must fail fast with assertion for unknown command")
+
+-- Verify /stop control command cancels an active turn instead of queueing
+vim.cmd("edit agy://new")
+local stop_buf = vim.api.nvim_get_current_buf()
+local stop_state = protocol.buffers[stop_buf]
+stop_state.session.turn_active = true
+local stop_called = false
+stop_state.session.stop = function(self)
+	stop_called = true
+	self.turn_active = false
+end
+protocol.with_modifiable(stop_buf, function()
+	vim.api.nvim_buf_set_lines(stop_buf, stop_state.prompt_start_line - 1, -1, false, { "/stop" })
+end)
+protocol.handle_write(stop_buf)
+assert(stop_called == true, "/stop during active turn must invoke session:stop()")
+assert(stop_state.session.turn_active == false, "/stop must end active turn")
+assert(stop_state.prompt_queue == nil or #stop_state.prompt_queue == 0, "/stop must not be queued as a prompt")
+protocol.cleanup_buffer(stop_buf)
+pcall(vim.api.nvim_buf_delete, stop_buf, { force = true })
 
 local logo_mod = require("agy.ui.logo")
 assert(render.get_logo_row_info == logo_mod.get_logo_row_info, "render must re-export logo.get_logo_row_info")
 assert(render.start_logo_animation == logo_mod.start_logo_animation, "render must re-export logo.start_logo_animation")
 assert(render.stop_logo_animation == logo_mod.stop_logo_animation, "render must re-export logo.stop_logo_animation")
 assert(render.NS_LOGO == logo_mod.NS_LOGO, "render must re-export logo.NS_LOGO")
+render.logo_animation_angle = 42
+assert(logo_mod.logo_animation_angle == 42, "Writing render.logo_animation_angle must forward to logo.logo_animation_angle")
+render.logo_animation_angle = 0
 
 assert(question_mod.state.target_win == nil and question_mod.state.target_buf == nil and question_mod.state.mapped_buf == nil, "Redundant question state fields must be removed")
 print("✓ Module decomposition and legacy question removal verified")
