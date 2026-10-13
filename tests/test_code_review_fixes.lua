@@ -82,9 +82,6 @@ local sample_questions = {
 		is_multi_select = false,
 	},
 }
-render.render_question_block(q_buf, sample_questions, cfg)
-assert(_G.q_prefix == nil, "render_question_block must not leak q_prefix to _G")
-
 render.render_historical_question(q_buf, { questions = sample_questions }, "A: Option A", cfg)
 assert(_G.q_prefix == nil, "render_historical_question must not leak q_prefix to _G")
 
@@ -584,5 +581,30 @@ end
 assert(has_ts_hl, "markdown.render must apply Tree-sitter highlights to ```md code blocks via filetype resolution")
 pcall(vim.api.nvim_buf_delete, md_buf, { force = true })
 print("✓ markdown.get_treesitter_lang and ```md Tree-sitter highlights verified")
+
+-- ============================================================================
+-- [Test 15] Module Decomposition & Dead Legacy Question Removal
+-- ============================================================================
+print("\n[Test 15] Testing commands.lua, ui/logo.lua, and legacy question removal...")
+assert(render.render_question_block == nil, "Legacy render.render_question_block must be removed")
+assert(render.toggle_question_option == nil, "Legacy render.toggle_question_option must be removed")
+assert(render.extract_question_answer == nil, "Legacy render.extract_question_answer must be removed")
+assert(render.finalize_question_block == nil, "Legacy render.finalize_question_block must be removed")
+
+local commands_mod = require("agy.commands")
+assert(type(commands_mod.handlers) == "table", "commands.handlers table must exist")
+local ok_nil = pcall(commands_mod.dispatch, 0, {}, nil, "", protocol)
+assert(not ok_nil, "commands.dispatch must fail fast with assertion for nil token")
+local ok_unk = pcall(commands_mod.dispatch, 0, {}, "/unknown-cmd", "/unknown-cmd", protocol)
+assert(not ok_unk, "commands.dispatch must fail fast with assertion for unknown command")
+
+local logo_mod = require("agy.ui.logo")
+assert(render.get_logo_row_info == logo_mod.get_logo_row_info, "render must re-export logo.get_logo_row_info")
+assert(render.start_logo_animation == logo_mod.start_logo_animation, "render must re-export logo.start_logo_animation")
+assert(render.stop_logo_animation == logo_mod.stop_logo_animation, "render must re-export logo.stop_logo_animation")
+assert(render.NS_LOGO == logo_mod.NS_LOGO, "render must re-export logo.NS_LOGO")
+
+assert(question_mod.state.target_win == nil and question_mod.state.target_buf == nil and question_mod.state.mapped_buf == nil, "Redundant question state fields must be removed")
+print("✓ Module decomposition and legacy question removal verified")
 
 print("\nALL CODE REVIEW FIXES VERIFICATION TESTS PASSED!")

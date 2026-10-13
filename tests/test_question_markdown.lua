@@ -297,10 +297,10 @@ do
 end
 
 -- =========================================================================
--- TEST 4: In-buffer question block (render_question_block) with markdown
+-- TEST 4: Historical question block (render_historical_question) with markdown
 -- =========================================================================
 do
-  print("\n[Test 4] Testing render_question_block with markdown...")
+  print("\n[Test 4] Testing render_historical_question with markdown...")
 
   local buf_block = vim.api.nvim_create_buf(false, true)
   local cfg = require("agy.config").get()
@@ -313,8 +313,7 @@ do
     }
   }
 
-  local q_block_state = render.render_question_block(buf_block, q_spec, cfg)
-  assert(q_block_state ~= nil)
+  render.render_historical_question(buf_block, { questions = q_spec }, "", cfg)
 
   local block_lines = vim.api.nvim_buf_get_lines(buf_block, 0, -1, false)
   local found_q_clean = false
@@ -351,7 +350,7 @@ do
   assert(l_v1 ~= nil, "v1 link must be found")
   assert(l_v1.url == "https://sdk.example.com/v1")
 
-  print("✓ render_question_block renders markdown and registers links properly")
+  print("✓ render_historical_question renders markdown and registers links properly")
 end
 
 print("\n=== ALL QUESTION MARKDOWN TESTS PASSED PERFECTLY! ===")
