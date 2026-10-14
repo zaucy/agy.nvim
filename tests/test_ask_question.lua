@@ -49,172 +49,107 @@ assert(parsed2[1].is_multi_select == true)
 print("✓ JSON string-encoded questions parsed successfully")
 
 -- =========================================================================
--- TEST 2: In-Buffer Question Block Rendering
+-- TEST 2: Interactive Question Modal Rendering & Option Toggling
 -- =========================================================================
-print("\n[Test 2] Testing render_question_block in buffer...")
+print("\n[Test 2] Testing question modal rendering and option toggling...")
 
 vim.cmd("edit agy://new")
 local buf = vim.api.nvim_get_current_buf()
 local win = vim.api.nvim_get_current_win()
 local state = protocol.buffers[buf]
+local question_mod = require("agy.question")
 
-local q_state = render.render_question_block(buf, parsed1, state.config)
-assert(q_state ~= nil, "q_state must be returned")
-assert(q_state.first_option_line > 1, "first_option_line must be > 1")
-assert(#q_state.questions == 1)
-assert(q_state.questions[1].options_end_line >= q_state.questions[1].options_start_line + 2)
+question_mod.show(win, buf, parsed1, {
+  config = state.config,
+  on_submit = function() end,
+  on_cancel = function() end,
+})
+assert(question_mod.is_visible(buf), "Question UI must be active")
 
 local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 local found_header = false
 local found_opts = 0
-local found_write_in = false
-
 for _, l in ipairs(lines) do
-  if l:find("Question: Where should self%-hosted tools live%?") then
+  if l:find("Where should self%-hosted tools live%?") then
     found_header = true
-    assert(not l:find(">"), "Question header should not contain '>'")
-    assert(not l:find("%*%*"), "Question header should not contain '**'")
-  elseif l:find("%- %[ %] ") then
+  elseif l:find("Reorganize") or l:find("Create dedicated") or l:find("Keep all tools") then
     found_opts = found_opts + 1
-    assert(not l:find(">"), "Option should not contain '>'")
-  elseif l:find("Write%-in / Notes:") then
-    found_write_in = true
-    assert(not l:find(">"), "Write-in header should not contain '>'")
-    assert(not l:find("%*%*"), "Write-in header should not contain '**'")
   end
 end
-
 assert(found_header, "Question header must be rendered in buffer")
-assert(found_opts == 3, "All 3 options must be rendered with [ ] checkboxes")
-assert(found_write_in, "Write-in / Notes header must be rendered in buffer")
-print("✓ In-buffer question block rendered with question, [ ] options, and write-in section")
+assert(found_opts == 3, "All 3 options must be rendered in buffer")
+print("✓ Question UI rendered with header and all options")
 
 -- =========================================================================
--- TEST 3: Context-Sensitive <CR> Toggling (Single-Select Radio Behavior)
+-- TEST 3: Single-Select Radio Behavior & Multi-Select Toggling
 -- =========================================================================
-print("\n[Test 3] Testing context-sensitive <CR> toggle for single-select question...")
+print("\n[Test 3] Testing single-select radio and multi-select toggling...")
 
-local opt1_line = q_state.questions[1].options_start_line
-local opt2_line = opt1_line + 1
-local opt3_line = opt1_line + 2
+question_mod.state.selected_idx = 1
+question_mod.toggle()
+assert(question_mod.state.selected_answers[1] == 1, "Option 1 must be selected")
 
--- Toggle option 1
-vim.api.nvim_win_set_cursor(win, { opt1_line, 0 })
-local handled1 = render.toggle_question_option(buf, opt1_line, q_state)
-assert(handled1 == true, "toggle_question_option should return true for option line")
+question_mod.state.selected_idx = 2
+question_mod.toggle()
+assert(question_mod.state.selected_answers[1] == 2, "Option 2 must replace Option 1 in single-select")
+question_mod.close(buf)
+print("✓ Radio button behavior verified for single-select")
 
-local l1 = vim.api.nvim_buf_get_lines(buf, opt1_line - 1, opt1_line, false)[1]
-assert(l1:find("%- %[x%] Reorganize"), "Option 1 must be checked [x], found: " .. l1)
-print("✓ Option 1 toggled to [x]")
-
--- Toggle option 2: Radio behavior must uncheck option 1 and check option 2
-vim.api.nvim_win_set_cursor(win, { opt2_line, 0 })
-local handled2 = render.toggle_question_option(buf, opt2_line, q_state)
-assert(handled2 == true)
-
-l1 = vim.api.nvim_buf_get_lines(buf, opt1_line - 1, opt1_line, false)[1]
-local l2 = vim.api.nvim_buf_get_lines(buf, opt2_line - 1, opt2_line, false)[1]
-assert(l1:find("%- %[ %] Reorganize"), "Option 1 must be unchecked [ ] after picking Option 2, found: " .. l1)
-assert(l2:find("%- %[x%] Create dedicated"), "Option 2 must now be checked [x], found: " .. l2)
-print("✓ Radio button behavior verified: picking Option 2 unchecks Option 1")
-
--- Toggling option 2 again unchecks it
-local handled2_uncheck = render.toggle_question_option(buf, opt2_line, q_state)
-assert(handled2_uncheck == true)
-l2 = vim.api.nvim_buf_get_lines(buf, opt2_line - 1, opt2_line, false)[1]
-assert(l2:find("%- %[ %] Create dedicated"), "Option 2 should be unchecked [ ] after second toggle")
-print("✓ Toggling checked option unchecks it")
-
--- Non-option line returns false (allowing fallback to tool toggle or normal CR)
-local non_opt_handled = render.toggle_question_option(buf, 1, q_state)
-assert(non_opt_handled == false, "Lines outside option range must return false")
-print("✓ Lines outside option range return false for fallback")
-
--- =========================================================================
--- TEST 4: Multi-Select Checkbox Toggling
--- =========================================================================
-print("\n[Test 4] Testing multi-select checkbox toggling...")
-
-local buf_multi = vim.api.nvim_create_buf(false, true)
-
-local q_multi_state = render.render_question_block(buf_multi, parsed2, state.config)
-local m_opt1 = q_multi_state.questions[1].options_start_line
-local m_opt2 = m_opt1 + 1
-
-render.toggle_question_option(buf_multi, m_opt1, q_multi_state)
-render.toggle_question_option(buf_multi, m_opt2, q_multi_state)
-
-local ml1 = vim.api.nvim_buf_get_lines(buf_multi, m_opt1 - 1, m_opt1, false)[1]
-local ml2 = vim.api.nvim_buf_get_lines(buf_multi, m_opt2 - 1, m_opt2, false)[1]
-assert(ml1:find("%- %[x%] Neovim headless lua"), "Multi-select option 1 must be checked [x]")
-assert(ml2:find("%- %[x%] Busted"), "Multi-select option 2 must be checked [x]")
+-- Multi-select
+question_mod.show(win, buf, parsed2, { config = state.config })
+question_mod.state.selected_idx = 1
+question_mod.toggle()
+question_mod.state.selected_idx = 2
+question_mod.toggle()
+assert(
+  question_mod.state.selected_answers[1][1] == true and question_mod.state.selected_answers[1][2] == true,
+  "Multi-select must allow multiple selections"
+)
+question_mod.close(buf)
 print("✓ Multi-select allows checking multiple options simultaneously")
 
-vim.api.nvim_buf_delete(buf_multi, { force = true })
+-- =========================================================================
+-- TEST 4 & 5: Answer Formatting (Options + Write-in Notes)
+-- =========================================================================
+print("\n[Test 4 & 5] Testing answer formatting and notes...")
+
+question_mod.show(win, buf, parsed1, { config = state.config })
+assert(question_mod.has_question_answer(1) == false, "has_question_answer must return false when nothing selected")
+
+question_mod.state.selected_answers[1] = 1
+assert(question_mod.has_question_answer(1) == true)
+local ans_opt1 = question_mod.format_answers()
+assert(ans_opt1:find("A: Reorganize tools/ into tools/bootstrap/"), "Must contain selected option")
+
+question_mod.state.write_in_text[1] = "Make sure to update docs and CI scripts as well."
+local ans_with_notes = question_mod.format_answers()
+assert(ans_with_notes:find("A: Reorganize tools/"))
+assert(ans_with_notes:find("Notes: Make sure to update docs and CI scripts as well."))
+
+question_mod.state.selected_answers[1] = nil
+assert(question_mod.has_question_answer(1) == true)
+local ans_notes_only = question_mod.format_answers()
+assert(ans_notes_only:find("A: Make sure to update docs and CI scripts as well."))
+question_mod.close(buf)
+print("✓ Answer formatting with options and write-in notes verified")
 
 -- =========================================================================
--- TEST 5: Answer Extraction and Notes Formatting
+-- TEST 6: Submission via question_mod.submit_all()
 -- =========================================================================
-print("\n[Test 5] Testing answer extraction and notes formatting...")
+print("\n[Test 6] Testing question_mod.submit_all()...")
 
--- 5a. Check empty state (nothing checked, no notes)
-local ans_empty, has_empty = render.extract_question_answer(buf, q_state)
-assert(has_empty == false, "extract_question_answer must return has_answer = false when nothing selected")
-print("✓ Empty question block correctly returns has_answer = false")
-
--- 5b. Check option 1 and extract
-render.toggle_question_option(buf, opt1_line, q_state)
-local ans_opt1, has_opt1 = render.extract_question_answer(buf, q_state)
-assert(has_opt1 == true, "Must have answer when option 1 is checked")
-assert(ans_opt1:find("A: Reorganize tools/ into tools/bootstrap/"), "Payload must contain option text, found: " .. ans_opt1)
-print("✓ Single selected option extracted cleanly: '" .. ans_opt1 .. "'")
-
--- 5c. Add write-in notes
-local write_line = q_state.write_in_start_line
-vim.api.nvim_buf_set_lines(buf, write_line - 1, write_line, false, { "Make sure to update docs and CI scripts as well." })
-
-local ans_with_notes, has_with_notes = render.extract_question_answer(buf, q_state)
-assert(has_with_notes == true)
-assert(ans_with_notes:find("A: Reorganize tools/"), "Must contain selected option")
-assert(ans_with_notes:find("Notes: Make sure to update docs and CI scripts as well."), "Must contain write-in notes")
-print("✓ Answer with write-in notes formatted properly:\n" .. ans_with_notes)
-
--- 5d. Write-in only (no option checked)
-render.toggle_question_option(buf, opt1_line, q_state) -- uncheck option 1
-local ans_notes_only, has_notes_only = render.extract_question_answer(buf, q_state)
-assert(has_notes_only == true, "Write-in alone is a valid answer")
-assert(ans_notes_only == "Make sure to update docs and CI scripts as well.", "Write-in text returned directly when no options checked")
-print("✓ Write-in alone is valid and extracted properly")
-
--- =========================================================================
--- TEST 6: Submission via :w with Active Question
--- =========================================================================
-print("\n[Test 6] Testing :w submission handling with active question...")
-
-state.active_question = q_state
--- Check option 2
-render.toggle_question_option(buf, opt2_line, q_state)
-
--- Mock session send_prompt
-local sent_prompt = nil
-state.session = {
-  turn_active = true,
-  send_prompt = function(_, text)
-    sent_prompt = text
-    return true
+local submitted_text = nil
+question_mod.show(win, buf, parsed1, {
+  config = state.config,
+  on_submit = function(text)
+    submitted_text = text
   end,
-  destroy = function() end,
-  stop = function() end,
-}
-
--- Run write
-vim.cmd("write")
-
-assert(sent_prompt ~= nil, "Session send_prompt must be called on write")
-assert(sent_prompt:find("Create dedicated self_hosted/ directory"), "Prompt must contain chosen option, found: " .. tostring(sent_prompt))
-assert(state.active_question == nil, "state.active_question must be cleared after submission")
-assert(vim.bo[buf].modified == false, "Buffer modified must be false after submission")
-print("✓ :w successfully extracts answer, calls send_prompt, and clears active question")
+})
+question_mod.state.selected_answers[1] = 2
+question_mod.submit_all()
+assert(submitted_text ~= nil and submitted_text:find("Create dedicated self_hosted/ directory"), "on_submit must receive selected option")
+assert(not question_mod.is_visible(buf), "Question UI must close after submit")
+print("✓ question_mod.submit_all() dispatches formatted answer and closes UI")
 
 protocol.cleanup_buffer(buf)
 

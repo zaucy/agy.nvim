@@ -50,19 +50,29 @@ local M = {}
 
 ---@class AgyConfigIcons
 ---@field default? string Default fallback icon (default: "  ")
----@field tool? string Generic tool call icon (default: "🛠️")
----@field run_command? string Icon for run_command / background tasks (default: "")
----@field view_file? string Icon for view_file tool call (default: "  ")
----@field thought? string Icon for agent thoughts (default: "💭")
+---@field tool? string Generic tool call icon (default: "  ")
+---@field run_command? string Icon for run_command / background tasks (default: "")
+---@field view_file? string Icon for view_file tool call (default: "")
+---@field replace_file_content? string Icon for replace_file_content tool call (default: "")
+---@field write_to_file? string Icon for write_to_file tool call (default: "")
+---@field thought? string Icon for agent thoughts (default: "")
 ---@field user? string Icon for user divider (default: "👤")
 ---@field agent? string Icon for agent divider (default: "🤖")
 ---@field prompt_sign? string Sign column icon for active prompt (default: "❯ ")
----@field footer? string Icon for status footer line (default: "⚡")
----@field done? string Icon for completed turns / tasks (default: "✓")
----@field question? string Icon for ask_question headers (default: "❓")
----@field error? string Icon for error notices (default: "❌")
+---@field footer? string Icon for status footer line (default: "")
+---@field done? string Icon for completed turns / tasks (default: "")
+---@field question? string Icon for ask_question headers (default: "")
+---@field error? string Icon for error notices (default: "")
 ---@field cancelled? string Icon for turn cancelled notices (default: "⏹️")
----@field queue? string Icon for prompt queue (default: "⏳")
+---@field queue? string Icon for prompt queue (default: "")
+---@field context? string Icon for context breakdown panel title (default: "🗎")
+---@field quota? string Icon for models & quota panel title (default: "🗎")
+---@field tasks? string Icon for background tasks panel title (default: "📋")
+---@field info? string Icon for info floating window title (default: "ℹ️")
+---@field status_switch? string Icon for model/mode/effort switch notices (default: "⚡")
+---@field status_added? string Icon for workspace/item added notices (default: "✓")
+---@field bar_fill? string Progress bar filled segment character (default: "█")
+---@field bar_empty? string Progress bar empty segment character (default: "░")
 ---@field spinner? string[] Frames for thinking animation (default: { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" })
 ---@field table? AgyConfigIconsTable Table border characters
 ---@field code_block? AgyConfigIconsCodeBlock Code block border characters
@@ -92,6 +102,9 @@ local M = {}
 ---@field app_data_dir? string Path to ~/.gemini/antigravity-cli (default: auto-detected)
 ---@field default_mode? string Agent mode: "accept-edits" | "plan" (default: nil)
 ---@field default_model? string Default model for sessions (default: nil)
+---@field agent? string Agent name for CLI session (--agent, default: nil)
+---@field sandbox? boolean Run in a sandbox with terminal restrictions enabled (--sandbox, default: false)
+---@field dangerously_skip_permissions? boolean Auto-approve all tool permission requests without prompting (--dangerously-skip-permissions, default: false)
 ---@field workspaces? string[] | fun(): string[] Workspace directories to register with agy CLI (default: nil, falls back to vim.fn.getcwd())
 ---@field icons? AgyConfigIcons
 ---@field keymaps? AgyConfigKeymaps
@@ -103,14 +116,35 @@ M.defaults = {
 	app_data_dir = utils.get_app_data_dir(),
 	default_mode = nil,
 	default_model = nil,
+	agent = nil,
+	sandbox = false,
+	dangerously_skip_permissions = false,
 	workspaces = nil,
 	icons = {
 		default = "  ",
 		tool = "  ",
+		run_command = "",
+		view_file = "  ",
+		replace_file_content = "  ",
+		write_to_file = "  ",
+		thought = "",
 		user = "👤",
 		agent = "🤖",
 		prompt_sign = "❯ ",
+		footer = "",
+		done = "",
+		question = "",
+		error = "",
 		cancelled = "⏹️",
+		queue = "",
+		context = "🗎",
+		quota = "🗎",
+		tasks = "📋",
+		info = "ℹ️",
+		status_switch = "⚡",
+		status_added = "✓",
+		bar_fill = "█",
+		bar_empty = "░",
 		work_collapsed = "▶",
 		work_expanded = "▼",
 		group_completed = "●",
@@ -191,6 +225,18 @@ M.values = vim.deepcopy(M.defaults)
 ---@return AgyConfig
 function M.setup(opts)
 	if opts then
+		if opts.agent ~= nil then
+			assert(type(opts.agent) == "string", "agy config: 'agent' must be a string")
+		end
+		if opts.sandbox ~= nil then
+			assert(type(opts.sandbox) == "boolean", "agy config: 'sandbox' must be a boolean")
+		end
+		if opts.dangerously_skip_permissions ~= nil then
+			assert(
+				type(opts.dangerously_skip_permissions) == "boolean",
+				"agy config: 'dangerously_skip_permissions' must be a boolean"
+			)
+		end
 		if opts.ui and opts.ui.separator ~= nil then
 			assert(
 				type(opts.ui.separator) == "function",

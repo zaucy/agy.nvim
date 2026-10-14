@@ -223,6 +223,18 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
         -- Agent mode: "accept-edits" | "plan" (default: nil)
         default_mode = nil,
 
+        -- Optional default LLM model name or alias (default: nil)
+        default_model = nil,
+
+        -- Optional agent profile name passed to `agy --agent <name>` (default: nil)
+        agent = nil,
+
+        -- Enable sandboxed execution (`agy --sandbox`, default: false)
+        sandbox = false,
+
+        -- Bypass all permission checks (`agy --dangerously-skip-permissions`, default: false)
+        dangerously_skip_permissions = false,
+
         -- Buffer keymaps
         keymaps = {
             submit = "<C-s>",      -- Save & send prompt
@@ -234,15 +246,33 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
 
         -- Icons used in session buffers and panels
         icons = {
-            default = "  ",
-            tool = "  ",
-            user = "👤",
-            agent = "🤖",
+            default = "",
+            tool = "",
+            run_command = "",
+            view_file = "",
+            replace_file_content = "",
+            write_to_file = "",
+            thought = "",
+            footer = "",
+            done = "",
+            question = "",
+            error = "",
+            queue = "",
+            user = "",
+            agent = "",
             prompt_sign = "❯ ",
-            cancelled = "⏹️",
-            review_comment = "💬",
-            new_session = "󰐕 ",      -- Icon for agy://new in home buffer
-            conversation = "󰭹 ",     -- Icon for conversation entries in home buffer
+            cancelled = "",
+            review_comment = "",
+            new_session = "",        -- Icon for agy://new in home buffer
+            conversation = "",       -- Icon for conversation entries in home buffer
+            context = "🗎",           -- Icon for Context Breakdown panel header
+            quota = "🗎",             -- Icon for Models & Quota panel header
+            tasks = "📋",            -- Icon for Background Tasks panel header
+            info = "ℹ️",             -- Icon for informational floating panels
+            status_switch = "⚡",    -- Icon for model/mode/effort switch status
+            status_added = "✓",      -- Icon for workspace add/drop status
+            bar_fill = "█",          -- Filled progress bar segment
+            bar_empty = "░",         -- Empty progress bar segment
             step_unanswered = "○",   -- Unanswered question step in progression
             step_answered = "●",     -- Answered question step in progression
             step_current = "◉",      -- Current active question step in progression
@@ -273,16 +303,12 @@ Call `require("agy").setup(opts)` with any of the following options: >lua
                 bottom_left = "╰",
             },
             bullets = { "●", "○", "◆" },
-            checkbox_unchecked = "󰄱 ",
-            checkbox_checked = "󰄵 ",
-            image = " ",
-            link = "🔗",
+            checkbox_unchecked = "[ ] ",
+            checkbox_checked = "[x] ",
+            image = "",
+            link = "",
             upper_block = "▀",       -- Upper half block for inverted V logo
             lower_block = "▄",       -- Lower half block for inverted V logo
-            group_completed = "●",   -- Bullet icon for completed named tool group
-            group_running = "●",     -- Bullet icon for actively running named tool group
-            middle_dot = "·",        -- Middle dot separator in tool details
-            multiply = "×",          -- Multiplication symbol for repeated commands
         },
 
         -- UI settings

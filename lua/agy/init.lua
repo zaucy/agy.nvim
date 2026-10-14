@@ -9,22 +9,6 @@ local M = {}
 function M.setup(opts)
   config.setup(opts)
   protocol.setup()
-
-  vim.api.nvim_create_user_command("AgyModel", function(args)
-    M.model(args.args ~= "" and args.args or nil)
-  end, {
-    nargs = "?",
-    complete = function(arg_lead)
-      local completion_mod = require("agy.completion")
-      local matches = completion_mod.complete_models(arg_lead)
-      local res = {}
-      for _, m in ipairs(matches) do
-        table.insert(res, m.label)
-      end
-      return res
-    end,
-    desc = "Select or switch Antigravity active model",
-  })
 end
 
 ---Open an Antigravity conversation buffer or root home buffer

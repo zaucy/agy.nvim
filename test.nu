@@ -51,7 +51,8 @@ def main [
             "tests/test_db.lua",
             "tests/test_work_groups.lua",
             "tests/test_named_groups.lua",
-            "tests/test_tabpage_isolation.lua"
+            "tests/test_tabpage_isolation.lua",
+            "tests/test_code_review_fixes.lua"
         ]
 
         for t in $tests {

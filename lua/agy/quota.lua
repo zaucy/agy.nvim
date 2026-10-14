@@ -1,3 +1,4 @@
+local config = require("agy.config")
 local utils = require("agy.utils")
 local panel = require("agy.panel")
 
@@ -159,7 +160,13 @@ end
 ---@param effort? string
 ---@return string[] lines
 ---@return table[] meta Line metadata for highlighting
-function M.build_content(data, email, session_info, width, model_name, effort)
+function M.build_content(data, email, session_info, width, model_name, effort, cfg)
+  local c = cfg or config.get()
+  assert(c and type(c.icons) == "table", "agy quota: config.icons is required")
+  assert(c.icons.quota ~= nil, "agy quota: config.icons.quota is required")
+  assert(c.icons.bar_fill ~= nil, "agy quota: config.icons.bar_fill is required")
+  assert(c.icons.bar_empty ~= nil, "agy quota: config.icons.bar_empty is required")
+
   local lines = {}
   local meta = {}
   width = width or 80
@@ -173,7 +180,9 @@ function M.build_content(data, email, session_info, width, model_name, effort)
     })
   end
 
-  add_line("🗎 Models & Quota", "title")
+  local q_icon = c.icons.quota
+  local title_prefix = (q_icon ~= "") and (q_icon .. " ") or ""
+  add_line(title_prefix .. "Models & Quota", "title")
   add_line("", "empty")
   add_line("Account: " .. (email or "Active Account"), "account", { email = email })
   add_line("", "empty")
@@ -211,7 +220,7 @@ function M.build_content(data, email, session_info, width, model_name, effort)
       local filled = math.min(bar_width, math.max(0, math.floor(fraction * bar_width + 0.5)))
       local empty = bar_width - filled
 
-      local bar_str = string.format("  [%s%s] %.2f%%", string.rep("█", filled), string.rep("░", empty), pct)
+      local bar_str = string.format("  [%s%s] %.2f%%", string.rep(c.icons.bar_fill, filled), string.rep(c.icons.bar_empty, empty), pct)
       add_line(bar_str, "progress_bar", {
         fraction = fraction,
         filled = filled,
@@ -468,8 +477,11 @@ function M.open(caller_buf)
 
     local fresh_lines, fresh_meta
     if not ok then
+      assert(cfg and cfg.icons and cfg.icons.quota ~= nil, "agy quota: config.icons.quota is required")
+      local q_icon = cfg.icons.quota
+      local title_prefix = (q_icon ~= "") and (q_icon .. " ") or ""
       fresh_lines = {
-        "🗎 Models & Quota",
+        title_prefix .. "Models & Quota",
         "",
         "Account: " .. email,
         "",
@@ -485,7 +497,7 @@ function M.open(caller_buf)
         { row = #fresh_lines - 1, type = "footer", extra = { text = footer } },
       }
     else
-      fresh_lines, fresh_meta = M.build_content(quota_data, email, session_info, width, model_name, effort)
+      fresh_lines, fresh_meta = M.build_content(quota_data, email, session_info, width, model_name, effort, cfg)
     end
 
     panel.update(fresh_lines, fresh_meta)

@@ -244,6 +244,13 @@ function M.open(opts)
   vim.keymap.set("n", "<C-Home>", "gg", { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "<C-End>", "G", { buffer = buf, silent = true, nowait = true })
 
+  if opts.keymaps then
+    assert(type(opts.keymaps) == "table", "agy panel: opts.keymaps must be a table")
+    for lhs, rhs in pairs(opts.keymaps) do
+      vim.keymap.set("n", lhs, rhs, { buffer = buf, silent = true, nowait = true })
+    end
+  end
+
   -- Autocommands for panel cleanup and insert mode transitions
   local augroup = vim.api.nvim_create_augroup("AgyPanel_" .. buf, { clear = true })
   vim.api.nvim_create_autocmd("InsertEnter", {
