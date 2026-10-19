@@ -9,99 +9,57 @@ M.NS_HL = vim.api.nvim_create_namespace("agy_completion")
 ---Antigravity built-in and skill slash commands with category and argument metadata
 M.COMMANDS = {
   { name = "/add-dir", desc = "Add a directory to the workspace", category = "control", arg_type = "dir" },
-  { name = "/agents", desc = "List or manage custom agents", category = "control" },
   { name = "/artifacts", desc = "Review artifacts produced in this session", category = "control", arg_type = "artifact" },
-  { name = "/architect", desc = "Architecture and design mode", category = "modifier" },
-  { name = "/auth", desc = "Manage authentication credentials", category = "control" },
   { name = "/boost", desc = "Deep thinking, strategic planning, and verification", category = "modifier" },
   { name = "/browser", desc = "Web browsing, search, and browser automation", category = "modifier" },
-  { name = "/bug", desc = "Report a bug or unexpected behavior", category = "modifier" },
   { name = "/btw", desc = "Ask a side-question without disrupting conversation", category = "modifier" },
   { name = "/clear", desc = "Clear conversation context and restart session", category = "control" },
-  { name = "/compress", desc = "Compress conversation history to save tokens", category = "control" },
+  { name = "/compact", desc = "Compact conversation context to free up the context window", category = "modifier" },
   { name = "/context", desc = "Inspect active context and memory", category = "control" },
   { name = "/copy", desc = "Copy last response to clipboard", category = "control", arg_type = "choice", choices = { "response", "code", "btw" } },
   { name = "/cost", desc = "Display cost accounting for session", category = "control" },
   { name = "/diff", desc = "Inspect git diff of workspace changes", category = "control" },
   { name = "/doctor", desc = "Verify system health and dependencies", category = "control" },
   { name = "/drop", desc = "Drop a file or directory from workspace", category = "control", arg_type = "dir" },
-  { name = "/effort", desc = "Set reasoning effort level", category = "control", arg_type = "choice", choices = { "low", "medium", "high" } },
+  { name = "/effort", desc = "Set reasoning effort level", category = "control", arg_type = "choice", choices = { "low", "medium", "high", "xhigh", "max" } },
   { name = "/exit", desc = "Exit the session", category = "control" },
-  { name = "/feedback", desc = "Submit product feedback", category = "control" },
-  { name = "/flow", desc = "View agent execution graph", category = "modifier" },
-  { name = "/forget", desc = "Forget remembered patterns or rules", category = "control" },
-  { name = "/git", desc = "Run git status or git operations", category = "control" },
+  { name = "/fast", desc = "Switch execution mode to fast (accept-edits)", category = "control" },
   { name = "/goal", desc = "Long-running autonomous goal task", category = "modifier" },
   { name = "/grill-me", desc = "Interactive interview to resolve design decisions", category = "modifier" },
   { name = "/help", desc = "Show command reference and shortcuts", category = "control" },
-  { name = "/hooks", desc = "Inspect active hooks", category = "control" },
-  { name = "/init", desc = "Initialize Antigravity in current project", category = "control" },
   { name = "/learn", desc = "Persist patterns and corrections for future tasks", category = "modifier" },
-  { name = "/lint", desc = "Run codebase linter and formatters", category = "control" },
-  { name = "/log", desc = "View recent logs or session traces", category = "control" },
-  { name = "/mcp", desc = "Manage MCP servers and tools", category = "control" },
-  { name = "/memory", desc = "Inspect remembered agent knowledge", category = "control" },
   { name = "/mode", desc = "Set agent mode", category = "control", arg_type = "choice", choices = { "accept-edits", "plan", "default" } },
   { name = "/model", desc = "Select or switch active LLM model", category = "control", arg_type = "model" },
-  { name = "/mutate", desc = "Apply automated code mutations", category = "modifier" },
   { name = "/new", desc = "Start a fresh conversation", category = "control" },
-  { name = "/notify", desc = "Manage notification settings", category = "control" },
-  { name = "/pair", desc = "Pair programming collaboration mode", category = "modifier" },
-  { name = "/permissions", desc = "Manage tool permissions and approvals", category = "control" },
+  { name = "/open", desc = "Open a workspace file in Neovim", category = "control", arg_type = "file" },
   { name = "/plan", desc = "Deep planning, verification steps, and user alignment", category = "modifier" },
-  { name = "/plugins", desc = "List installed plugins", category = "control" },
-  { name = "/profile", desc = "Switch configuration profile", category = "control" },
+  { name = "/planning", desc = "Switch execution mode to planning (plan)", category = "control" },
   { name = "/quit", desc = "Exit the session", category = "control" },
   { name = "/quota", desc = "Check remaining model API quotas", category = "control" },
-  { name = "/rag", desc = "Inspect RAG corpus indexing", category = "control" },
   { name = "/redo", desc = "Redo the previously undone changes", category = "control" },
-  { name = "/reload", desc = "Reload session and configuration from disk", category = "control" },
-  { name = "/remote-control", desc = "Manage remote control companion connection", category = "control" },
-  { name = "/replay", desc = "Replay past conversation turns", category = "control" },
-  { name = "/restore", desc = "Restore checkpoint or file states", category = "control" },
   { name = "/resume", desc = "Resume a previous conversation", category = "control", arg_type = "history" },
-  { name = "/rules", desc = "View workspace and customization rules", category = "control" },
-  { name = "/save", desc = "Save conversation transcript", category = "control" },
   { name = "/schedule", desc = "Schedule a one-shot timer or recurring cron job", category = "modifier" },
-  { name = "/scratch", desc = "Open scratchpad notes buffer", category = "control" },
-  { name = "/search", desc = "Search across conversation transcripts", category = "control" },
   { name = "/settings", desc = "View or modify CLI configuration", category = "control" },
-  { name = "/share", desc = "Export or share conversation", category = "control" },
-  { name = "/sidecar", desc = "Inspect active sidecar processes", category = "control" },
-  { name = "/skills", desc = "List available skills", category = "control" },
-  { name = "/stats", desc = "Show conversation metrics", category = "control" },
   { name = "/status", desc = "Show current session and workspace status", category = "control" },
   { name = "/stop", desc = "Cancel active in-flight turn", category = "control" },
-  { name = "/subagent", desc = "Manage background subagents", category = "control" },
-  { name = "/summary", desc = "View current conversation summary", category = "control" },
-  { name = "/tags", desc = "Manage conversation tags", category = "control" },
   { name = "/tasks", desc = "Manage ongoing background tasks", category = "control" },
   { name = "/teamwork-preview", desc = "Multi-agent collaboration preview", category = "modifier" },
-  { name = "/telemetry", desc = "Manage telemetry settings", category = "control" },
-  { name = "/theme", desc = "Change CLI theme", category = "control" },
-  { name = "/timeout", desc = "Configure network request timeout", category = "control" },
   { name = "/tokens", desc = "View token consumption breakdown", category = "control" },
-  { name = "/tools", desc = "List available agent tools", category = "control" },
-  { name = "/undo", desc = "Undo the previous turn or file changes", category = "control" },
+  { name = "/undo", desc = "Revert last turn and restore prompt to input area", category = "control" },
   { name = "/usage", desc = "View token consumption and accounting", category = "control" },
-  { name = "/verbose", desc = "Toggle verbose debug logging", category = "control" },
   { name = "/version", desc = "Show Antigravity CLI version", category = "control" },
   { name = "/workspace", desc = "List or add workspace directories", category = "control", arg_type = "dir" },
 }
 
 ---Known prompt modifiers / directives that can be chained together and accompany prompts
 M.MODIFIER_COMMANDS = {
-  ["/architect"] = true,
   ["/boost"] = true,
   ["/browser"] = true,
-  ["/bug"] = true,
   ["/btw"] = true,
-  ["/flow"] = true,
+  ["/compact"] = true,
   ["/goal"] = true,
   ["/grill-me"] = true,
   ["/learn"] = true,
-  ["/mutate"] = true,
-  ["/pair"] = true,
   ["/plan"] = true,
   ["/schedule"] = true,
   ["/teamwork-preview"] = true,
@@ -140,8 +98,8 @@ end
 ---@param cmd_name string
 ---@return boolean
 function M.is_control(cmd_name)
-  if not cmd_name or not cmd_name:match("^/") then return false end
-  return not M.is_modifier(cmd_name)
+  if not cmd_name then return false end
+  return M.ONE_OFF_COMMANDS[cmd_name] == true
 end
 
 ---Check whether a command is a one-off/control command
@@ -660,20 +618,129 @@ end
 
 ---Cache of workspace files
 M._workspace_files_cache = {}
+M._workspace_files_refreshing = {}
 
----Scan workspace files using git ls-files with fallback to recursive fs_scandir
+---Fallback recursive filesystem scan with ignore filters
+---@param norm_ws string
+---@return string[]
+local function scan_workspace_fs(norm_ws)
+  local files = {}
+  local ignore_dirs = {
+    [".git"] = true,
+    [".gemini"] = true,
+    ["node_modules"] = true,
+    ["target"] = true,
+    ["build"] = true,
+    [".vs"] = true,
+    [".idea"] = true,
+    [".vscode"] = true,
+    ["dist"] = true,
+    ["__pycache__"] = true,
+  }
+  local ignore_exts = {
+    [".exe"] = true,
+    [".dll"] = true,
+    [".so"] = true,
+    [".dylib"] = true,
+    [".png"] = true,
+    [".jpg"] = true,
+    [".jpeg"] = true,
+    [".gif"] = true,
+    [".ico"] = true,
+    [".zip"] = true,
+    [".tar"] = true,
+    [".gz"] = true,
+    [".7z"] = true,
+    [".pdf"] = true,
+    [".mp4"] = true,
+    [".mp3"] = true,
+    [".wav"] = true,
+    [".o"] = true,
+    [".a"] = true,
+    [".obj"] = true,
+    [".pdb"] = true,
+  }
+
+  local function scan(dir, rel_prefix)
+    if #files >= 3000 then return end
+    local h = vim.uv.fs_scandir(dir)
+    if not h then return end
+    while true do
+      local name, ftype = vim.uv.fs_scandir_next(h)
+      if not name then break end
+      if ftype == "directory" then
+        if not ignore_dirs[name] and not name:match("^%.") then
+          scan(dir .. "/" .. name, rel_prefix .. name .. "/")
+        end
+      elseif ftype == "file" then
+        local ext = name:match("(%.[^.]+)$")
+        if not (ext and ignore_exts[ext:lower()]) then
+          table.insert(files, rel_prefix .. name)
+          if #files >= 3000 then break end
+        end
+      end
+    end
+  end
+
+  scan(norm_ws, "")
+  return files
+end
+
+---Asynchronously refresh the workspace file cache without blocking the UI thread
+---@param ws? string Workspace root directory
+function M.refresh_workspace_files_async(ws)
+  local norm_ws = vim.fs.normalize(ws or vim.fn.getcwd())
+  if M._workspace_files_refreshing[norm_ws] then
+    return
+  end
+  M._workspace_files_refreshing[norm_ws] = true
+
+  local ok = pcall(
+    vim.system,
+    { "git", "-C", norm_ws, "ls-files", "--cached", "--others", "--exclude-standard" },
+    { text = true },
+    vim.schedule_wrap(function(obj)
+      M._workspace_files_refreshing[norm_ws] = nil
+      local files = {}
+      if obj and obj.code == 0 and obj.stdout and obj.stdout ~= "" then
+        for line in obj.stdout:gmatch("[^\r\n]+") do
+          local trimmed = utils.trim(line)
+          if trimmed ~= "" then
+            table.insert(files, trimmed)
+          end
+        end
+      else
+        files = scan_workspace_fs(norm_ws)
+      end
+      M._workspace_files_cache[norm_ws] = {
+        timestamp = vim.uv.now(),
+        files = files,
+      }
+    end)
+  )
+  if not ok then
+    M._workspace_files_refreshing[norm_ws] = nil
+  end
+end
+
+---Scan workspace files using git ls-files with fallback to recursive fs_scandir.
+---When a cached entry exists but is stale, returns the cached files immediately and
+---triggers an asynchronous background refresh so TextChangedI never blocks on I/O.
 ---@param ws string Workspace root directory
 ---@return string[] relative_paths
 function M.get_workspace_files(ws)
   local norm_ws = vim.fs.normalize(ws or vim.fn.getcwd())
   local cached = M._workspace_files_cache[norm_ws]
   local now = vim.uv.now()
-  if cached and (now - cached.timestamp < 3000) then
+  if cached then
+    if now - cached.timestamp >= 3000 then
+      M.refresh_workspace_files_async(norm_ws)
+    end
     return cached.files
   end
 
   local files = {}
-  -- 1. Try git ls-files if available
+  -- 1. Try git ls-files if available (only on cold cache)
   local ok, obj = pcall(function()
     return vim.system(
       { "git", "-C", norm_ws, "ls-files", "--cached", "--others", "--exclude-standard" },
@@ -690,64 +757,7 @@ function M.get_workspace_files(ws)
     end
   else
     -- 2. Fallback: recursive filesystem scan with ignore filters
-    local ignore_dirs = {
-      [".git"] = true,
-      [".gemini"] = true,
-      ["node_modules"] = true,
-      ["target"] = true,
-      ["build"] = true,
-      [".vs"] = true,
-      [".idea"] = true,
-      [".vscode"] = true,
-      ["dist"] = true,
-      ["__pycache__"] = true,
-    }
-    local ignore_exts = {
-      [".exe"] = true,
-      [".dll"] = true,
-      [".so"] = true,
-      [".dylib"] = true,
-      [".png"] = true,
-      [".jpg"] = true,
-      [".jpeg"] = true,
-      [".gif"] = true,
-      [".ico"] = true,
-      [".zip"] = true,
-      [".tar"] = true,
-      [".gz"] = true,
-      [".7z"] = true,
-      [".pdf"] = true,
-      [".mp4"] = true,
-      [".mp3"] = true,
-      [".wav"] = true,
-      [".o"] = true,
-      [".a"] = true,
-      [".obj"] = true,
-      [".pdb"] = true,
-    }
-
-    local function scan(dir, rel_prefix)
-      if #files >= 3000 then return end
-      local h = vim.uv.fs_scandir(dir)
-      if not h then return end
-      while true do
-        local name, ftype = vim.uv.fs_scandir_next(h)
-        if not name then break end
-        if ftype == "directory" then
-          if not ignore_dirs[name] and not name:match("^%.") then
-            scan(dir .. "/" .. name, rel_prefix .. name .. "/")
-          end
-        elseif ftype == "file" then
-          local ext = name:match("(%.[^.]+)$")
-          if not (ext and ignore_exts[ext:lower()]) then
-            table.insert(files, rel_prefix .. name)
-            if #files >= 3000 then break end
-          end
-        end
-      end
-    end
-
-    scan(norm_ws, "")
+    files = scan_workspace_fs(norm_ws)
   end
 
   M._workspace_files_cache[norm_ws] = {
@@ -1036,6 +1046,16 @@ function M.get_completions(line_text, col, app_data_dir, workspaces, conv_id)
       items = M.complete_choices(cmd_def.choices or {}, arg_query, kind)
     elseif cmd_def.arg_type == "dir" then
       items = M.complete_directories(arg_query)
+    elseif cmd_def.arg_type == "file" then
+      local file_items = M.complete_files(arg_query, workspaces, false)
+      for _, fi in ipairs(file_items) do
+        table.insert(items, {
+          label = fi.label,
+          kind = fi.kind,
+          detail = fi.detail,
+          insert_text = fi.label,
+        })
+      end
     elseif cmd_def.arg_type == "history" then
       items = M.complete_history(arg_query, app_data_dir)
     elseif cmd_def.arg_type == "artifact" then
@@ -1505,7 +1525,7 @@ function M.accept(is_enter)
   if is_enter then
     if data.type == "command" then
       if M.is_control(it.label) then
-        if it.label ~= "/add-dir" and it.label ~= "/drop" and it.label ~= "/artifacts" then
+        if it.label ~= "/add-dir" and it.label ~= "/drop" and it.label ~= "/artifacts" and it.label ~= "/open" then
           should_process = true
         end
       end
@@ -1662,6 +1682,9 @@ function M.setup_buffer(buf)
   vim.bo[buf].completefunc = "v:lua.require'agy.completion'.completefunc"
   vim.bo[buf].omnifunc = "v:lua.require'agy.completion'.completefunc"
 
+  -- Warm up workspace file cache asynchronously
+  M.refresh_workspace_files_async(vim.fn.getcwd())
+
   -- Define buffer syntax match for slash commands and @ file mentions
   pcall(function()
     vim.api.nvim_buf_call(buf, function()
@@ -1703,106 +1726,120 @@ function M.setup_buffer(buf)
     end,
   })
 
-  -- Keybindings in insert mode: navigate or fallback natively
-  vim.keymap.set("i", "<Down>", function()
-    if M.is_visible() then
-      M.select_next()
-    else
+  local probe_buf = M._textlock_probe_buf
+  if not probe_buf or not vim.api.nvim_buf_is_valid(probe_buf) then
+    probe_buf = vim.api.nvim_create_buf(false, true)
+    M._textlock_probe_buf = probe_buf
+  end
+
+  function M._run_pending_expr_action()
+    local fn = M._pending_expr_action
+    M._pending_expr_action = nil
+    if fn then
+      fn()
+    end
+  end
+
+  local function run_expr_action(fn)
+    local unlocked = pcall(vim.api.nvim_buf_set_lines, probe_buf, 0, 0, false, {})
+    if unlocked then
+      fn()
+      return ""
+    end
+    M._pending_expr_action = fn
+    return "<Cmd>lua require('agy.completion')._run_pending_expr_action()<CR>"
+  end
+
+  local function can_move_up()
+    local protocol = package.loaded["agy.protocol"]
+    if protocol and protocol.buffers and protocol.buffers[buf] then
+      local prompt_start = protocol.buffers[buf].prompt_start_line or 1
       local win = vim.api.nvim_get_current_win()
       local cur = vim.api.nvim_win_get_cursor(win)
-      local line_count = vim.api.nvim_buf_line_count(buf)
-      if cur[1] < line_count then
-        local next_line = vim.api.nvim_buf_get_lines(buf, cur[1], cur[1] + 1, false)[1] or ""
-        vim.api.nvim_win_set_cursor(win, { cur[1] + 1, math.min(cur[2], #next_line) })
+      if cur[1] <= prompt_start then
+        return false
       end
     end
-  end, { buffer = buf, silent = true, desc = "Navigate completion down" })
+    return true
+  end
+
+  vim.keymap.set("i", "<Down>", function()
+    if M.is_visible() then
+      return run_expr_action(function()
+        M.select_next()
+      end)
+    end
+    return "<Down>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Navigate completion down" })
 
   vim.keymap.set("i", "<Up>", function()
     if M.is_visible() then
-      M.select_prev()
-    else
-      local win = vim.api.nvim_get_current_win()
-      local cur = vim.api.nvim_win_get_cursor(win)
-      local prompt_start = 1
-      local protocol = package.loaded["agy.protocol"]
-      if protocol and protocol.buffers and protocol.buffers[buf] then
-        prompt_start = protocol.buffers[buf].prompt_start_line or 1
-      end
-      if cur[1] > prompt_start then
-        local prev_line = vim.api.nvim_buf_get_lines(buf, cur[1] - 2, cur[1] - 1, false)[1] or ""
-        vim.api.nvim_win_set_cursor(win, { cur[1] - 1, math.min(cur[2], #prev_line) })
-      end
+      return run_expr_action(function()
+        M.select_prev()
+      end)
     end
-  end, { buffer = buf, silent = true, desc = "Navigate completion up" })
+    if not can_move_up() then
+      return ""
+    end
+    return "<Up>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Navigate completion up" })
 
   vim.keymap.set("i", "<C-n>", function()
     if M.is_visible() then
-      M.select_next()
-    else
-      local win = vim.api.nvim_get_current_win()
-      local cur = vim.api.nvim_win_get_cursor(win)
-      local line_count = vim.api.nvim_buf_line_count(buf)
-      if cur[1] < line_count then
-        local next_line = vim.api.nvim_buf_get_lines(buf, cur[1], cur[1] + 1, false)[1] or ""
-        vim.api.nvim_win_set_cursor(win, { cur[1] + 1, math.min(cur[2], #next_line) })
-      end
+      return run_expr_action(function()
+        M.select_next()
+      end)
     end
-  end, { buffer = buf, silent = true, desc = "Navigate completion down" })
+    return "<Down>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Navigate completion down" })
 
   vim.keymap.set("i", "<C-p>", function()
     if M.is_visible() then
-      M.select_prev()
-    else
-      local win = vim.api.nvim_get_current_win()
-      local cur = vim.api.nvim_win_get_cursor(win)
-      local prompt_start = 1
-      local protocol = package.loaded["agy.protocol"]
-      if protocol and protocol.buffers and protocol.buffers[buf] then
-        prompt_start = protocol.buffers[buf].prompt_start_line or 1
-      end
-      if cur[1] > prompt_start then
-        local prev_line = vim.api.nvim_buf_get_lines(buf, cur[1] - 2, cur[1] - 1, false)[1] or ""
-        vim.api.nvim_win_set_cursor(win, { cur[1] - 1, math.min(cur[2], #prev_line) })
-      end
+      return run_expr_action(function()
+        M.select_prev()
+      end)
     end
-  end, { buffer = buf, silent = true, desc = "Navigate completion up" })
+    if not can_move_up() then
+      return ""
+    end
+    return "<Up>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Navigate completion up" })
 
   vim.keymap.set("i", "<Tab>", function()
     if M.is_visible() then
-      M.accept(false)
-      return
+      return run_expr_action(function()
+        M.accept(false)
+      end)
     end
     if vim.fn.pumvisible() == 1 then
-      vim.api.nvim_feedkeys(vim.keycode("<C-n>"), "n", false)
-      return
+      return "<C-n>"
     end
     local line = vim.api.nvim_get_current_line()
     local col = vim.api.nvim_win_get_cursor(0)[2]
     local before = line:sub(1, col)
     if before:match("^/[%w_-]*$") or before:match("%s/[%w_-]*$") then
-      vim.api.nvim_feedkeys(vim.keycode("<C-x><C-u>"), "n", false)
-      return
+      return "<C-x><C-u>"
     end
-    vim.api.nvim_feedkeys(vim.keycode("<Tab>"), "n", false)
-  end, { buffer = buf, silent = true, desc = "Autocomplete or Tab" })
+    return "<Tab>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Autocomplete or Tab" })
 
   vim.keymap.set("i", "<S-Tab>", function()
     if M.is_visible() then
-      M.select_prev()
-      return
+      return run_expr_action(function()
+        M.select_prev()
+      end)
     end
     if vim.fn.pumvisible() == 1 then
-      vim.api.nvim_feedkeys(vim.keycode("<C-p>"), "n", false)
-      return
+      return "<C-p>"
     end
-    vim.api.nvim_feedkeys(vim.keycode("<S-Tab>"), "n", false)
-  end, { buffer = buf, silent = true, desc = "Previous completion item or S-Tab" })
+    return "<S-Tab>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Previous completion item or S-Tab" })
 
   vim.keymap.set("i", "<CR>", function()
     if M.is_visible() then
-      M.accept(true)
-      return
+      return run_expr_action(function()
+        M.accept(true)
+      end)
     end
 
     local line = vim.api.nvim_get_current_line()
@@ -1811,26 +1848,23 @@ function M.setup_buffer(buf)
     if first_token and first_token:match("^/") and M.is_control(first_token) then
       local protocol = package.loaded["agy.protocol"]
       if protocol and protocol.handle_write then
-        protocol.handle_write(buf)
-        return
+        return run_expr_action(function()
+          protocol.handle_write(buf)
+        end)
       end
     end
 
-    local win = vim.api.nvim_get_current_win()
-    local cur = vim.api.nvim_win_get_cursor(win)
-    local left = line:sub(1, cur[2])
-    local right = line:sub(cur[2] + 1)
-    vim.api.nvim_buf_set_lines(buf, cur[1] - 1, cur[1], false, { left, right })
-    vim.api.nvim_win_set_cursor(win, { cur[1] + 1, 0 })
-  end, { buffer = buf, silent = true, desc = "Select completion item, execute control command, or Enter" })
+    return "<CR>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Select completion item, execute control command, or Enter" })
 
   vim.keymap.set("i", "<Esc>", function()
     if M.is_visible() then
-      M.close()
-      return
+      return run_expr_action(function()
+        M.close()
+      end)
     end
-    vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "n", false)
-  end, { buffer = buf, silent = true, desc = "Close completion or Esc" })
+    return "<Esc>"
+  end, { buffer = buf, expr = true, silent = true, desc = "Close completion or Esc" })
 
   vim.keymap.set("i", "<C-c>", function()
     if M.is_visible() then

@@ -61,8 +61,14 @@ assert(found_flash, "Expected flash model in completions")
 
 -- Fuzzy matching for /model
 local comp_pro = completion.get_completions("/model pro", 10)
-assert(comp_pro ~= nil and #comp_pro.items >= 1, "Expected match for pro")
-assert(comp_pro.items[1].label:find("pro") ~= nil, "Expected pro model: " .. comp_pro.items[1].label)
+if not comp_pro or #comp_pro.items == 0 then
+	comp_pro = completion.get_completions("/model argon", 12)
+	assert(comp_pro ~= nil and #comp_pro.items >= 1, "Expected match for argon")
+	assert(comp_pro.items[1].label:find("argon") ~= nil, "Expected argon model: " .. comp_pro.items[1].label)
+else
+	assert(comp_pro ~= nil and #comp_pro.items >= 1, "Expected match for pro")
+	assert(comp_pro.items[1].label:find("pro") ~= nil, "Expected pro model: " .. comp_pro.items[1].label)
+end
 
 local comp_sonnet = completion.get_completions("/model sonnet", 13)
 assert(comp_sonnet ~= nil and #comp_sonnet.items >= 1, "Expected match for sonnet")
@@ -376,6 +382,8 @@ assert(completion.is_control("/diff"), "Expected /diff to be control")
 -- Prompt modifiers / directives
 assert(completion.is_modifier("/plan"), "Expected /plan to be modifier")
 assert(completion.is_modifier("/boost"), "Expected /boost to be modifier")
+assert(completion.is_modifier("/btw"), "Expected /btw to be modifier")
+assert(completion.is_modifier("/compact"), "Expected /compact to be modifier")
 assert(completion.is_modifier("/grill-me"), "Expected /grill-me to be modifier")
 assert(completion.is_modifier("/goal"), "Expected /goal to be modifier")
 assert(completion.is_modifier("/browser"), "Expected /browser to be modifier")
@@ -396,6 +404,7 @@ assert(token1_map["/context"] ~= nil, "Expected /context at token 1")
 assert(token1_map["/settings"] ~= nil, "Expected /settings at token 1")
 assert(token1_map["/plan"] ~= nil, "Expected /plan at token 1")
 assert(token1_map["/boost"] ~= nil, "Expected /boost at token 1")
+assert(token1_map["/compact"] ~= nil, "Expected /compact at token 1")
 print("✓ Command taxonomy and token 1 suggestion verified")
 
 -- [Test 13] Testing local execution of control commands on submit

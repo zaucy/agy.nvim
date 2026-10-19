@@ -7,8 +7,11 @@ M.__index = M
 ---@field conversation_id? string Existing conversation ID to resume
 ---@field agy_cmd? string Command to run agy CLI (default "agy")
 ---@field mode? string Optional agent mode (e.g. "accept-edits" or "plan")
----@field effort? string Optional reasoning effort (e.g. "low", "medium", "high")
+---@field effort? string Optional reasoning effort (e.g. "low", "medium", "high", "xhigh", "max")
 ---@field model? string Optional active LLM model ID
+---@field agent? string Optional agent name (--agent)
+---@field sandbox? boolean Run in a sandbox with terminal restrictions enabled (--sandbox)
+---@field dangerously_skip_permissions? boolean Auto-approve all tool permission requests (--dangerously-skip-permissions)
 ---@field cwd? string Working directory for agy CLI
 ---@field workspaces? string[] Workspace directories to register with agy CLI (defaults to { cwd })
 ---@field on_init? fun(session: AgySession, conv_id: string, payload: table)
@@ -24,6 +27,9 @@ M.__index = M
 ---@field mode? string
 ---@field effort? string
 ---@field model? string
+---@field agent? string
+---@field sandbox? boolean
+---@field dangerously_skip_permissions? boolean
 ---@field cwd string
 ---@field workspaces string[]
 ---@field is_active boolean
@@ -45,6 +51,9 @@ function M.new(opts)
   self.mode = opts.mode
   self.effort = opts.effort
   self.model = opts.model
+  self.agent = opts.agent
+  self.sandbox = opts.sandbox == true
+  self.dangerously_skip_permissions = opts.dangerously_skip_permissions == true
   self.cwd = opts.cwd or vim.fn.getcwd()
   local is_new = (not self.conversation_id or self.conversation_id == "" or self.conversation_id == "new")
   if opts.workspaces ~= nil then
@@ -70,6 +79,26 @@ function M.new(opts)
 
   self:start()
   return self
+end
+
+---Add a workspace directory to the session while preserving the primary cwd workspace
+---@param dir string
+function M:add_workspace(dir)
+  assert(type(dir) == "string" and dir ~= "", "agy session: workspace directory must be a non-empty string")
+  self.workspaces = self.workspaces or {}
+  local norm_dir = vim.fs.normalize(dir)
+  if #self.workspaces == 0 and self.cwd and self.cwd ~= "" then
+    local norm_cwd = vim.fs.normalize(self.cwd)
+    if norm_cwd ~= norm_dir then
+      table.insert(self.workspaces, self.cwd)
+    end
+  end
+  for _, existing in ipairs(self.workspaces) do
+    if vim.fs.normalize(existing) == norm_dir then
+      return
+    end
+  end
+  table.insert(self.workspaces, dir)
 end
 
 ---Build the command argument list for spawning agy
@@ -109,6 +138,19 @@ function M:_build_cmd()
   if self.model and self.model ~= "" then
     table.insert(cmd, "--model")
     table.insert(cmd, self.model)
+  end
+
+  if self.agent and self.agent ~= "" then
+    table.insert(cmd, "--agent")
+    table.insert(cmd, self.agent)
+  end
+
+  if self.sandbox then
+    table.insert(cmd, "--sandbox")
+  end
+
+  if self.dangerously_skip_permissions then
+    table.insert(cmd, "--dangerously-skip-permissions")
   end
 
   return cmd
