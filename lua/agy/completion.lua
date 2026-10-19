@@ -579,6 +579,9 @@ function M.complete_artifacts(query, conv_id, app_data_dir)
     if not conv_id or conv_id == "" or conv_id == "new" then
       local bname = vim.api.nvim_buf_get_name(0)
       conv_id = bname:match("^agy://([^/?#]+)")
+      if conv_id and (conv_id:match("^%a:$") or conv_id == "home") then
+        conv_id = nil
+      end
     end
     if not conv_id or conv_id == "" or conv_id == "new" then
       local history = transcript_mod.read_history(app_data_dir)
@@ -930,6 +933,9 @@ function M.get_completions(line_text, col, app_data_dir, workspaces, conv_id)
     if not conv_id or conv_id == "" or conv_id == "new" then
       local bname = vim.api.nvim_buf_get_name(cur_buf)
       conv_id = bname:match("^agy://([^/?#]+)")
+      if conv_id and (conv_id:match("^%a:$") or conv_id == "home") then
+        conv_id = nil
+      end
     end
   end
 
